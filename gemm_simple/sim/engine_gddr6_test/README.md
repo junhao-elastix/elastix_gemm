@@ -56,7 +56,7 @@ Expected golden:  0xb414, 0x2ecb, 0x3345, 0x326b  [CORRECT]
 ## Success Criteria
 
 ✅ Simulation passes when:
-1. FETCH reads 528 lines x 2 from GDDR6 (page ID = 0x2)
+1. FETCH reads 528 lines × 2 from GDDR6 (page ID = 0x2)
 2. Dispatcher BRAM populated with correct data
 3. Compute engine processes with B=2, C=2, V=2
 4. Results match golden reference: `0xb414, 0x2ecb, 0x3345, 0x326b`

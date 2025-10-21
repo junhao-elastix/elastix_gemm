@@ -122,7 +122,7 @@ From `vector_system_test/README.md` and `tb_engine_top.sv`:
 
 **Address Space Layout**:
 ```
-dispatcher_bram_dual_read.sv (2048 entries x 256-bit):
+dispatcher_bram_dual_read.sv (2048 entries × 256-bit):
 - Left matrix:  Lines 0-527    (Port B dual-read: left data)
 - Right matrix: Lines 0-527    (Port B dual-read: right data simultaneously)
 ```

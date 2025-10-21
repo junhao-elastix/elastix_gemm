@@ -31,8 +31,8 @@ ARCHIVED FILES (3 files)
    - Replacement: result_fifo_to_simple_bram.sv uses 1:1 mapping
    
    ARCHITECTURAL DECISION:
-   - Original design: Optimized for BRAM efficiency (16 FP16 -> 1 BRAM line)
-   - Current design: Optimized for simplicity and debugging (1 FP16 -> 1 address)
+   - Original design: Optimized for BRAM efficiency (16 FP16 → 1 BRAM line)
+   - Current design: Optimized for simplicity and debugging (1 FP16 → 1 address)
    - Trade-off: Uses 16x more BRAM space but enables direct address mapping
    
    Complexity trade-off made for simplified debugging (1:1 BRAM address mapping).
@@ -51,8 +51,8 @@ ARCHIVED FILES (3 files)
    - New approach: reg_control_block provides per-register write strobes directly
    
    ARCHITECTURAL EVOLUTION:
-   - Old: CSR register value -> cmd_submit_pulser -> edge-detected pulse
-   - New: reg_control_block -> write_strobes[ENGINE_CMD_SUBMIT] -> direct pulse
+   - Old: CSR register value → cmd_submit_pulser → edge-detected pulse
+   - New: reg_control_block → write_strobes[ENGINE_CMD_SUBMIT] → direct pulse
    
    The new write_strobes approach is cleaner and eliminates an extra module.
 

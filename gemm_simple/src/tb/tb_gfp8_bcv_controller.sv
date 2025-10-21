@@ -151,8 +151,8 @@ module tb_gfp8_bcv_controller;
         logic [255:0] right_data [0:527];
         
         $display("  Loading BRAM from hex files...");
-        $readmemh("/home/dev/Dev/elastix_gemm/hex/left.hex", left_data);
-        $readmemh("/home/dev/Dev/elastix_gemm/hex/right.hex", right_data);
+        $readmemh("/home/workstation/elastix_gemm/hex/left.hex", left_data);
+        $readmemh("/home/workstation/elastix_gemm/hex/right.hex", right_data);
         
         // Copy to BRAM models
         for (int i = 0; i < 528; i++) begin

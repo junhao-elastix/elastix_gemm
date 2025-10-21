@@ -111,8 +111,8 @@ Maximum truncation error per conversion:
 
 After V accumulations:
 - V truncations compound
-- Average bias: ~0.5 LSB x V
-- Worst case: ~1 LSB x V
+- Average bias: ~0.5 LSB × V
+- Worst case: ~1 LSB × V
 
 For V=4: Expected ~2-4 LSB error (matches observations!)
 For V=64: Expected ~32-64 LSB error (matches observations!)

@@ -6,7 +6,7 @@
 //  - Instantiates engine_top (DUT)
 //  - Instantiates tb_memory_model (GDDR6 emulation)
 //  - Uses tb_ucode_gen_pkg for command generation
-//  - Test sequence: FETCH → FETCH → DISP → TILE → WAIT
+//  - Test sequence: FETCH -> FETCH -> DISP -> TILE -> WAIT
 //  - Result verification with FP16 output checking
 //
 // Test Flow:
@@ -283,7 +283,7 @@ module tb_engine_top;
         $display("[TB] ====================================================================");
 
         // Load golden reference
-        golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
+        golden_filename = $sformatf("/home/workstation/elastix_gemm/hex/golden_%s.hex", test_name);
         golden_file = $fopen(golden_filename, "r");
         if (golden_file == 0) begin
             $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);

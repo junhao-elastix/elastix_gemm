@@ -24,9 +24,9 @@ DEVICE_MODELS := $(ACE_INSTALL_DIR)/libraries/device_models/$(DEVICE)_simmodels.
 ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
 
 # Source directories  
-CE_W8A8_TB = /home/dev/Dev/compute_engine_w8a8/src/tb
-CE_W8A8_RTL = /home/dev/Dev/compute_engine_w8a8/src/rtl
-CE_W8A8_INC = /home/dev/Dev/compute_engine_w8a8/src/include
+CE_W8A8_TB = /home/workstation/compute_engine_w8a8/src/tb
+CE_W8A8_RTL = /home/workstation/compute_engine_w8a8/src/rtl
+CE_W8A8_INC = /home/workstation/compute_engine_w8a8/src/include
 GEMM_RTL = ../../src/rtl
 GEMM_INC = ../../src/include
 GEMM_TB = ../../src/tb  # Local testbench directory

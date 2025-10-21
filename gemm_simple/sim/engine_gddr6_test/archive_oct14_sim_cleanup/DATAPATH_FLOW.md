@@ -156,7 +156,7 @@ endcase
 
 ```systemverilog
 // Behavioral memory model
-logic [255:0] mem_array [0:1055];  // 2 blocks x 528 lines
+logic [255:0] mem_array [0:1055];  // 2 blocks × 528 lines
 
 // AXI read response
 always_ff @(posedge i_clk) begin
@@ -240,11 +240,11 @@ end
 // Right matrix: Addresses 528-1055
 
 // Exponent storage (packed 4-bit)
-logic [3:0] exp_left_packed [0:15];   // 16 lines x 32 exp/line
+logic [3:0] exp_left_packed [0:15];   // 16 lines × 32 exp/line
 logic [3:0] exp_right_packed [0:15];
 
 // Mantissa storage (8-bit)
-logic [7:0] man_left [0:511];   // 512 lines x 32 man/line
+logic [7:0] man_left [0:511];   // 512 lines × 32 man/line
 logic [7:0] man_right [0:511];
 
 // Dual read ports for compute engine
@@ -257,7 +257,7 @@ end
 **Data Structure**:
 - **Exponents**: Shared per 32-element group (GFP8 format)
 - **Mantissas**: Individual 8-bit values
-- **Total capacity**: 128x128 elements per matrix
+- **Total capacity**: 128×128 elements per matrix
 
 ---
 
@@ -266,7 +266,7 @@ end
 **File**: `compute_engine_modular.sv`
 
 ```systemverilog
-// Triple-nested loop: B x C x V iterations
+// Triple-nested loop: B × C × V iterations
 // Each iteration: 128-element dot product
 
 always_ff @(posedge i_clk) begin
@@ -318,7 +318,7 @@ Result[2] = dot(left[1,0:1], right[0:1,0])  // B=1, C=0
 Result[3] = dot(left[1,0:1], right[0:1,1])  // B=1, C=1
 ```
 
-**Expected Output**: B x C = 2 x 2 = **4 results**
+**Expected Output**: B × C = 2 × 2 = **4 results**
 
 ---
 
@@ -328,7 +328,7 @@ Result[3] = dot(left[1,0:1], right[0:1,1])  // B=1, C=1
 
 ```systemverilog
 // Stores FP16 results from compute engine
-logic [15:0] result_mem [0:16383];  // 128x128 max capacity
+logic [15:0] result_mem [0:16383];  // 128×128 max capacity
 
 always_ff @(posedge i_clk) begin
     if (i_result_valid) begin

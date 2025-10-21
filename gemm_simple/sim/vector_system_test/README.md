@@ -6,7 +6,7 @@
 ## Overview
 
 SystemVerilog testbench for validating the MS2.0 GEMM engine with direct FIFO interface.
-Tests various BxCxV configurations with hardware-accurate GFP8 computation.
+Tests various B×C×V configurations with hardware-accurate GFP8 computation.
 
 **New Feature**: All compilation and simulation output is logged to `sim.log` for clean terminal operation.
 

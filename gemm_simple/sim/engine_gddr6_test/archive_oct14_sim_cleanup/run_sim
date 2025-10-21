@@ -55,13 +55,13 @@ fi
 echo "  [OK] Model directory: $GDDR_MODEL_DIR"
 
 # Check test data
-if [ ! -f "/home/dev/Dev/elastix_gemm/hex/left.hex" ]; then
+if [ ! -f "/home/workstation/elastix_gemm/hex/left.hex" ]; then
     echo "  WARNING: left.hex not found"
 else
     echo "  [OK] left.hex found"
 fi
 
-if [ ! -f "/home/dev/Dev/elastix_gemm/hex/right.hex" ]; then
+if [ ! -f "/home/workstation/elastix_gemm/hex/right.hex" ]; then
     echo "  WARNING: right.hex not found"
 else
     echo "  [OK] right.hex found"
