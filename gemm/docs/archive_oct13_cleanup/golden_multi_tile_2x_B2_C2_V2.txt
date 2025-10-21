@@ -1,0 +1,13 @@
+# Multi-Tile Golden Reference
+# Test: 2 tiles × (B=2, C=2, V=2) = 8 total results
+# Generated using validated GFP emulator library
+# Total results: 8
+#
+ac97  # Result[0]: Tile 0, local index 0, value=-0.071716
+a4eb  # Result[1]: Tile 0, local index 1, value=-0.019211
+b0c7  # Result[2]: Tile 0, local index 2, value=-0.149292
+a8a0  # Result[3]: Tile 0, local index 3, value=-0.036133
+31cb  # Result[4]: Tile 1, local index 0, value=0.181030
+2c42  # Result[5]: Tile 1, local index 1, value=0.066528
+b406  # Result[6]: Tile 1, local index 2, value=-0.251465
+9d6c  # Result[7]: Tile 1, local index 3, value=-0.005295

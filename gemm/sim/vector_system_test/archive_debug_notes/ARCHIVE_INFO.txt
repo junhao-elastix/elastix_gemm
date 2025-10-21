@@ -1,0 +1,8 @@
+Sun Oct 12 18:43:00 PDT 2025
+Files archived after successful validation (all 8 tests passing)
+Date: Sun Oct 12 18:43:00 PDT 2025
+
+Obsolete files from debugging session:
+- Makefile (replaced by Makefile.engine_top)
+- TEST_FAILURE_ANALYSIS.md (debugging analysis, now resolved)
+- ce_debug.txt, ce_working.txt (debug notes)

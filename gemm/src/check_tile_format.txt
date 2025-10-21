@@ -1,0 +1,26 @@
+cmd_tile_s structure (87 bits, packed MSB->LSB):
+  [86:79] dim_b (8 bits)
+  [78:71] dim_c (8 bits)
+  [70:63] dim_v (8 bits)
+  [62:60] flags (3 bits)
+  [59:49] vec_len (11 bits)
+  [48:38] right_ugd_len (11 bits)
+  [37:27] left_ugd_len (11 bits)
+  [26:16] right_addr (11 bits)
+  [15:5] left_addr (11 bits)
+  [4:0] unused/padding
+
+Master control reconstructs as:
+  tile_cmd = {payload_word3_reg[22:0], payload_word2_reg, payload_word1_reg};
+               ^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^
+               bits [86:64]             bits [63:32]         bits [31:0]
+
+So payload mapping should be:
+  Word 1 [31:0]:   left_addr[10:0] (bits 15:5) + padding
+  Word 2 [31:0]:   left_ugd_len, right_ugd_len, vec_len (partial)
+  Word 3 [22:0]:   dim_b, dim_c, dim_v, flags, vec_len (partial)
+
+Current testbench (WRONG):
+  cmd[1] = {left_addr, right_addr};  // Should be in different words!
+  cmd[2] = {vec_len, 11'b0};
+  cmd[3] = {3'b0, v, 3'b0, c, 3'b0, b, 2'b0};

@@ -1,0 +1,253 @@
+================================================================================
+ARCHIVE: October 13, 2025 Cleanup
+================================================================================
+
+Date: October 13, 2025
+Purpose: Clean up stale historical debugging and fix documentation
+
+================================================================================
+ARCHIVED FILES SUMMARY
+================================================================================
+
+Total Files Archived: 41
+- Markdown Documentation: 14 files
+- Python Scripts: 7 files (5 generators + 2 debug)
+- Test/Debug Files: 6 files (1 SV test + 5 analysis)
+- Temporary Output Files: 14 files
+
+================================================================================
+ARCHIVED MARKDOWN FILES (14 files)
+================================================================================
+
+Historical Debugging/Fix Documents (Already Applied):
+-----------------------------------------------------
+1. ARCHITECTURE_CONFUSION.md
+   - Date: Oct 13, 2025
+   - Purpose: Documented confusion about BRAM architecture
+   - Status: Resolved, architecture clarified in IMPLEMENTATION_PLAN.md
+
+2. BRAM_REFACTORING_FIX.md
+   - Date: Oct 13, 2025
+   - Purpose: Documented fix for BRAM refactoring
+   - Status: Fix applied, separate left/right BRAMs now in place
+
+3. DOCUMENTATION_FIXES_OCT12.md
+   - Date: Oct 12, 2025
+   - Purpose: Documented fixes to README/CLAUDE inconsistencies
+   - Status: All fixes applied to documentation
+
+4. CLEANUP_SUMMARY_OCT12.md
+   - Date: Oct 12, 2025
+   - Purpose: Summary of Oct 12 cleanup (RTL and test files)
+   - Status: Historical record, cleanup complete
+
+5. FIFO_INTEGRATION_SUMMARY.md
+   - Date: Oct 12, 2025
+   - Purpose: Documented FIFO architecture integration
+   - Status: Integration complete, architecture in place
+
+6. INTEGRATION_SUCCESS.md
+   - Date: Oct 12, 2025
+   - Purpose: Documented successful engine_top integration
+   - Status: Integration complete, engine_top validated
+
+Test/Debugging Documents (Bugs Fixed):
+---------------------------------------
+7. BUG_INVESTIGATION_SUMMARY.md (from sim/vector_system_test/)
+   - Date: Oct 13, 2025
+   - Purpose: Investigated exponent corruption in gfp8_nv_dot
+   - Status: Bug fixed, input registers added
+
+8. ROOT_CAUSE_GOLDEN_REFERENCE_BUG.md (from sim/vector_system_test/)
+   - Date: Oct 12, 2025
+   - Purpose: Identified Python golden reference mismatch
+   - Status: Fixed, hardware_gfp_reference.py updated
+
+9. CRITICAL_FIX_TILE_COMMAND.md (from sim/vector_system_test/)
+   - Date: Oct 12, 2025
+   - Purpose: Fixed TILE command packing bug
+   - Status: Bug fixed, testbench updated
+
+10. TESTBENCH_STATUS.md (from sim/vector_system_test/)
+    - Date: Various
+    - Purpose: Testbench status tracking
+    - Status: Superseded by current test results
+
+Hex Directory Historical Documents:
+------------------------------------
+11. CLEANUP_SUMMARY.md (from hex/)
+    - Purpose: Historical cleanup summary
+    - Status: Outdated
+
+12. Expected_Access_Loops.md (from hex/)
+    - Purpose: Expected loop documentation
+    - Status: Superseded by current architecture
+
+13. PYTHON_SCRIPTS_COMPARISON.md (from hex/)
+    - Purpose: Script comparison
+    - Status: Outdated
+
+14. SESSION_SUMMARY_CLEANUP.md (from hex/)
+    - Purpose: Session cleanup summary
+    - Status: Outdated
+
+================================================================================
+CURRENT ACTIVE DOCUMENTATION
+================================================================================
+
+Core Documentation (Active):
+----------------------------
+- README.md - Project overview and architecture
+- CLAUDE.md - Detailed usage and architecture guide
+- CHANGELOG.md - Project change history
+- REFERENCES.md - Links to Achronix documentation
+- IMPLEMENTATION_PLAN.md - Current architecture spec (pinned)
+- MISMATCH_STATISTICS_SUMMARY.md - Current test results and analysis
+- COMMAND_SEQUENCE_CORRECTED.md - Command sequencing reference
+
+Simulation Documentation (Active):
+-----------------------------------
+- sim/vector_system_test/README.md - Test suite documentation
+- sim/vector_system_test/SOURCE_FILES.md - Source file inventory
+
+Hex/Golden Reference Documentation (Active):
+--------------------------------------------
+- hex/README.md - Hex file format and generation
+
+================================================================================
+RATIONALE
+================================================================================
+
+All archived files document:
+1. Bugs that have been fixed
+2. Integrations that have been completed
+3. Confusion that has been resolved
+4. Historical cleanup summaries
+
+The fixes and solutions from these documents are now:
+- Incorporated into the active codebase
+- Documented in current architecture files (IMPLEMENTATION_PLAN.md)
+- Captured in test results (MISMATCH_STATISTICS_SUMMARY.md)
+- Part of CHANGELOG.md
+
+These files serve no ongoing reference value and can be safely archived.
+
+================================================================================
+ARCHIVED PYTHON SCRIPTS (7 files)
+================================================================================
+
+Obsolete Golden Reference Generators (5 files - from hex/):
+-----------------------------------------------------------
+1. generate_all_test_golden.py - Old multi-tile golden generator
+2. generate_golden_multi_bcv.py - Old BCV multi-tile generator
+3. generate_golden_multi_tile.py - Old multi-tile generator
+4. generate_multi_tile_golden.py - Duplicate multi-tile generator
+5. convert_golden_to_hex.py - Float to hex converter (obsolete)
+
+Status: All superseded by hardware_gfp_reference.py which generates correct
+        golden references with GFP accumulation matching hardware behavior.
+
+Debug Scripts (2 files - from sim/vector_system_test/):
+--------------------------------------------------------
+6. fix_tile_cmd.py - Debug script for TILE command packing calculation
+7. fix_tile_cmd2.py - Alternative TILE command packing fix
+
+Status: TILE command packing bug fixed in tb_engine_top.sv, scripts no longer needed.
+
+================================================================================
+ARCHIVED TEST/DEBUG FILES (6 files - from sim/vector_system_test/)
+================================================================================
+
+SystemVerilog Debug Test (Bug Fixed):
+-------------------------------------
+1. test_tile_cmd.sv - Debug test for TILE command structure
+
+Status: TILE command packing bug fixed in tb_engine_top.sv, test no longer needed.
+
+Analysis Documents (Incorporated into MISMATCH_STATISTICS_SUMMARY.md):
+----------------------------------------------------------------------
+2. CURRENT_TEST_STATUS.txt - Test status summary
+3. C_INDEX_PATTERN_ANALYSIS.txt - C-index pattern analysis
+4. LSB_VS_MAGNITUDE_ANALYSIS.txt - LSB error magnitude analysis
+5. ROUNDING_EXPERIMENT_RESULTS.txt - FP16 rounding experiment results
+6. TEST_RESULTS_SUMMARY.txt - Test results summary
+
+Status: All findings documented in comprehensive MISMATCH_STATISTICS_SUMMARY.md
+
+================================================================================
+ARCHIVED TEMPORARY OUTPUT FILES (14 files - from hex/)
+================================================================================
+
+Temporary Single-File Outputs:
+------------------------------
+1. decoded_result.txt - Temporary decode output
+2. golden_result.txt - Temporary golden output  
+3. out.hex - Temporary hex output
+
+Old Multi-Tile Test Format Outputs (4 files):
+----------------------------------------------
+4. golden_multi_tile_2x_B2_C2_V2.txt
+5. golden_multi_tile_eight_tiles_medium.txt
+6. golden_multi_tile_four_tiles_sequential.txt
+7. golden_multi_tile_two_tiles_simple.txt
+
+Old BCV Test Format Outputs (7 files):
+---------------------------------------
+8. golden_test1_bcv_2_2_2.txt
+9. golden_test2_bcv_4_4_1.txt
+10. golden_test3_bcv_1_8_1.txt
+11. golden_test4_bcv_8_1_1.txt
+12. golden_test5_bcv_2_2_4.txt
+13. golden_test6_bcv_1_128_1_x128.txt
+14. golden_test7_bcv_128_1_1_x128.txt
+
+Status: All temporary outputs from development, superseded by current golden_*.hex files.
+
+================================================================================
+CLEANUP COMPLETED
+================================================================================
+
+All Active Documentation (KEPT):
+--------------------------------
+- README.md (root, sim/vector_system_test/, hex/)
+- CLAUDE.md
+- CHANGELOG.md
+- REFERENCES.md
+- IMPLEMENTATION_PLAN.md (current architecture, pinned to context)
+- MISMATCH_STATISTICS_SUMMARY.md (comprehensive test analysis)
+- COMMAND_SEQUENCE_CORRECTED.md (command sequencing reference)
+- SOURCE_FILES.md (sim/vector_system_test/)
+
+All Active Code (KEPT):
+-----------------------
+- All RTL modules in src/rtl/ (28 files, all in filelist.tcl)
+- tb_engine_top.sv (validated testbench)
+- Makefile.engine_top (build system)
+
+All Active Scripts (KEPT):
+--------------------------
+- hardware_gfp_reference.py (golden reference generator with GFP accumulation)
+- generate_nv_hex.py (test data generator)
+- mem_layout.py (memory layout utilities)
+
+All Active Data (KEPT):
+-----------------------
+- left.hex, right.hex (test input matrices)
+- golden_*.hex (9 golden reference files for current tests)
+
+================================================================================
+PROJECT STATUS AFTER CLEANUP
+================================================================================
+
+✅ Documentation: Clean, focused on current architecture
+✅ RTL Code: Clean, all active files in build
+✅ Test Suite: Clean, validated testbench with 9 test cases
+✅ Scripts: Clean, active golden reference generators only
+✅ Data Files: Clean, current test inputs and golden references
+
+Result: Maintainable, production-ready codebase with comprehensive documentation.
+
+================================================================================
+End of Archive Info
+================================================================================
+

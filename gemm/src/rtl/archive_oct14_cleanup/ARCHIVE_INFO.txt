@@ -1,0 +1,145 @@
+================================================================================
+RTL CLEANUP ARCHIVE - October 14, 2025
+================================================================================
+
+ARCHIVE LOCATION: /home/dev/Dev/elastix_gemm/gemm/src/rtl/archive_oct14_cleanup/
+TIMESTAMP: Tue Oct 14 01:43:00 PDT 2025
+
+PURPOSE:
+This archive contains obsolete RTL modules identified during the October 14, 
+2025 cleanup session using hierarchical module tracing from elastix_gemm_top.sv.
+These files were not instantiated in the active design and have been superseded 
+by currently-used implementations.
+
+METHODOLOGY:
+Traced module hierarchy from elastix_gemm_top.sv downward through all 
+instantiated modules to identify active files. Files in rtl/ directory but 
+not in the instantiation hierarchy were archived.
+
+================================================================================
+ARCHIVED FILES (3 files)
+================================================================================
+
+1. result_fifo_to_bram.sv (5.4KB)
+   
+   STATUS: Obsolete - Superseded by result_fifo_to_simple_bram.sv
+   
+   REASON FOR ARCHIVAL:
+   - Not instantiated in active design
+   - Not included in filelist.tcl
+   - Original: Packed 16 FP16 results per BRAM line (256-bit)
+   - Replacement: result_fifo_to_simple_bram.sv uses 1:1 mapping
+   
+   ARCHITECTURAL DECISION:
+   - Original design: Optimized for BRAM efficiency (16 FP16 → 1 BRAM line)
+   - Current design: Optimized for simplicity and debugging (1 FP16 → 1 address)
+   - Trade-off: Uses 16x more BRAM space but enables direct address mapping
+   
+   Complexity trade-off made for simplified debugging (1:1 BRAM address mapping).
+   
+   The archived version is kept for reference if future designs need tighter BRAM 
+   packing.
+
+2. cmd_submit_pulser.sv (2.0KB)
+   
+   STATUS: Obsolete - Superseded by write_strobes in reg_control_block
+   
+   REASON FOR ARCHIVAL:
+   - Not instantiated in any active design
+   - Original purpose: Generate pulse from CSR write for ENGINE_CMD_SUBMIT
+   - Superseded by: reg_control_block's o_write_strobes mechanism (Oct 14, 2025)
+   - New approach: reg_control_block provides per-register write strobes directly
+   
+   ARCHITECTURAL EVOLUTION:
+   - Old: CSR register value → cmd_submit_pulser → edge-detected pulse
+   - New: reg_control_block → write_strobes[ENGINE_CMD_SUBMIT] → direct pulse
+   
+   The new write_strobes approach is cleaner and eliminates an extra module.
+
+3. axi_reg_layer.sv (12KB)
+   
+   STATUS: Obsolete - Achronix library component not used in current design
+   
+   REASON FOR ARCHIVAL:
+   - Not instantiated in any active design
+   - Achronix-provided AXI register interface layer
+   - Referenced only in comments in flr_responder.sv and msix_irq_handler.sv
+   - Current design uses reg_control_block for register interface
+   
+   This file appears to be from an older Achronix reference design and is not 
+   required for the current GEMM engine architecture.
+
+================================================================================
+ACTIVE RTL MODULE HIERARCHY (26 .sv files in use)
+================================================================================
+
+elastix_gemm_top.sv (top level)
+├── reset_processor_v2.sv
+├── reg_control_block.sv
+├── shift_reg.sv
+├── dma_bram_bridge.sv (2 instances)
+│   └── nap_initiator_wrapper.sv (instantiated within dma_bram_bridge)
+├── axi_bram_responder.sv
+│   └── nap_initiator_wrapper.sv (instantiated within axi_bram_responder)
+├── nap_responder_wrapper.sv
+├── csr_to_fifo_bridge.sv
+├── engine_top.sv
+│   ├── cmd_fifo.sv
+│   ├── master_control.sv
+│   ├── dispatcher_control.sv
+│   │   └── dispatcher_bram_dual_read.sv
+│   ├── compute_engine_modular.sv
+│   │   ├── gfp8_bcv_controller.sv
+│   │   │   └── gfp8_nv_dot.sv
+│   │   │       └── gfp8_group_dot.sv
+│   │   └── gfp8_to_fp16.sv
+│   └── result_bram.sv
+├── result_fifo_to_simple_bram.sv
+├── irq_gen.sv
+├── msix_irq_handler.sv
+├── flr_responder.sv
+└── acx_device_manager.sv
+
+Plus: gemm_pkg.sv (SystemVerilog package)
+
+NOTE: nap_initiator_wrapper.sv is instantiated by dma_bram_bridge.sv and 
+axi_bram_responder.sv, making it an active module (initially missed in cleanup).
+
+================================================================================
+IMPACT ASSESSMENT
+================================================================================
+
+BUILD IMPACT: None - archived files were not in build
+   - filelist.tcl unchanged
+   - No module instantiations affected
+   - All active modules remain in src/rtl/
+
+DESIGN VERIFICATION:
+   - Hierarchical trace from top-level confirms all active files retained
+   - No references to archived modules in active RTL (verified via grep)
+   - 26 active .sv files + 1 package file remain
+
+VALIDATION PLAN:
+1. Clean build:
+   cd /home/dev/Dev/elastix_gemm/gemm/build/
+   make clean && make all
+
+2. Flash and test:
+   /home/dev/Dev/hex.sh
+   source /home/dev/rescan
+   cd ../sw_test && ./test_registers
+   - Expected: Device initializes successfully
+
+3. Full test suite:
+   cd /home/dev/Dev/elastix_gemm/gemm/sw_test
+   make all
+   ./test_ms2_gemm_full
+   - Expected: 8/9 tests pass (88% - same as before)
+
+================================================================================
+
+MAINTAINED BY: Claude Code (claude.ai/code)
+PROJECT: Elastix GEMM Engine - MS2.0 Modular Architecture
+CLEANUP DATE: October 14, 2025
+
+================================================================================

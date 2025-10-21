@@ -1,0 +1,8 @@
+gemm/build/results/
+gemm/demo/bitstream/*.flash
+gemm/demo/bitstream/*.hex
+**/*.tmp
+**/*.log
+**/*.o
+**/*.mgf
+**/*.asdb

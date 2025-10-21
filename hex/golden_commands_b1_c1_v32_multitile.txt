@@ -1,0 +1,100 @@
+# Multi-tile command sequence for B=1, C=1, V=32
+# num_left_tile=4, num_right_tile=4
+# total_tiles=16, total_results=16
+
+Tile 0 (left_tile=0, right_tile=0):
+  left_addr = (0*1*32)*4 = 0
+  right_addr = (0*1*32)*4 = 0
+  Expected: 1 results (B*C)
+  Results: 0xb6ad
+
+Tile 1 (left_tile=0, right_tile=1):
+  left_addr = (0*1*32)*4 = 0
+  right_addr = (1*1*32)*4 = 128
+  Expected: 1 results (B*C)
+  Results: 0xb810
+
+Tile 2 (left_tile=0, right_tile=2):
+  left_addr = (0*1*32)*4 = 0
+  right_addr = (2*1*32)*4 = 256
+  Expected: 1 results (B*C)
+  Results: 0xb77c
+
+Tile 3 (left_tile=0, right_tile=3):
+  left_addr = (0*1*32)*4 = 0
+  right_addr = (3*1*32)*4 = 384
+  Expected: 1 results (B*C)
+  Results: 0x31c8
+
+Tile 4 (left_tile=1, right_tile=0):
+  left_addr = (1*1*32)*4 = 128
+  right_addr = (0*1*32)*4 = 0
+  Expected: 1 results (B*C)
+  Results: 0x3a4b
+
+Tile 5 (left_tile=1, right_tile=1):
+  left_addr = (1*1*32)*4 = 128
+  right_addr = (1*1*32)*4 = 128
+  Expected: 1 results (B*C)
+  Results: 0x3af5
+
+Tile 6 (left_tile=1, right_tile=2):
+  left_addr = (1*1*32)*4 = 128
+  right_addr = (2*1*32)*4 = 256
+  Expected: 1 results (B*C)
+  Results: 0xb6ea
+
+Tile 7 (left_tile=1, right_tile=3):
+  left_addr = (1*1*32)*4 = 128
+  right_addr = (3*1*32)*4 = 384
+  Expected: 1 results (B*C)
+  Results: 0x3828
+
+Tile 8 (left_tile=2, right_tile=0):
+  left_addr = (2*1*32)*4 = 256
+  right_addr = (0*1*32)*4 = 0
+  Expected: 1 results (B*C)
+  Results: 0xacd2
+
+Tile 9 (left_tile=2, right_tile=1):
+  left_addr = (2*1*32)*4 = 256
+  right_addr = (1*1*32)*4 = 128
+  Expected: 1 results (B*C)
+  Results: 0xb8ad
+
+Tile 10 (left_tile=2, right_tile=2):
+  left_addr = (2*1*32)*4 = 256
+  right_addr = (2*1*32)*4 = 256
+  Expected: 1 results (B*C)
+  Results: 0x39ec
+
+Tile 11 (left_tile=2, right_tile=3):
+  left_addr = (2*1*32)*4 = 256
+  right_addr = (3*1*32)*4 = 384
+  Expected: 1 results (B*C)
+  Results: 0xb561
+
+Tile 12 (left_tile=3, right_tile=0):
+  left_addr = (3*1*32)*4 = 384
+  right_addr = (0*1*32)*4 = 0
+  Expected: 1 results (B*C)
+  Results: 0xac0a
+
+Tile 13 (left_tile=3, right_tile=1):
+  left_addr = (3*1*32)*4 = 384
+  right_addr = (1*1*32)*4 = 128
+  Expected: 1 results (B*C)
+  Results: 0x322d
+
+Tile 14 (left_tile=3, right_tile=2):
+  left_addr = (3*1*32)*4 = 384
+  right_addr = (2*1*32)*4 = 256
+  Expected: 1 results (B*C)
+  Results: 0x3dc3
+
+Tile 15 (left_tile=3, right_tile=3):
+  left_addr = (3*1*32)*4 = 384
+  right_addr = (3*1*32)*4 = 384
+  Expected: 1 results (B*C)
+  Results: 0x3a0f
+

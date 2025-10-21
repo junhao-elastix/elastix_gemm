@@ -1,0 +1,10 @@
+# Multi-tile command sequence for B=4, C=4, V=32
+# num_left_tile=1, num_right_tile=1
+# total_tiles=1, total_results=16
+
+Tile 0 (left_tile=0, right_tile=0):
+  left_addr = (0*4*32)*4 = 0
+  right_addr = (0*4*32)*4 = 0
+  Expected: 16 results (B*C)
+  Results: 0xb6ad 0xb810 0xb77c 0x31c8 0x3a4b 0x3af5 0xb6ea 0x3828 0xacd2 0xb8ad 0x39ec 0xb561 0xac0a 0x322d 0x3dc3 0x3a0f
+
