@@ -69,7 +69,7 @@ Issue CSR writes (like software):
   FETCH right → dispatcher reads 528 lines via NAP
   DISPATCH left  → configure CE for left matrix
   DISPATCH right → configure CE for right matrix
-  MATMUL → compute B×C results
+  MATMUL → compute BxC results
 ```
 
 ### 3. Verification Phase
@@ -182,7 +182,7 @@ Simulation is successful when:
 ✅ **BCV loop produces 4 results**
 - B loops: 0, 1
 - C loops: 0, 1  
-- 2×2 = 4 results generated
+- 2x2 = 4 results generated
 
 ✅ **Results match golden reference**
 ```
@@ -244,7 +244,7 @@ grep "TEST PASSED" logs/FULLCHIP_BFM_simulation.log
   - Testbench
 
 - **Simulation**: ~5-15 minutes
-  - FETCH: ~50k cycles (reading 528 lines × 2)
+  - FETCH: ~50k cycles (reading 528 lines x 2)
   - DISPATCH: ~10k cycles
   - MATMUL: ~10k cycles
   - Total: ~100k-200k cycles @ 500MHz

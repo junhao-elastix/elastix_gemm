@@ -7,7 +7,7 @@
 //  - Parses command opcodes: FETCH, DISP, TILE, WAIT_DISP, WAIT_TILE
 //  - Routes to dispatcher_control (FETCH/DISP) or compute_engine (TILE)
 //  - Tracks command IDs for WAIT synchronization
-//  - FSM: IDLE → READ_HDR → READ_PAYLOAD → DECODE → EXECUTE → WAIT_DONE
+//  - FSM: IDLE -> READ_HDR -> READ_PAYLOAD -> DECODE -> EXECUTE -> WAIT_DONE
 //
 // Author: MS2.0 Migration
 // Date: Thu Oct 2 00:06:48 AM PDT 2025

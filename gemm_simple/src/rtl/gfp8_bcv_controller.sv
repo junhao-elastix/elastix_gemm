@@ -1,24 +1,24 @@
 // ------------------------------------------------------------------
 // GFP8 BCV Loop Controller
 //
-// Purpose: Orchestrate B×C×V nested loops for matrix multiplication
+// Purpose: Orchestrate BxCxV nested loops for matrix multiplication
 // Algorithm: For each (b,c): accumulate V Native Vector dot products
 //
 // Matrix Dimensions:
-//  - Matrix A (left): B rows × (128×V) columns → uses B×V Native Vectors
-//  - Matrix B (right): (128×V) rows × C columns → uses C×V Native Vectors
-//  - Output: B × C results (one per (b,c) pair)
+//  - Matrix A (left): B rows x (128xV) columns -> uses BxV Native Vectors
+//  - Matrix B (right): (128xV) rows x C columns -> uses CxV Native Vectors
+//  - Output: B x C results (one per (b,c) pair)
 //
 // State Machine:
-//  IDLE         → Wait for TILE command
-//  FILL_BUFFER  → Load exponent + 4 mantissa lines for both NV_left and NV_right (11 cycles)
+//  IDLE         -> Wait for TILE command
+//  FILL_BUFFER  -> Load exponent + 4 mantissa lines for both NV_left and NV_right (11 cycles)
 //                 Each BRAM read takes 2 cycles (address reg + data reg), 5 reads total, pipelined
-//  COMPUTE_NV   → Compute NV dot product (3 cycles: 2-cycle wait + 1 transition)
-//  ACCUM        → Accumulate result into V-loop accumulator (1 cycle)
-//  RETURN       → Output final result after V iterations complete (1 cycle)
+//  COMPUTE_NV   -> Compute NV dot product (3 cycles: 2-cycle wait + 1 transition)
+//  ACCUM        -> Accumulate result into V-loop accumulator (1 cycle)
+//  RETURN       -> Output final result after V iterations complete (1 cycle)
 //
 // Latency per output: 11 (fill) + 3 (compute) + 1 (accum) = 15 cycles per V
-//                     Total: 15×V + 1 (return) cycles per B×C result
+//                     Total: 15xV + 1 (return) cycles per BxC result
 //
 // Author: Refactoring from compute_engine.sv
 // Date: Fri Oct 10 2025
@@ -97,11 +97,11 @@ module gfp8_bcv_controller (
     
     // NV_left buffer
     logic [31:0]  nv_left_exp;         // 4 bytes (one per group)
-    logic [255:0] nv_left_man [0:3];   // 4 lines × 256 bits
+    logic [255:0] nv_left_man [0:3];   // 4 lines x 256 bits
     
     // NV_right buffer
     logic [31:0]  nv_right_exp;        // 4 bytes (one per group)
-    logic [255:0] nv_right_man [0:3];  // 4 lines × 256 bits
+    logic [255:0] nv_right_man [0:3];  // 4 lines x 256 bits
     
     // Fill cycle counter (0-10: grab exponent + 4 mantissa lines from both mem_left and mem_right)
     // Each read takes 2 cycles (pipelined): issue, wait, capture
@@ -162,8 +162,8 @@ module gfp8_bcv_controller (
             ST_COMPUTE_NV: begin
                 // Wait for gfp8_nv_dot 6-cycle pipeline (3-stage input + 2 compute + 1 output)
                 // Cycle 0: i_input_valid high, capture to man_left_captured
-                // Cycle 1: propagate man_left_captured → man_left_prop
-                // Cycle 2: propagate man_left_prop → man_left_stable
+                // Cycle 1: propagate man_left_captured -> man_left_prop
+                // Cycle 2: propagate man_left_prop -> man_left_stable
                 // Cycle 3: GROUP_DOT can now read stable data (combinational compute)
                 // Cycle 4: GROUP_DOT output registered
                 // Cycle 5: NV_DOT summation and output ready
@@ -183,7 +183,7 @@ module gfp8_bcv_controller (
             end
             
             ST_RETURN: begin
-                // Check if all B×C outputs are complete
+                // Check if all BxC outputs are complete
                 if (c_idx >= dim_c_reg - 1 && b_idx >= dim_b_reg - 1) begin
                     state_next = ST_DONE;
                 end else begin
@@ -403,13 +403,13 @@ module gfp8_bcv_controller (
                     end
                     `endif
                     // NEW: Addresses held for 3 cycles, captures on last cycle of new address
-                    // Exp addresses: cycles 0-2, 3-5, 6-8, 9-11 → captures at 3, 6, 9, 12
-                    // Man addresses: cycles 12-14, 15-17, 18-20, 21-23 → captures at 15, 18, 21, 24
+                    // Exp addresses: cycles 0-2, 3-5, 6-8, 9-11 -> captures at 3, 6, 9, 12
+                    // Man addresses: cycles 12-14, 15-17, 18-20, 21-23 -> captures at 15, 18, 21, 24
                     if (fill_cycle == 4'd0 || fill_cycle == 4'd1 || fill_cycle == 4'd2) begin
                         // Cycles 0-2: Wait for exp[0] (address held)
                         `ifdef SIMULATION
                         if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_INC] @%0t fill_cycle %0d → %0d", $time, fill_cycle, fill_cycle + 1);
+                            $display("[BCV_INC] @%0t fill_cycle %0d -> %0d", $time, fill_cycle, fill_cycle + 1);
                         end
                         `endif
                         fill_cycle <= fill_cycle + 1;
@@ -552,7 +552,7 @@ module gfp8_bcv_controller (
                                      $time, b_idx, c_idx, v_idx, nv_dot_mantissa, nv_dot_mantissa, nv_dot_exponent);
                         end
                         `endif
-                        compute_wait <= compute_wait + 1;  // Count: 0→1→2→3→4→5
+                        compute_wait <= compute_wait + 1;  // Count: 0->1->2->3->4->5
                     end
                 end
                 default: begin
@@ -624,7 +624,7 @@ module gfp8_bcv_controller (
                         accum_mantissa <= sum_mantissa;
                         accum_exponent <= max_exp;
                         `ifdef SIMULATION
-                        $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d ADD: accum_m=%0d(exp=%0d), dot_m=%0d(exp=%0d) → aligned_a=%0d, aligned_d=%0d → sum=%0d(exp=%0d)",
+                        $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d ADD: accum_m=%0d(exp=%0d), dot_m=%0d(exp=%0d) -> aligned_a=%0d, aligned_d=%0d -> sum=%0d(exp=%0d)",
                                  $time, b_idx, c_idx, v_idx, accum_mantissa, accum_exponent, nv_dot_mantissa, nv_dot_exponent,
                                  aligned_accum, aligned_dot, sum_mantissa, max_exp);
                         `endif
@@ -632,7 +632,7 @@ module gfp8_bcv_controller (
                 end
                 
                 ST_RETURN: begin
-                    // Reset accumulator for next B×C output (after outputting result)
+                    // Reset accumulator for next BxC output (after outputting result)
                     accum_mantissa <= 32'sd0;
                     accum_exponent <= 8'sd0;
                 end
@@ -705,7 +705,7 @@ module gfp8_bcv_controller (
                             $display("[BCV_LOOP]   -> Next: b=%0d, c=%0d", b_idx, c_idx + 1);
                         end
                     end else begin
-                        $display("[BCV_LOOP]   -> DONE (all B×C outputs complete)");
+                        $display("[BCV_LOOP]   -> DONE (all BxC outputs complete)");
                     end
                 end
             endcase

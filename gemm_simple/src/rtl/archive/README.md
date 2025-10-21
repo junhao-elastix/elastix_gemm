@@ -6,7 +6,7 @@ Unused or obsolete RTL modules moved here to keep the main src/rtl/ directory cl
 
 ### csr_cmd_bridge.sv
 - **Date Archived**: Mon Oct 6 23:20:00 PDT 2025
-- **Reason**: Replaced with direct CSR→FIFO connection pattern from engine_sim
+- **Reason**: Replaced with direct CSR->FIFO connection pattern from engine_sim
 - **Status**: Permanently stuck busy bug - architectural issue with CSR bridge FSM
 - **Replacement**: Direct edge-triggered push logic in engine_wrapper.sv (lines 146-266)
 - **Reference**: Proven pattern from engine_sim/src/tb/tb_vector_top_ms2.sv

@@ -11,7 +11,7 @@
 // Command Formats:
 //  FETCH (0xF0): 3 words - fetch from GDDR6 to BRAM
 //  DISP  (0xF1): 2 words - dispatch configuration
-//  TILE  (0xF2): 4 words - matrix multiply (B×C×V)
+//  TILE  (0xF2): 4 words - matrix multiply (BxCxV)
 //  WAIT_DISP (0xF3): 1 word - block until dispatch done
 //  WAIT_TILE (0xF4): 1 word - block until matmul done
 //

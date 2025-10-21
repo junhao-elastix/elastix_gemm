@@ -3,7 +3,7 @@
 //
 // Purpose: Synchronous FIFO for buffering incoming uCode commands
 // Features:
-//  - 64 entries × 32-bit width (from gemm_pkg: cmd_buf_els_gp, cmd_buf_width_gp)
+//  - 64 entries x 32-bit width (from gemm_pkg: cmd_buf_els_gp, cmd_buf_width_gp)
 //  - Simple registered read (1-cycle latency)
 //  - Full/empty status flags
 //  - Count output for monitoring available entries

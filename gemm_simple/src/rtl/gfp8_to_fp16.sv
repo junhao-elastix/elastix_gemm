@@ -146,13 +146,13 @@ module gfp8_to_fp16 (
                 // Underflow to zero
                 fp16_next = 16'h0000;
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d <= 0 → 0x0000", $time, fp16_exp_signed);
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d <= 0 -> 0x0000", $time, fp16_exp_signed);
                 `endif
             end else if (fp16_exp_signed > 30) begin
                 // Overflow to infinity
                 fp16_next = {sign, 5'b11111, 10'b0000000000};
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 → 0x%04x (INF)", 
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 -> 0x%04x (INF)", 
                          $time, fp16_exp_signed, {sign, 5'b11111, 10'b0000000000});
                 `endif
             end else begin
@@ -177,13 +177,13 @@ module gfp8_to_fp16 (
                         fp16_exp = fp16_exp + 5'd1;
                         fp16_mant = 10'b0000000000;
                         `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND OVERFLOW: mant=%0d → exp++, mant=0", 
+                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND OVERFLOW: mant=%0d -> exp++, mant=0", 
                                  $time, mant_truncated);
                         `endif
                     end else begin
                         fp16_mant = mant_rounded[9:0];
                         `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND UP: mant=0x%03x → 0x%03x (rb=%b, sb=%b)", 
+                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND UP: mant=0x%03x -> 0x%03x (rb=%b, sb=%b)", 
                                  $time, mant_truncated, mant_rounded, round_bit, sticky_bit);
                         `endif
                     end
@@ -198,7 +198,7 @@ module gfp8_to_fp16 (
                 
                 fp16_next = {sign, fp16_exp, fp16_mant};
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x → fp16=0x%04x", 
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x -> fp16=0x%04x", 
                          $time, fp16_exp, fp16_mant, {sign, fp16_exp, fp16_mant});
                 `endif
             end

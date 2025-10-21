@@ -46,7 +46,7 @@ package gemm_pkg;
     localparam tile_right_bias_gp = 15;
     localparam tile_out_bias_gp = 15;
 
-    localparam tile_mem_els_gp = 2048;  // Increased from 512 to support 128×128 matrices (528 lines each)
+    localparam tile_mem_els_gp = 2048;  // Increased from 512 to support 128x128 matrices (528 lines each)
     localparam tile_mem_addr_width_gp = $clog2(tile_mem_els_gp);
 
     localparam tile_out_fifo_els_gp = 256;  // Result FIFO depth (increased for large tests, was 64)

@@ -6,7 +6,7 @@
 //
 // Input Format:
 //  - Two 5-bit exponents (bias=15, shared across 32 elements)
-//  - Two 256-bit mantissa vectors (32 × 8-bit signed integers)
+//  - Two 256-bit mantissa vectors (32 x 8-bit signed integers)
 //
 // Output Format:
 //  - Result mantissa: 32-bit signed integer (accumulated sum of products)
@@ -20,7 +20,7 @@
 //
 // GFP8 Arithmetic:
 //  1. For each element pair (i=0 to 31):
-//     product[i] = man_left[i] × man_right[i]  (8×8 = 16-bit signed)
+//     product[i] = man_left[i] x man_right[i]  (8x8 = 16-bit signed)
 //  2. Accumulate: acc = Σ(product[i])          (32-bit signed)
 //  3. Exponent: exp_result = exp_left + exp_right - 30
 //  4. Return: {mantissa: acc, exponent: exp_result}
@@ -40,11 +40,11 @@ module gfp8_group_dot #(
     
     // Group A (left vector)
     input  logic [4:0]   i_exp_left,      // 5-bit exponent (bias=15)
-    input  logic [255:0] i_man_left,      // 32 × 8-bit signed mantissas
+    input  logic [255:0] i_man_left,      // 32 x 8-bit signed mantissas
     
     // Group B (right vector)  
     input  logic [4:0]   i_exp_right,     // 5-bit exponent (bias=15)
-    input  logic [255:0] i_man_right,     // 32 × 8-bit signed mantissas
+    input  logic [255:0] i_man_right,     // 32 x 8-bit signed mantissas
     
     // Result (GFP format) - registered outputs
     output logic signed [31:0] o_result_mantissa,  // Accumulated sum of products
@@ -67,10 +67,10 @@ module gfp8_group_dot #(
     logic signed [7:0] right_element [0:31];
     
     // Intermediate products (combinational)
-    logic signed [15:0] product [0:31];  // 8×8 = 16-bit signed
+    logic signed [15:0] product [0:31];  // 8x8 = 16-bit signed
     
     // Accumulator (sum of 32 products) - combinational
-    // Worst case: 32 × (127 × 127) = 516,096 → needs 20 bits
+    // Worst case: 32 x (127 x 127) = 516,096 -> needs 20 bits
     // Use 32 bits for safety and sign extension
     logic signed [31:0] accumulator;
     
@@ -100,7 +100,7 @@ module gfp8_group_dot #(
         // Initialize accumulator
         accumulator = 32'sd0;
         
-        // Handle special case: zero exponents → zero result
+        // Handle special case: zero exponents -> zero result
         if (i_exp_left == 5'h00 || i_exp_right == 5'h00) begin
             accumulator = 32'sd0;
             exp_sum = 8'sd0;

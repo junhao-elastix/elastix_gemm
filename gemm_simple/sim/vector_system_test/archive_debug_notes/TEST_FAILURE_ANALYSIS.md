@@ -17,7 +17,7 @@
 | B=4, C=4, V=32    | **FAIL** | ❌ Overflow to infinity |
 | B=128, C=1, V=1   | **FAIL** | ❌ Timeout (insufficient time) |
 
-**Pattern:** Tests with **large V values** or **large B×C products** fail with overflow to infinity.
+**Pattern:** Tests with **large V values** or **large BxC products** fail with overflow to infinity.
 
 ---
 
@@ -64,8 +64,8 @@ end
 **The Issue:** The GFP8 to FP16 conversion formula assumes:
 
 ```
-GFP8 format: value = mantissa × 2^(exponent)
-FP16 format: value = 1.fraction × 2^(exp_unbiased) where exp_biased = exp_unbiased + 15
+GFP8 format: value = mantissa x 2^(exponent)
+FP16 format: value = 1.fraction x 2^(exp_unbiased) where exp_biased = exp_unbiased + 15
 ```
 
 Current formula (line 123):
@@ -116,8 +116,8 @@ With V=32 or V=128, mantissa grows larger, requiring higher exponents that excee
 ```bash
 $ ls -lh /home/dev/Dev/elastix_gemm/hex/golden_B4_C32_V4.hex
 -rw-rw-r-- 1 dev dev 640 Oct 11 22:20 golden_B4_C32_V4.hex
-# 640 bytes = 128 results × 5 bytes per line (4 hex chars + newline)
-# Confirms golden contains 128 FP16 values as expected (B=4 × C=32)
+# 640 bytes = 128 results x 5 bytes per line (4 hex chars + newline)
+# Confirms golden contains 128 FP16 values as expected (B=4 x C=32)
 ```
 
 **Hypothesis:** Golden references may have been generated with:
@@ -207,7 +207,7 @@ fp16_exp_signed = exp_signed - leading_zeros + FP16_BIAS;
 
 ### Fix 4: Increase Timeout for Large Tests
 
-**Action:** Increase watchdog timeout for tests with large B×C products.
+**Action:** Increase watchdog timeout for tests with large BxC products.
 
 **Current:** `watchdog = 100000` (1ms @ 100MHz)  
 **Proposed:** Scale timeout based on expected result count:
@@ -281,7 +281,7 @@ watchdog = expected_results * 1000;  // ~1000 cycles per result
 ## Contact / References
 
 - **Project:** MS2.0 GEMM Engine (elastix_gemm/gemm)
-- **Architecture:** B×C×V nested loops with GFP8 arithmetic
+- **Architecture:** BxCxV nested loops with GFP8 arithmetic
 - **Status:** 3/8 tests passing, overflow issue identified
 - **Documentation:** See `CLAUDE.md` for development guidelines
 

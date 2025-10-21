@@ -2,11 +2,11 @@
 // GFP8 Native Vector Dot Product Module (Registered)
 //
 // Purpose: Compute dot product of 128-pair GFP8 vectors (one Native Vector)
-// Architecture: Instantiates 4× gfp8_group_dot modules and sums results
+// Architecture: Instantiates 4x gfp8_group_dot modules and sums results
 //
 // Input Format:
 //  - 32-bit packed exponents per side (4 bytes, one per group, byte-aligned)
-//  - Four 256-bit mantissa vectors per side (4 groups × 32 elements = 128 elements)
+//  - Four 256-bit mantissa vectors per side (4 groups x 32 elements = 128 elements)
 //
 // Exponent Packing (byte-aligned):
 //  [31:24] = Group 3 exponent (5-bit value in lower bits, upper 3 bits ignored)
@@ -45,11 +45,11 @@ module gfp8_nv_dot (
     
     // Left Native Vector (128 elements = 4 groups)
     input  logic [31:0]  i_exp_left,          // 4 bytes: [31:24]=G3, [23:16]=G2, [15:8]=G1, [7:0]=G0
-    input  logic [255:0] i_man_left [0:3],    // 4 × 256-bit mantissas
+    input  logic [255:0] i_man_left [0:3],    // 4 x 256-bit mantissas
     
     // Right Native Vector (128 elements = 4 groups)
     input  logic [31:0]  i_exp_right,         // 4 bytes: [31:24]=G3, [23:16]=G2, [15:8]=G1, [7:0]=G0
-    input  logic [255:0] i_man_right [0:3],   // 4 × 256-bit mantissas
+    input  logic [255:0] i_man_right [0:3],   // 4 x 256-bit mantissas
     
     // Result (GFP format) - registered outputs
     output logic signed [31:0] o_result_mantissa,  // Sum of 4 group results
@@ -61,7 +61,7 @@ module gfp8_nv_dot (
     // ===================================================================
     // Problem 1: BCV controller reuses nv_exp/nv_man registers for next V iteration
     // Problem 2: Combinational logic in gfp8_group_dot reads on same cycle as register write
-    // Solution: Two-stage pipeline: capture → stable → compute
+    // Solution: Two-stage pipeline: capture -> stable -> compute
     
     // Stage 1: Capture incoming data
     logic [31:0]  exp_left_captured, exp_right_captured;
@@ -107,13 +107,13 @@ module gfp8_nv_dot (
                 `endif
             end
             
-            // Stage 2: Propagate captured → prop (1 cycle delay)
+            // Stage 2: Propagate captured -> prop (1 cycle delay)
             exp_left_prop <= exp_left_captured;
             exp_right_prop <= exp_right_captured;
             man_left_prop <= man_left_captured;
             man_right_prop <= man_right_captured;
             
-            // Stage 3: Propagate prop → stable (1 more cycle delay)
+            // Stage 3: Propagate prop -> stable (1 more cycle delay)
             exp_left_stable <= exp_left_prop;
             exp_right_stable <= exp_right_prop;
             man_left_stable <= man_left_prop;
@@ -168,7 +168,7 @@ module gfp8_nv_dot (
     logic signed [7:0]  group_exponent [0:3];
     
     // ===================================================================
-    // Instantiate 4× gfp8_group_dot (one per group)
+    // Instantiate 4x gfp8_group_dot (one per group)
     // ===================================================================
     
     // Original implementation (commented out)

@@ -50,7 +50,7 @@ import gemm_pkg::*;
         end
     end
 
-    // Rising edge detection: generates 1-cycle pulse on 0→1 transition
+    // Rising edge detection: generates 1-cycle pulse on 0->1 transition
     assign cmd_submit_pulse = i_cmd_submit & ~cmd_submit_prev;
 
     // ===================================================================

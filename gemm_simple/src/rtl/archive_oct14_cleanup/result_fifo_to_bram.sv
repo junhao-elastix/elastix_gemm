@@ -34,7 +34,7 @@ module result_fifo_to_bram
 
     // BRAM Write Interface (to axi_bram_responder)
     output logic [8:0]   o_bram_wr_addr,   // BRAM address (512 lines)
-    output logic [255:0] o_bram_wr_data,   // 256-bit BRAM data (16×FP16)
+    output logic [255:0] o_bram_wr_data,   // 256-bit BRAM data (16xFP16)
     output logic         o_bram_wr_en,     // BRAM write enable
     
     // First 4 Results to Registers (for testing without BRAM DMA)

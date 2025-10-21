@@ -3,15 +3,15 @@
 //
 // Purpose: DDR fetch and BRAM buffering for MS2.0 architecture
 // Features:
-//  - FETCH command: Read GFP8 block (528 lines × 256-bit) from DDR to BRAM
+//  - FETCH command: Read GFP8 block (528 lines x 256-bit) from DDR to BRAM
 //  - DISP command: Acknowledge vector dispatch configuration
 //  - Dual-port BRAM: Port A (write from DDR), Port B (read by CE)
 //  - AXI4 burst read interface for DDR access
-//  - Sequential buffer access: Fetch complete → done → CE reads
+//  - Sequential buffer access: Fetch complete -> done -> CE reads
 //
 // Memory Layout (GFP8 Block):
 //  Lines 0-15:   Exponents (512 total, 32 per line)
-//  Lines 16-527: Mantissas (128 rows × 4 groups/row = 512 lines)
+//  Lines 16-527: Mantissas (128 rows x 4 groups/row = 512 lines)
 //
 // Author: MS2.0 Migration
 // Date: Thu Oct 2 00:14:43 AM PDT 2025
@@ -219,7 +219,7 @@ import gemm_pkg::*;
             end
 
             ST_FETCH_READ_MAN: begin
-                // Read mantissa bursts (32 bursts × 16 beats = 512 lines) + parallel unpack
+                // Read mantissa bursts (32 bursts x 16 beats = 512 lines) + parallel unpack
                 if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
                     if (man_lines_fetched_reg >= 511) begin
                         $display("[DC_DEBUG] @%0t FETCH_READ_MAN complete (%0d lines), moving to FETCH_DONE", $time, man_lines_fetched_reg + 1);

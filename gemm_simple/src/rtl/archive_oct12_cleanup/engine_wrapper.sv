@@ -4,17 +4,17 @@
 // Purpose: Top-level wrapper for integrated MS2.0 GEMM engine
 // Contains:
 //  - CSR command bridge for register interface
-//  - Command FIFO (4096×32-bit)
+//  - Command FIFO (4096x32-bit)
 //  - Master control FSM for command parsing
 //  - Dispatcher control for GDDR6 fetch operations
-//  - Dispatcher BRAM with dual-read interface (2048×256-bit internal buffer)
+//  - Dispatcher BRAM with dual-read interface (2048x256-bit internal buffer)
 //  - Modular compute engine for GFP8 matrix multiplication  
 //  - Result BRAM for FP16 result storage (FIFO interface)
 //
 // Data Flow:
-//  CSR → cmd_bridge → cmd_fifo → master_control →
-//    → dispatcher_control → GDDR6 NAP → dispatcher_bram (dual-read) →
-//    → compute_engine_modular → result_bram (FP16) → Host
+//  CSR -> cmd_bridge -> cmd_fifo -> master_control ->
+//    -> dispatcher_control -> GDDR6 NAP -> dispatcher_bram (dual-read) ->
+//    -> compute_engine_modular -> result_bram (FP16) -> Host
 //
 // Author: Integration for MS2.0 GEMM Engine
 // Date: Fri Oct 10 17:55:12 PDT 2025 (Modular Architecture)
@@ -171,7 +171,7 @@ import gemm_pkg::*;
     // ------------------------------------------------------------------
     // DIRECT CSR to CMD_FIFO Connection (NO CSR BRIDGE - Oct 7 2025)
     // Pattern: Counter-based sequencer matching engine_sim testbench behavior
-    // Submit trigger → Push 4 words to FIFO over 4 cycles (no full checking)
+    // Submit trigger -> Push 4 words to FIFO over 4 cycles (no full checking)
     // ------------------------------------------------------------------
 
     // FIX Oct 8 2025: reg_control_block write_strobes are multi-cycle (typically 2 cycles)
@@ -188,7 +188,7 @@ import gemm_pkg::*;
         end
     end
 
-    // Rising edge detection: generates 1-cycle pulse on 0→1 transition
+    // Rising edge detection: generates 1-cycle pulse on 0->1 transition
     assign cmd_submit_pulse = i_cmd_submit & ~cmd_submit_prev;
 
     // FIFO BYPASS: Push sequencer no longer needed - load all 4 words at once

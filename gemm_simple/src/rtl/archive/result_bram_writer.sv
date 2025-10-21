@@ -6,7 +6,7 @@
 //  - FP24 to FP16 conversion: {sign[1], exp[5], mant[10]}
 //  - Pack 16 FP16 values into 256-bit BRAM lines
 //  - Auto-increment BRAM addresses
-//  - Handles 128×128 matrix output (1024 FP16 values = 64 BRAM lines)
+//  - Handles 128x128 matrix output (1024 FP16 values = 64 BRAM lines)
 //
 // FP Conversion:
 //  FP24 (1+8+15): sign | exp[7:0] | mant[14:0]
@@ -180,7 +180,7 @@ module result_bram_writer
     `ifdef SIMULATION
         always @(posedge i_clk) begin
             if (i_result_valid && o_result_ready) begin
-                $display("[RESULT_WRITER] @%0t FP24=0x%06x → FP16=0x%04x (buffer[%0d])",
+                $display("[RESULT_WRITER] @%0t FP24=0x%06x -> FP16=0x%04x (buffer[%0d])",
                          $time, i_fp24_result, fp16_converted, buffer_count);
             end
             if (o_bram_wr_en) begin

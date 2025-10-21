@@ -476,7 +476,7 @@ module elastix_gemm_top
                 if (i == 1) begin : gemm_engine_channel
                     // MS2.0 GEMM Engine on Channel 1
                     // Architecture (CORRECTED per GDDR6 reference design):
-                    //   Engine (initiator) → NAP (responder) → NoC → GDDR6_1
+                    //   Engine (initiator) -> NAP (responder) -> NoC -> GDDR6_1
                     // Engine performs FETCH from GDDR6 and matrix multiplication
 
                     // NAP responder wrapper for MS2.0 Engine (FIXED Oct 8 2025!)

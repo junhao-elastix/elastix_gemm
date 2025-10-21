@@ -42,7 +42,7 @@ gfp8_to_fp16.sv
 # Compute engine (MS2.0 modular design with dual BRAM interface)
 # compute_engine.sv - ARCHIVED (Oct 10, 2025 - replaced by compute_engine_modular.sv)
 compute_engine_modular.sv
-# csr_cmd_bridge.sv - ARCHIVED (Oct 6 23:20, replaced with direct CSR→FIFO in engine_wrapper.sv)
+# csr_cmd_bridge.sv - ARCHIVED (Oct 6 23:20, replaced with direct CSR->FIFO in engine_wrapper.sv)
 # result_bram_writer.sv - ARCHIVED (Oct 12, 2025 - functionality integrated into result_bram.sv)
 result_bram.sv
 csr_to_fifo_bridge.sv

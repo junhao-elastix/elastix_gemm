@@ -46,8 +46,8 @@ Files required:
 ### 3. Test Data
 
 Test matrices must be present in `/home/dev/Dev/elastix_gemm/hex/`:
-- `left.hex` - Matrix A (528 lines × 32 bytes)
-- `right.hex` - Matrix B (528 lines × 32 bytes)  
+- `left.hex` - Matrix A (528 lines x 32 bytes)
+- `right.hex` - Matrix B (528 lines x 32 bytes)  
 - `golden_B2_C2_V2.hex` - Expected results (4 FP16 values)
 
 ## Setup Script

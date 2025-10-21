@@ -65,7 +65,7 @@
 5. **cmd_fifo.sv**
    - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/cmd_fifo.sv`
    - Purpose: Command FIFO buffer
-   - Specs: 64 entries × 32-bit
+   - Specs: 64 entries x 32-bit
 
 6. **master_control.sv**
    - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/master_control.sv`
@@ -84,7 +84,7 @@
 8. **dispatcher_bram_dual_read.sv**
    - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_bram_dual_read.sv`
    - Purpose: Dual-port BRAM with simultaneous left/right matrix reads
-   - Specs: 2048 entries × 256-bit
+   - Specs: 2048 entries x 256-bit
    - Features:
      - Port A: Write from dispatcher
      - Port B: Dual read for compute engine (left + right simultaneously)
@@ -100,7 +100,7 @@
 
 10. **gfp8_bcv_controller.sv**
     - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_bcv_controller.sv`
-    - Purpose: B×C×V nested loop controller
+    - Purpose: BxCxV nested loop controller
     - Features:
       - Orchestrates 3-level nested loops (Batch, Column, Vector)
       - V-loop accumulation (GFP mantissa/exponent)
@@ -110,7 +110,7 @@
     - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_nv_dot.sv`
     - Purpose: Native Vector (128-element) dot product
     - Features:
-      - Instantiates 4× gfp8_group_dot modules
+      - Instantiates 4x gfp8_group_dot modules
       - Exponent alignment across groups
       - Result accumulation
 
@@ -135,7 +135,7 @@
 14. **result_bram.sv**
     - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/result_bram.sv`
     - Purpose: Result FIFO buffer
-    - Specs: 256 entries × 16-bit FP16
+    - Specs: 256 entries x 16-bit FP16
     - Features:
       - Almost-full threshold @ 192 entries
       - FIFO count output (15-bit)
@@ -197,8 +197,8 @@ vlog -sv +incdir+<paths> +define+SIMULATION +define+SIM_VERBOSE \
 ## Data Files (Not Source Code)
 
 ### Input Matrices
-- **left.hex**: 528 lines × 256-bit GFP8 left matrix
-- **right.hex**: 528 lines × 256-bit GFP8 right matrix
+- **left.hex**: 528 lines x 256-bit GFP8 left matrix
+- **right.hex**: 528 lines x 256-bit GFP8 right matrix
 - **Location**: `/home/dev/Dev/compute_engine_w8a8/hex/`
 
 ### Golden Reference
@@ -241,7 +241,7 @@ tb_engine_top.sv
         ├─> compute_engine_modular.sv
         │   └─> gfp8_bcv_controller.sv
         │       └─> gfp8_nv_dot.sv
-        │           └─> gfp8_group_dot.sv (×4 instances)
+        │           └─> gfp8_group_dot.sv (x4 instances)
         │       └─> gfp8_to_fp16.sv
         └─> result_bram.sv
 ```

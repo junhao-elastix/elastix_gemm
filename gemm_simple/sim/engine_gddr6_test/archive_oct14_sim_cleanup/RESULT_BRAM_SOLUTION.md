@@ -45,7 +45,7 @@ The original `result_fifo_to_bram` adapter packed 16 FP16 results into each 256-
 
 ### Configuration
 - **Matrix sizes**: B=2, C=2, V=2
-- **Expected results**: 4 (B × C)
+- **Expected results**: 4 (B x C)
 - **Test status**: **PASS** ✅
 
 ### Actual Results
@@ -67,7 +67,7 @@ The original `result_fifo_to_bram` adapter packed 16 FP16 results into each 256-
 
 ### Method 1: Register Read (Fast, for ≤ 4 results)
 
-For small result sets (B × C ≤ 4), the host can read directly from registers:
+For small result sets (B x C ≤ 4), the host can read directly from registers:
 
 ```cpp
 // Read first 4 results from dedicated registers
@@ -202,16 +202,16 @@ Bits [15:0]   = FP16 result
 
 **Simple adapter** (current):
 - One result per BRAM line: 16 bits / 256 bits = **6.25% efficiency**
-- For 16384 results: 512 KB transfer (16384 × 32 bytes)
+- For 16384 results: 512 KB transfer (16384 x 32 bytes)
 
 **Packed adapter** (future optimization):
 - 16 results per BRAM line: 256 bits / 256 bits = **100% efficiency**
-- For 16384 results: 32 KB transfer (1024 × 32 bytes)
+- For 16384 results: 32 KB transfer (1024 x 32 bytes)
 
 ### Recommendation
 - Use simple adapter for **development and debugging** (easier, proven to work)
 - Optimize to packed adapter **later** if bandwidth becomes a bottleneck
-- For small matrices (B×C < 1000), bandwidth difference is negligible
+- For small matrices (BxC < 1000), bandwidth difference is negligible
 
 ---
 

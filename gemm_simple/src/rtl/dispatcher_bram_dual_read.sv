@@ -10,7 +10,7 @@
 // FETCH Operation Flow:
 //  1. Lines 0-15:   Write to exp_packed buffer (256-bit staging)
 //  2. Lines 16-527: Write to man buffer (256-bit mantissas, stored at [0-511])
-//  3. During step 2: Unpack exp_packed → exp_aligned (done by dispatcher_control)
+//  3. During step 2: Unpack exp_packed -> exp_aligned (done by dispatcher_control)
 //
 // Four Output Ports (to compute engine):
 //  1. left_exp (8-bit) - From exp_left_aligned

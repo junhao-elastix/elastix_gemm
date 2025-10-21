@@ -3,7 +3,7 @@
 //
 // Purpose: Dual-port BRAM for GFP8 block buffering using ACX_BRAM72K
 // Features:
-//  - 528 entries × 256-bit (GFP8 block: 16 exp lines + 512 mantissa lines)
+//  - 528 entries x 256-bit (GFP8 block: 16 exp lines + 512 mantissa lines)
 //  - Port A: Write from DDR (dispatcher control)
 //  - Port B: Read by compute engine
 //  - Asymmetric width: Both 256-bit for simplicity
@@ -17,7 +17,7 @@
 
 module dispatcher_bram #(
     parameter DATA_WIDTH = 256,     // 256-bit data width
-    parameter DEPTH = 1056,         // GFP8 dual block size (2×528 = 1056 lines for left+right matrices)
+    parameter DEPTH = 1056,         // GFP8 dual block size (2x528 = 1056 lines for left+right matrices)
     parameter ADDR_WIDTH = 11       // $clog2(1056) = 11 bits
 )
 (
@@ -150,7 +150,7 @@ module dispatcher_bram #(
         // ===================================================================
         // Note: ACX_BRAM72K supports up to 144-bit data width natively
         // For 256-bit, we need 2 BRAM72K per address set cascaded
-        // This requires 6 total BRAM72K (3 address sets × 2 for width)
+        // This requires 6 total BRAM72K (3 address sets x 2 for width)
         //
         // Alternative: Use proper inference for synthesis tools to map automatically
         // The synthesis tools should map this to ACX_BRAM72K based on attributes

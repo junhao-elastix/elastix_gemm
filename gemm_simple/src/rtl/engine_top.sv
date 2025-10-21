@@ -3,16 +3,16 @@
 //
 // Purpose: Complete GEMM engine with direct FIFO interface for hardware
 // Contains:
-//  - Command FIFO (4096×32-bit): Buffers incoming microcode commands
+//  - Command FIFO (4096x32-bit): Buffers incoming microcode commands
 //  - Master Control (MC): Unified command processor and router
 //  - Dispatcher Control (DC): GDDR6 fetch and BRAM buffering
 //  - Compute Engine (CE): Modular GFP8 matrix multiplication
-//  - Result FIFO (16384×16-bit): Buffers FP16 computation results
+//  - Result FIFO (16384x16-bit): Buffers FP16 computation results
 //
 // Data Flow:
-//  Host → cmd_fifo → master_control →
-//    → dispatcher_control → GDDR6 NAP → dispatcher_bram (dual-read) →
-//    → compute_engine_modular → result_fifo → Host
+//  Host -> cmd_fifo -> master_control ->
+//    -> dispatcher_control -> GDDR6 NAP -> dispatcher_bram (dual-read) ->
+//    -> compute_engine_modular -> result_fifo -> Host
 //
 // Key Features:
 //  - Direct FIFO interface (no CSR bridge)
@@ -88,13 +88,13 @@ import gemm_pkg::*;
     // Internal Connection Signals
     // ===================================================================
 
-    // Command FIFO → Master Control
+    // Command FIFO -> Master Control
     logic [31:0]  cmd_fifo_rdata;
     logic         cmd_fifo_empty;
     logic [12:0]  cmd_fifo_count;
     logic         cmd_fifo_ren;
 
-    // Master Control → Dispatcher Control
+    // Master Control -> Dispatcher Control
     logic                                mc_dc_fetch_en;
     logic [link_addr_width_gp-1:0]       mc_dc_fetch_addr;
     logic [link_len_width_gp-1:0]        mc_dc_fetch_len;
@@ -107,7 +107,7 @@ import gemm_pkg::*;
     logic                                mc_dc_man_4b_8b_n;
     logic                                dc_mc_disp_done;
 
-    // Master Control → Compute Engine
+    // Master Control -> Compute Engine
     logic                                mc_ce_tile_en;
     logic [tile_mem_addr_width_gp-1:0]   mc_ce_left_addr;
     logic [tile_mem_addr_width_gp-1:0]   mc_ce_right_addr;
@@ -122,7 +122,7 @@ import gemm_pkg::*;
     logic                                mc_ce_main_loop_over_left;
     logic                                ce_mc_tile_done;
 
-    // Dispatcher Control BRAM → Compute Engine (Dual Read Ports)
+    // Dispatcher Control BRAM -> Compute Engine (Dual Read Ports)
     // Left matrix mantissa port
     logic [10:0]   ce_dc_bram_rd_addr_left;
     logic [255:0]  dc_ce_bram_rd_data_left;
@@ -133,7 +133,7 @@ import gemm_pkg::*;
     logic [255:0]  dc_ce_bram_rd_data_right;
     logic          ce_dc_bram_rd_en_right;
     
-    // NEW: Dispatcher Control Exponent BRAM → Compute Engine
+    // NEW: Dispatcher Control Exponent BRAM -> Compute Engine
     // Exponent write ports (from dispatcher unpacking)
     logic [8:0]    dc_left_exp_wr_addr;
     logic [7:0]    dc_left_exp_wr_data;
@@ -150,7 +150,7 @@ import gemm_pkg::*;
     logic [8:0]    ce_dc_right_exp_rd_addr;
     logic [7:0]    dc_ce_right_exp_rd_data;
 
-    // Compute Engine → Result FIFO
+    // Compute Engine -> Result FIFO
     logic [15:0]   ce_result_data;     // FP16 results
     logic          ce_result_valid;
     logic          result_fifo_full;
@@ -260,7 +260,7 @@ import gemm_pkg::*;
     dispatcher_control #(
         .TGT_DATA_WIDTH     (TGT_DATA_WIDTH),
         .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
-        .BRAM_DEPTH         (2048),           // Dual 128×128 matrix buffer
+        .BRAM_DEPTH         (2048),           // Dual 128x128 matrix buffer
         .GDDR6_PAGE_ID      (GDDR6_PAGE_ID)
     ) u_dispatcher_control (
         .i_clk              (i_clk),

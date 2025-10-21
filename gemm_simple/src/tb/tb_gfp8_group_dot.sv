@@ -59,13 +59,13 @@ module tb_gfp8_group_dot;
     task display_result(input string test_name);
         real fp_value;
         
-        // Calculate floating-point value: mantissa × 2^exponent
+        // Calculate floating-point value: mantissa x 2^exponent
         fp_value = $itor(result_mantissa) * (2.0 ** $itor(result_exponent));
         
         $display("[TEST] %s", test_name);
         $display("  Inputs: exp_left=%0d, exp_right=%0d", exp_left, exp_right);
         $display("  Output: mantissa=%0d, exponent=%0d", result_mantissa, result_exponent);
-        $display("  FP Value: %e (mantissa × 2^%0d)", fp_value, result_exponent);
+        $display("  FP Value: %e (mantissa x 2^%0d)", fp_value, result_exponent);
         $display("");
     endtask
     
@@ -106,7 +106,7 @@ module tb_gfp8_group_dot;
         // Wait for computation + 1 cycle latency
         @(posedge clk);  // Computation happens
         @(posedge clk);  // Result registered
-        display_result("All 1s: 32 × (1 × 1) = 32");
+        display_result("All 1s: 32 x (1 x 1) = 32");
         
         // Expected: mantissa = 32, exponent = 15+15-30 = 0
         assert (result_mantissa == 32) else $error("Mantissa mismatch: expected 32, got %0d", result_mantissa);
@@ -128,7 +128,7 @@ module tb_gfp8_group_dot;
         // Wait for computation + 1 cycle latency
         @(posedge clk);
         @(posedge clk);
-        display_result("Zero exponent → zero result");
+        display_result("Zero exponent -> zero result");
         
         // Expected: mantissa = 0, exponent = 0
         assert (result_mantissa == 0) else $error("Mantissa should be 0, got %0d", result_mantissa);
@@ -154,7 +154,7 @@ module tb_gfp8_group_dot;
         // Wait for computation + 1 cycle latency
         @(posedge clk);
         @(posedge clk);
-        display_result("Mixed signs: 16×(2×3) + 16×(-2×3) = 96 - 96 = 0");
+        display_result("Mixed signs: 16x(2x3) + 16x(-2x3) = 96 - 96 = 0");
         
         // Expected: mantissa = 0 (cancellation), exponent varies
         assert (result_mantissa == 0) else $error("Mantissa should be 0, got %0d", result_mantissa);

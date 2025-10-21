@@ -16,7 +16,7 @@
 //
 // Performance:
 //  - Per V iteration: 15 cycles (11 fill + 3 compute + 1 accum)
-//  - Total per output: 15×V + 1 cycles
+//  - Total per output: 15xV + 1 cycles
 //  - ~42% faster than single BRAM due to parallel reads
 //
 // Author: Modular refactoring

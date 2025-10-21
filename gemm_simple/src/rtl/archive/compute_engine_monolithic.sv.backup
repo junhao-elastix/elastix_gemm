@@ -4,22 +4,22 @@
 // Purpose: Parameterizable GEMM compute engine with V-loop iteration
 // Features:
 //  - **V-loop support**: Accumulates across multiple Native Vectors (V>1)
-//  - **Parallel group-based dot product** (4 groups × 32 elements = 128 per NV)
+//  - **Parallel group-based dot product** (4 groups x 32 elements = 128 per NV)
 //  - **Integer-only GFP arithmetic** (based on matrix_engine_w4gfp8/group_fp_full_int.sv)
 //  - **Runtime configurable dimensions** via TILE commands (B, C, V parameters)
 //  - Integer-only accumulation per group with exponent alignment
 //  - FP16 output with overflow clamping
 //
 // Matrix Dimensions (configurable via TILE command):
-//  - Matrix A: B rows × (128×V) columns, uses B×V Native Vectors
-//  - Matrix B: (128×V) rows × C columns, uses C×V Native Vectors
-//  - Output: B × C results
-//  - Constraints: B×V ≤ 128, C×V ≤ 128
+//  - Matrix A: B rows x (128xV) columns, uses BxV Native Vectors
+//  - Matrix B: (128xV) rows x C columns, uses CxV Native Vectors
+//  - Output: B x C results
+//  - Constraints: BxV ≤ 128, CxV ≤ 128
 //
 // Performance:
 //  - Single NV dot product: ~30 cycles (4 parallel group MACs + control)
 //  - V-loop overhead: ~25 cycles per iteration (load + accumulate)
-//  - Total for V iterations: ~30 + (V-1)×25 cycles per output element
+//  - Total for V iterations: ~30 + (V-1)x25 cycles per output element
 //
 // Data Layout (528-line Native Vector format):
 //  - Lines 0-15: Exponents (512 total, 32 per line, 5-bit each, bias=15)
@@ -28,12 +28,12 @@
 //  - Supports 128 NVs per memory block (left @ 0-527, right @ 528-1055)
 //
 // GFP Arithmetic (integer-only):
-//  - Per-group integer accumulation: acc[g] = Σ(mant_a[i] × mant_b[i])
+//  - Per-group integer accumulation: acc[g] = Σ(mant_a[i] x mant_b[i])
 //  - Per-group exponent: exp_result[g] = exp_a[g] + exp_b[g] (no bias subtraction)
 //  - Per-group result: gfp_result[g] = {mantissa: acc[g], exponent: exp_result[g]}
 //  - Dot product: align exponents and sum mantissas across groups
 //  - V-loop accumulation: align exponents and sum mantissas across V iterations
-//  - Final conversion: gfp_result → FP16 for output
+//  - Final conversion: gfp_result -> FP16 for output
 //
 // Last Updated: Thu Oct 9 2025 - Integer-only GFP implementation complete
 // ------------------------------------------------------------------
@@ -290,7 +290,7 @@ import gemm_pkg::*;
                          dim_c_reg-1, dim_b_reg-1,
                          (col_idx >= dim_c_reg-1) && (row_idx >= dim_b_reg-1));
                 if (col_idx >= dim_c_reg-1 && row_idx >= dim_b_reg-1) begin
-                    // Completed all B×C dot products
+                    // Completed all BxC dot products
                     $display("[CE_DEBUG] @%0t   Terminating - all %0d x %0d results complete", $time, dim_b_reg, dim_c_reg);
                     state_next = ST_DONE;
                 end else begin
@@ -438,7 +438,7 @@ import gemm_pkg::*;
                         $display("[CE_DEBUG] @%0t BYPASS BRAM READ: addr=%0d (first line of left matrix)", $time, i_left_addr);
                     end
 
-                    // Increment load_count for BRAM read timing (0→1→2→3)
+                    // Increment load_count for BRAM read timing (0->1->2->3)
                     if (load_count < 3'd3) begin
                         load_count <= load_count + 1;
                     end
@@ -599,7 +599,7 @@ import gemm_pkg::*;
     // Bitwidth Analysis:
     // - Input mantissas: 8-bit signed (GFP_INT_SIZE = 8)
     // - Input exponents: 5-bit (bias = 15)
-    // - Element-wise product: 8×8 = 16-bit signed
+    // - Element-wise product: 8x8 = 16-bit signed
     // - Group accumulator: 16-bit + log2(32) = 21-bit signed
     // - Exponent sum: 5+5-30 = signed 6-bit (range -30 to +32)
     // - Group result mantissa: 32-bit signed (stored)
@@ -1090,7 +1090,7 @@ import gemm_pkg::*;
                 logic [7:0] byte_idx;
 
                 // Extract 4-bit GFP value from captured 256-bit BRAM line
-                // Each line contains 64×4-bit values
+                // Each line contains 64x4-bit values
                 byte_idx = bypass_output_count[7:0];
                 if (byte_idx < 64) begin
                     gfp4_val = bypass_bram_data[byte_idx*4 +: 4];
@@ -1098,7 +1098,7 @@ import gemm_pkg::*;
                     gfp4_val = 4'h0;  // Beyond first 64 values
                 end
 
-                // Simple conversion: 4-bit GFP value → FP16 (for validation)
+                // Simple conversion: 4-bit GFP value -> FP16 (for validation)
                 // Map 4-bit value (0-15) to small FP16 values
                 // 0x3800 base + nibble value = simple linear mapping
                 bypass_fp16 = 16'h3800 + {12'h0, gfp4_val};
