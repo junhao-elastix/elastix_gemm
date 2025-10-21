@@ -1,0 +1,31 @@
+# Golden Reference for test4_bcv_8_1_1
+# Total tiles: 2
+
+--- Tile 0 ---
+B=8, C=1, V=1, left_addr=0, right_addr=0
+Expected results: 8
+
+Results (FP32 golden, FP16 for comparison):
+   0: -27246592.000000 (FP32: 0xcbcfe000, FP16: 0xfc00)
+   1: -76140544.000000 (FP32: 0xcc913a00, FP16: 0xfc00)
+   2: -107814912.000000 (FP32: 0xcccda400, FP16: 0xfc00)
+   3: 89538560.000000 (FP32: 0x4caac800, FP16: 0x7c00)
+   4: 113979392.000000 (FP32: 0x4cd96600, FP16: 0x7c00)
+   5: -232562688.000000 (FP32: 0xcd5dca00, FP16: 0xfc00)
+   6: 79822848.000000 (FP32: 0x4c984000, FP16: 0x7c00)
+   7: 69419008.000000 (FP32: 0x4c846800, FP16: 0x7c00)
+
+--- Tile 1 ---
+B=8, C=1, V=1, left_addr=32, right_addr=32
+Expected results: 8
+
+Results (FP32 golden, FP16 for comparison):
+   0: 109412352.000000 (FP32: 0x4cd0b000, FP16: 0x7c00)
+   1: -2347008.000000 (FP32: 0xca0f4000, FP16: 0xfc00)
+   2: 41230336.000000 (FP32: 0x4c1d4800, FP16: 0x7c00)
+   3: -55611392.000000 (FP32: 0xcc542400, FP16: 0xfc00)
+   4:  5509120.000000 (FP32: 0x4aa82000, FP16: 0x7c00)
+   5: 61218816.000000 (FP32: 0x4c698800, FP16: 0x7c00)
+   6: -2756608.000000 (FP32: 0xca284000, FP16: 0xfc00)
+   7: -103583744.000000 (FP32: 0xccc59200, FP16: 0xfc00)
+

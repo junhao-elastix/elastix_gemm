@@ -1,0 +1,22 @@
+Total Length (bytes),Command Header,,,,,Arguments,,
+,,opcode (8b),ID (8b),len (8b),Args bytes,name,bits,Notes
+12,fetch_memory_block,0xF0,,(=12),9,Start Address,32,External memory relative address - divided by 8
+,,,,,,Length,16,Number of 128B chunks of data to read (exp+mantissas)
+,,,,,,Reserved,24,Padding
+8,vector dispatch,0xF1,,(=8),5,Mantissa NV cnt,8,Number of native vectors to process
+,,,,,,Tile destination address,16,Destiantion tile buffer start address
+,,,,,,Flags,8,"[0] Mantissa 4 bits (otherwise 8)
+[7:1] Reserved"
+,,,,,,Reserved,8,Padding
+12,matmul,0xF2,,(=12),9,Left start address,16,Left vector start pointer
+,,,,,,Right start address,16,Right vector start pointer
+,,,,,,Left UGD vectors,8,Number of UGD vectors to process on left
+,,,,,,Right UGD vector,8,Number of UGD vectors to process on the right
+,,,,,,UGD vector size,8,Number of native vectors per UGD vector
+,,,,,,Flags,8,"[0] left mantissa 4 bits (otherwise 8)
+[1] right mantissa 4 bits (otherwise 8)
+[2] main loop over left (otherwise right)
+[7:3] reserved"
+,,,,,,Reserved,8,Padding
+4,wait_dispatch ,0xF3,,(=4),1,ID,8,
+4,wait_matmul,0xF4,,(=4),1,ID,8,

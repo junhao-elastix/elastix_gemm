@@ -27,6 +27,11 @@ import gemm_pkg::*;
     input  logic                        i_cmd_fifo_empty,
     input  logic [12:0]                 i_cmd_fifo_count,
     output logic                        o_cmd_fifo_ren,
+    
+    // Peripheral State Inputs (for command synchronization)
+    input  logic [3:0]                  i_dc_state,        // Dispatcher Control state
+    input  logic [3:0]                  i_ce_state,        // Compute Engine state
+    input  logic                        i_result_fifo_afull, // Result FIFO almost-full flag
 
     // Dispatcher Control Interface (FETCH/DISP commands)
     output logic                         o_dc_fetch_en,
@@ -140,7 +145,14 @@ import gemm_pkg::*;
 
         case (state_reg)
             ST_IDLE: begin
-                if (!i_cmd_fifo_empty) begin
+                // Only start next command if:
+                // 1. Command FIFO has data
+                // 2. All peripherals are idle
+                // 3. Result FIFO is not almost-full (backpressure)
+                if (!i_cmd_fifo_empty && 
+                    (i_dc_state == 4'd0) && 
+                    (i_ce_state == 4'd0) &&
+                    !i_result_fifo_afull) begin
                     state_next = ST_READ_HDR;
                 end
             end
@@ -212,8 +224,19 @@ import gemm_pkg::*;
                 // Block until dispatcher operation with ID >= wait_id completes
                 if (last_disp_id_reg >= wait_id_reg) begin
                     state_next = ST_CMD_COMPLETE;
+                    `ifdef SIM_VERBOSE
+                    $display("[MC_ID] @%0t WAIT_DISP satisfied: last_disp_id=%0d >= wait_id=%0d",
+                             $time, last_disp_id_reg, wait_id_reg);
+                    `endif
                 end else begin
                     state_next = ST_WAIT_DISP; // Keep blocking
+                    `ifdef SIM_VERBOSE
+                    // Only print every 10us to avoid spam
+                    if ($time % 10000 == 0) begin
+                        $display("[MC_ID] @%0t WAIT_DISP blocking: last_disp_id=%0d < wait_id=%0d",
+                                 $time, last_disp_id_reg, wait_id_reg);
+                    end
+                    `endif
                 end
             end
 
@@ -453,16 +476,27 @@ import gemm_pkg::*;
             if (state_reg == ST_CMD_COMPLETE) begin
                 if (cmd_op_reg == e_cmd_op_disp) begin
                     last_disp_id_reg <= cmd_id_reg;
+                    `ifdef SIM_VERBOSE
+                    $display("[MC_ID] @%0t DISPATCH completed: last_disp_id_reg <= %0d", $time, cmd_id_reg);
+                    `endif
                 end else if (cmd_op_reg == e_cmd_op_tile) begin
                     last_tile_id_reg <= cmd_id_reg;
+                    `ifdef SIM_VERBOSE
+                    $display("[MC_ID] @%0t MATMUL completed: last_tile_id_reg <= %0d", $time, cmd_id_reg);
+                    `endif
                 end
             end
 
             // Capture wait ID for WAIT commands
             if (state_reg == ST_DECODE &&
                 (cmd_op_reg == e_cmd_op_wait_disp || cmd_op_reg == e_cmd_op_wait_tile)) begin
-                // wait_id is in header bits [7:0] of reserved field (actually part of len field)
-                wait_id_reg <= cmd_id_reg; // Actually wait_id per gemm_pkg.sv
+                // wait_id is in header bits [15:8] (id field) per software spec
+                // Software constructs: {reserved[31:24], len[23:16], wait_id[15:8], opcode[7:0]}
+                wait_id_reg <= cmd_id_reg;
+                `ifdef SIM_VERBOSE
+                $display("[MC_ID] @%0t WAIT command decoded: wait_id_reg <= %0d (opcode=0x%02x)",
+                         $time, cmd_id_reg, cmd_op_reg);
+                `endif
             end
         end
     end
@@ -568,6 +602,17 @@ import gemm_pkg::*;
 
     `ifdef SIM_VERBOSE
         always @(posedge i_clk) begin
+            // Debug: Show why commands are blocked in IDLE
+            if (state_reg == ST_IDLE && !i_cmd_fifo_empty && state_next == ST_IDLE) begin
+                // Command available but blocked - show why
+                if (i_dc_state != 4'd0) 
+                    $display("[MC_SYNC] @%0t Command blocked: DC not idle (state=%0d)", $time, i_dc_state);
+                if (i_ce_state != 4'd0)
+                    $display("[MC_SYNC] @%0t Command blocked: CE not idle (state=%0d)", $time, i_ce_state);
+                if (i_result_fifo_afull)
+                    $display("[MC_SYNC] @%0t Command blocked: Result FIFO almost-full", $time);
+            end
+            
             if (state_reg == ST_READ_HDR) begin
                 $display("[MASTER_CONTROL] Header: op=0x%02x, id=%0d, len=%0d",
                          i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8], i_cmd_fifo_rdata[23:16]);

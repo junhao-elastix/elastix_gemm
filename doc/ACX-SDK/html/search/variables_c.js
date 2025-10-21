@@ -1,0 +1,24 @@
+var searchData=
+[
+  ['ram_5fctrl_5fbypass_931',['RAM_CTRL_BYPASS',['../unionACX__MSIX__ram__ctrl__reg.html#a6ad15575788cec8ea3584936310f1561',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5fdbg_5fpba_932',['RAM_CTRL_DBG_PBA',['../unionACX__MSIX__ram__ctrl__reg.html#a8e09b8bea6cb23be8677234f03b2b266',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5fdbg_5ftable_933',['RAM_CTRL_DBG_TABLE',['../unionACX__MSIX__ram__ctrl__reg.html#af42bdea9489e7d4bbf02ab93374af519',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5fpba_5fds_934',['RAM_CTRL_PBA_DS',['../unionACX__MSIX__ram__ctrl__reg.html#a9bd906a2a12845049011987d3c906af4',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5fpba_5fsd_935',['RAM_CTRL_PBA_SD',['../unionACX__MSIX__ram__ctrl__reg.html#a3ad79c3d91d340786bb8cd399472afed',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5ftable_5fds_936',['RAM_CTRL_TABLE_DS',['../unionACX__MSIX__ram__ctrl__reg.html#a601dda6a9722ebfe71851b3e125fb7df',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['ram_5fctrl_5ftable_5fsd_937',['RAM_CTRL_TABLE_SD',['../unionACX__MSIX__ram__ctrl__reg.html#add4f163a0e74fe208d83019b2d1c947f',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['reads_938',['reads',['../structACX__MMIO__counts.html#abb806e215c81098be4ee6b60396cbb55',1,'ACX_MMIO_counts']]],
+  ['region_5fen_939',['REGION_EN',['../union__U__iatu__region__ctrl__2__inbound.html#a1d1e4bf60504c120865a0f2022e26917',1,'_U_iatu_region_ctrl_2_inbound']]],
+  ['reserved_940',['RESERVED',['../unionACX__MSIX__address__match__low__reg.html#a482e3ed02b838ea31d3d5c201eeb0c0e',1,'ACX_MSIX_address_match_low_reg']]],
+  ['reserved_941',['reserved',['../structACX__DMA__data__descriptor.html#ab427b01cf1c137cb5dc99c15596d0b3e',1,'ACX_DMA_data_descriptor']]],
+  ['reserved0_942',['RESERVED0',['../unionACX__DEV__DBIx16__access__reg.html#a221fe768af6c5dbfb17c2a59271dc1f7',1,'ACX_DEV_DBIx16_access_reg::RESERVED0()'],['../unionACX__DMA__CH__CONTROL1__OFF__reg.html#a5bcee229624aef45424f8691b6493ae6',1,'ACX_DMA_CH_CONTROL1_OFF_reg::RESERVED0()'],['../unionACX__MSIX__cap__id__next__ctrl__reg.html#a97fd64b5a9644bbbf33c5ba372a03ead',1,'ACX_MSIX_cap_id_next_ctrl_reg::RESERVED0()'],['../unionACX__MSIX__doorbell__reg.html#a9cf1554c19520554e6a6d649bf1d81e6',1,'ACX_MSIX_doorbell_reg::RESERVED0()'],['../unionACX__MSIX__ram__ctrl__reg.html#a2b3d790840abef349f8880aea8c6246c',1,'ACX_MSIX_ram_ctrl_reg::RESERVED0()']]],
+  ['reserved1_943',['RESERVED1',['../unionACX__DEV__DBIx16__access__reg.html#a8b055d3bd6ced8271f708af28e3e14e9',1,'ACX_DEV_DBIx16_access_reg::RESERVED1()'],['../unionACX__MSIX__ram__ctrl__reg.html#af74a9f2f4fac35e6a01b9e2fadaf497a',1,'ACX_MSIX_ram_ctrl_reg::RESERVED1()'],['../unionACX__MSIX__doorbell__reg.html#a509013f633a306a069e44474ee5773b1',1,'ACX_MSIX_doorbell_reg::RESERVED1()'],['../unionACX__MSIX__cap__id__next__ctrl__reg.html#ad3a4b64a456d41a3585a8fe22f8a2499',1,'ACX_MSIX_cap_id_next_ctrl_reg::RESERVED1()'],['../unionACX__DMA__CH__CONTROL1__OFF__reg.html#a5859324cd327d7300d90c95a2257cbd5',1,'ACX_DMA_CH_CONTROL1_OFF_reg::RESERVED1()'],['../unionACX__DEV__DBIx8__access__reg.html#a8e40068c2cf6de4cf518d3652e5414f8',1,'ACX_DEV_DBIx8_access_reg::RESERVED1()']]],
+  ['reserved2_944',['RESERVED2',['../unionACX__DMA__CH__CONTROL1__OFF__reg.html#ad1f15217ee1d91c0750a6b336c8d43c5',1,'ACX_DMA_CH_CONTROL1_OFF_reg::RESERVED2()'],['../unionACX__MSIX__ram__ctrl__reg.html#ac31e1e0a39ee34e5d109e0e437d2e3d7',1,'ACX_MSIX_ram_ctrl_reg::RESERVED2()']]],
+  ['reserved3_945',['RESERVED3',['../unionACX__MSIX__ram__ctrl__reg.html#a4814716c8fd07d3697c326e895418c30',1,'ACX_MSIX_ram_ctrl_reg']]],
+  ['reserved_5f0_946',['RESERVED_0',['../union__U__iatu__region__ctrl__1__inbound.html#a98642c73966e775df52b5fae7182c162',1,'_U_iatu_region_ctrl_1_inbound::RESERVED_0()'],['../union__U__iatu__region__ctrl__2__inbound.html#a73f27138c3871aaaf2029318659100e6',1,'_U_iatu_region_ctrl_2_inbound::RESERVED_0()']]],
+  ['reserved_5f1_947',['RESERVED_1',['../union__U__iatu__region__ctrl__1__inbound.html#a515aecd1f41f39cb6cde148a8a143ad8',1,'_U_iatu_region_ctrl_1_inbound']]],
+  ['response_5fcode_948',['RESPONSE_CODE',['../union__U__iatu__region__ctrl__2__inbound.html#aa19415c46af388ddd0bfae0948a47f2a',1,'_U_iatu_region_ctrl_2_inbound']]],
+  ['revision_5fid_949',['revision_id',['../structacxdev__getpcieinfo__s.html#a2e1d522762438603cc2ecce8ea656192',1,'acxdev_getpcieinfo_s']]],
+  ['rie_950',['RIE',['../unionACX__DMA__CH__CONTROL1__OFF__reg.html#a6735a2cce48643c65ba6934311926202',1,'ACX_DMA_CH_CONTROL1_OFF_reg::RIE()'],['../structACX__DMA__data__descriptor.html#a1d966c89eff2b8e5c68d2f3ef64a755d',1,'ACX_DMA_data_descriptor::RIE()']]],
+  ['ro_951',['RO',['../unionACX__DMA__CH__CONTROL1__OFF__reg.html#a34e8c8a6683dd2eec889b95f9856ffe2',1,'ACX_DMA_CH_CONTROL1_OFF_reg']]]
+];

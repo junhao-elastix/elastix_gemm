@@ -1,0 +1,33 @@
+# Archive Information - Oct 20, 2025 Simulation Cleanup
+
+## Summary
+This archive contains historical simulation test results and debug documents from
+Oct 13-16, 2025 that have been superseded by the cleaned-up sim/vector_system_test/
+with professional logging and 9/9 tests passing.
+
+## Archived Files (8 files)
+
+1. FP16_ROUNDING_FIX_RESULTS.md (Oct 16) - Historical FP16 rounding fix test results
+2. MLP_PRIMITIVE_CONFIGURATION.md (Oct 16) - MLP primitive configuration notes
+3. MLP_SIMULATION_SUCCESS.md (Oct 14) - Milestone document for MLP simulation
+4. ROOT_CAUSE_ANALYSIS.md (Oct 16) - Debug analysis (resolved)
+5. SIMULATION_RESULTS_SUMMARY.md (Oct 14) - Test results summary
+6. SIMULATION_TEST_RESULTS_FINAL.md (Oct 16) - Final test results (showed 4/9 passing)
+7. SIM_CLEANUP_OCT14_SUMMARY.md (Oct 14) - Previous cleanup summary
+8. TEST_COMPARISON.md (Oct 13) - Test comparison document
+
+## Reason for Archival
+All documents superseded by sim/vector_system_test/ improvements:
+- 9/9 tests passing (100%) vs historical 4/9
+- Professional logging to sim.log (34MB detailed output)
+- Clean Makefile with summary/view-log/help targets
+- Updated README.md with comprehensive documentation
+
+## What Replaced Them
+- Current test results: sim/vector_system_test/ (Oct 20)
+- Test status: sim/vector_system_test/README.md
+- Logging: sim/vector_system_test/sim.log
+- History: CHANGELOG.md Oct 20 entry
+
+## Archive Date
+Mon Oct 20 21:02:35 PDT 2025

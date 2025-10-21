@@ -1,0 +1,66 @@
+var group__sdk__lib__atu =
+[
+    [ "_U_iatu_region_ctrl_1_inbound", "union__U__iatu__region__ctrl__1__inbound.html", [
+      [ "CTRL_1_FUNC_NUM", "union__U__iatu__region__ctrl__1__inbound.html#a304da13c185993a45e27ad61af688bf1", null ],
+      [ "RESERVED_0", "union__U__iatu__region__ctrl__1__inbound.html#a98642c73966e775df52b5fae7182c162", null ],
+      [ "RESERVED_1", "union__U__iatu__region__ctrl__1__inbound.html#a515aecd1f41f39cb6cde148a8a143ad8", null ],
+      [ "value", "union__U__iatu__region__ctrl__1__inbound.html#a3060e777166b6ea0f5afa06db554496d", null ]
+    ] ],
+    [ "_U_iatu_region_ctrl_2_inbound", "union__U__iatu__region__ctrl__2__inbound.html", [
+      [ "AT_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a54478c20274f31e6106e54e388d282f2", null ],
+      [ "ATTR_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a19ede4c6c661be420bf1b5580123036b", null ],
+      [ "BAR_NUM", "union__U__iatu__region__ctrl__2__inbound.html#a752ac0961422b87eeae636d406b8e940", null ],
+      [ "CFG_SHIFT_MODE", "union__U__iatu__region__ctrl__2__inbound.html#a37d76ad836450780c0289cb0aa578def", null ],
+      [ "FUNC_NUM_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a407f07515dc52855ea068434bd019341", null ],
+      [ "FUZZY_TYPE_MATCH_CODE", "union__U__iatu__region__ctrl__2__inbound.html#adf0a57755b7ade429b60ccc36cc0d61f", null ],
+      [ "INVERT_MODE", "union__U__iatu__region__ctrl__2__inbound.html#aba28b1b67bacff4681675815faafec39", null ],
+      [ "MATCH_MODE", "union__U__iatu__region__ctrl__2__inbound.html#a4fd83e62163a6df84112b57c1cc9d463", null ],
+      [ "MSG_CODE", "union__U__iatu__region__ctrl__2__inbound.html#aaa590b62d1313f67f8c8573dea5a11f0", null ],
+      [ "MSG_CODE_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#aeb02726317378ef687ea530039f9e3d7", null ],
+      [ "MSG_TYPE_MATCH_MODE", "union__U__iatu__region__ctrl__2__inbound.html#a182505f3ce65bd679a8be5b043299d12", null ],
+      [ "PH_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a2ed7510da59ac84d8ac22f8706611eba", null ],
+      [ "REGION_EN", "union__U__iatu__region__ctrl__2__inbound.html#a1d1e4bf60504c120865a0f2022e26917", null ],
+      [ "RESERVED_0", "union__U__iatu__region__ctrl__2__inbound.html#a73f27138c3871aaaf2029318659100e6", null ],
+      [ "RESPONSE_CODE", "union__U__iatu__region__ctrl__2__inbound.html#aa19415c46af388ddd0bfae0948a47f2a", null ],
+      [ "SINGLE_ADDR_LOC_TRANS_EN", "union__U__iatu__region__ctrl__2__inbound.html#aa33700508e3464e32784f0a68992dc90", null ],
+      [ "TC_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#af5d218fe214e07293418ec6ae2e87f60", null ],
+      [ "TD_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a02e5ca8892b344afca0141a7bb3e3417", null ],
+      [ "TH_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#aa0033e6dcb65f11485d0b55f19bd403c", null ],
+      [ "value", "union__U__iatu__region__ctrl__2__inbound.html#a9d264c735ab948eef14de251946a48c0", null ],
+      [ "VF_MATCH_EN", "union__U__iatu__region__ctrl__2__inbound.html#a8b498c13434520c44dd6050fee8d7110", null ],
+      [ "VFBAR_MATCH_MODE_EN", "union__U__iatu__region__ctrl__2__inbound.html#a53033ed87c7139c9f8b91a161c7e85b4", null ]
+    ] ],
+    [ "ACX_ATU_region_context", "structACX__ATU__region__context.html", [
+      [ "iatu_lwr_base_addr_inbound", "structACX__ATU__region__context.html#a09095343fec9c9e2d643c28d8f1267c8", null ],
+      [ "iatu_lwr_limit_addr_inbound", "structACX__ATU__region__context.html#a714f0c51f4c2a1c136652555dfce5788", null ],
+      [ "iatu_lwr_target_addr_inbound", "structACX__ATU__region__context.html#a9a8941aa5877d5b37b34e6c37bfd2a44", null ],
+      [ "iatu_region_ctrl_1_inbound", "structACX__ATU__region__context.html#a29ef4ed3c476914ae5a9956c5413a65e", null ],
+      [ "iatu_region_ctrl_2_inbound", "structACX__ATU__region__context.html#a766551a34a539b3fb34d9d0b7269c3ec", null ],
+      [ "iatu_region_ctrl_3_inbound", "structACX__ATU__region__context.html#ab286631d6e676781abe6631068cc816c", null ],
+      [ "iatu_upper_base_addr_inbound", "structACX__ATU__region__context.html#a91cb59457779b4ba21a2c0fe2b2f04b7", null ],
+      [ "iatu_upper_limit_addr_inbound", "structACX__ATU__region__context.html#a33456271d9f2b4d857a19ed48b8ce4df", null ],
+      [ "iatu_upper_target_addr_inbound", "structACX__ATU__region__context.html#a620b5c8eecec2d846cfc2505eb332af4", null ],
+      [ "region_num", "structACX__ATU__region__context.html#a3d33f6157fab3ba7c382f31d21e77878", null ]
+    ] ],
+    [ "ACX_ATU_context", "structACX__ATU__context.html", [
+      [ "regions", "structACX__ATU__context.html#ab805ce2e96675f491aa4a4c7ce521f40", null ]
+    ] ],
+    [ "ACX_NUM_ATU_REGIONS", "group__sdk__lib__atu.html#gafb659cb783abc794cb2355224b0b4132", null ],
+    [ "ACX_ATU_MODE", "group__sdk__lib__atu.html#ga0213b9c04c4d74bde9fbe4dbfb89fd1d", null ],
+    [ "acx_atu_config_region", "group__sdk__lib__atu.html#ga989e939a0ca45051a8badf3d84dcf19f", null ],
+    [ "acx_atu_find_regions", "group__sdk__lib__atu.html#ga50f1ed47d864dc5c51f32314759e2dda", null ],
+    [ "acx_atu_get_base_addr", "group__sdk__lib__atu.html#gac7aa78d05cc1331f78e27b7443707f85", null ],
+    [ "acx_atu_get_context", "group__sdk__lib__atu.html#ga86d05961b0e6aaaed63a4c5b0e7afdf1", null ],
+    [ "acx_atu_get_enable", "group__sdk__lib__atu.html#gae7f66a892809bbe11e68259898090873", null ],
+    [ "acx_atu_get_limit_addr", "group__sdk__lib__atu.html#ga3bde872010d53344f318e01804aabfd8", null ],
+    [ "acx_atu_get_mode", "group__sdk__lib__atu.html#ga6898daea4280ead28f7fda28c421c4f1", null ],
+    [ "acx_atu_get_region_context", "group__sdk__lib__atu.html#ga0bd8acad165e925e13610c376b27ef2e", null ],
+    [ "acx_atu_get_target_addr", "group__sdk__lib__atu.html#gaecdf675965e192d7c31bfa7a6f4acb4c", null ],
+    [ "acx_atu_print_context", "group__sdk__lib__atu.html#ga2b8d0139d657c62f37924f31852e5f76", null ],
+    [ "acx_atu_print_region", "group__sdk__lib__atu.html#gabb335d5ff3c2dc7a859b80bb775c0d28", null ],
+    [ "acx_atu_set_base_addr", "group__sdk__lib__atu.html#ga0250f7914293a1f52967a07835d5f990", null ],
+    [ "acx_atu_set_enable", "group__sdk__lib__atu.html#ga423cf2aa1ab3fdb1572387d88ae56214", null ],
+    [ "acx_atu_set_limit_addr", "group__sdk__lib__atu.html#gad42f5c890636c8843d7ad1e415886978", null ],
+    [ "acx_atu_set_mode", "group__sdk__lib__atu.html#ga6d09f792da36cc4bdefdf536c9dbffb5", null ],
+    [ "acx_atu_set_target_addr", "group__sdk__lib__atu.html#ga298eac24377517d18b3f97e9f1a4685e", null ]
+];

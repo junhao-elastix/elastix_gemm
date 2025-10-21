@@ -48,13 +48,13 @@ import gemm_pkg::*;
     output logic                          o_tile_done,
 
     // ====================================================================
-    // Dual BRAM Mantissa Read Interface (from dispatcher_bram)
+    // Dual BRAM Mantissa Read Interface (from tile_bram - 512 entries, 9-bit addr)
     // ====================================================================
-    output logic [10:0]                   o_bram_left_rd_addr,
+    output logic [8:0]                    o_bram_left_rd_addr,
     input  logic [255:0]                  i_bram_left_rd_data,
     output logic                          o_bram_left_rd_en,
-    
-    output logic [10:0]                   o_bram_right_rd_addr,
+
+    output logic [8:0]                    o_bram_right_rd_addr,
     input  logic [255:0]                  i_bram_right_rd_data,
     output logic                          o_bram_right_rd_en,
     

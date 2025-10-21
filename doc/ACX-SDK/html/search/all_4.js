@@ -1,0 +1,26 @@
+var searchData=
+[
+  ['dar_5fhigh_396',['dar_high',['../structACX__DMA__data__descriptor.html#a05067cba0bfd194e080518793eda380a',1,'ACX_DMA_data_descriptor']]],
+  ['dar_5flow_397',['dar_low',['../structACX__DMA__data__descriptor.html#a6ac5cdbe49e1391ada3d124b6ccdce75',1,'ACX_DMA_data_descriptor']]],
+  ['data_398',['data',['../structACX__DMA__buffer.html#a77e281ff700436659c4856a3a7d9fd60',1,'ACX_DMA_buffer']]],
+  ['dbi_5fbar_5fnum_399',['dbi_bar_num',['../unionACX__DEV__DBIx16__access__reg.html#ab8c00951695da535730c744d25a1e066',1,'ACX_DEV_DBIx16_access_reg::dbi_bar_num()'],['../unionACX__DEV__DBIx8__access__reg.html#a109150752413f0c720b0caee420c7bc9',1,'ACX_DEV_DBIx8_access_reg::dbi_bar_num()']]],
+  ['dbi_5ffunc_5fnum_400',['dbi_func_num',['../unionACX__DEV__DBIx8__access__reg.html#a6b768c60c0da9b58855fc503e6e94234',1,'ACX_DEV_DBIx8_access_reg::dbi_func_num()'],['../unionACX__DEV__DBIx16__access__reg.html#a54a5367672db2eb0a9268bd127bab1d5',1,'ACX_DEV_DBIx16_access_reg::dbi_func_num()']]],
+  ['dbi_5finterface_5fblock_401',['dbi_interface_block',['../structACX__DEV__PCIe__device.html#adf6fcd0559fde0320b016df44f7b3915',1,'ACX_DEV_PCIe_device']]],
+  ['dbi_5fio_5faccess_402',['dbi_io_access',['../unionACX__DEV__DBIx8__access__reg.html#aa0d0550d56678336b6e9fec6568a904d',1,'ACX_DEV_DBIx8_access_reg::dbi_io_access()'],['../unionACX__DEV__DBIx16__access__reg.html#ae50f22999c8ad29e779de9b0970fb7e4',1,'ACX_DEV_DBIx16_access_reg::dbi_io_access()']]],
+  ['dbi_5from_5faccess_403',['dbi_rom_access',['../unionACX__DEV__DBIx16__access__reg.html#ac74f5722fe5ad3943e1a99b594fd8b87',1,'ACX_DEV_DBIx16_access_reg::dbi_rom_access()'],['../unionACX__DEV__DBIx8__access__reg.html#ac89da1b3c6f76afb74c7162072cffbf5',1,'ACX_DEV_DBIx8_access_reg::dbi_rom_access()']]],
+  ['descriptors_5fbuffer_404',['descriptors_buffer',['../structACX__DMA__list__node.html#ad600f457238f57f1eb0b39b08288852f',1,'ACX_DMA_list_node']]],
+  ['devfile_2ec_405',['devfile.c',['../devfile_8c.html',1,'']]],
+  ['device_406',['device',['../structacxdev__getpcieinfo__s.html#ac4544f7bb9629d2196c2cd2220229348',1,'acxdev_getpcieinfo_s::device()'],['../structACX__DMA__buffer.html#a1a721619cb3978e4965655150b0ed288',1,'ACX_DMA_buffer::device()'],['../structACX__DMA__list__node.html#affdf10a49b8fb003c6da96fc73cf652f',1,'ACX_DMA_list_node::device()']]],
+  ['device_5faddress_407',['device_address',['../structACX__DMA__list__node.html#aa1a1a80475679d31aeb247deee4dc552',1,'ACX_DMA_list_node::device_address()'],['../structACX__DMA__transaction.html#a387370dafbe8a17d65590a954870e203',1,'ACX_DMA_transaction::device_address()']]],
+  ['device_5fid_408',['device_id',['../structacxdev__getpcieinfo__s.html#a584a865da847ca8d5e0dee25410b8580',1,'acxdev_getpcieinfo_s::device_id()'],['../structACX__DEV__PCIe__device.html#a5d8f5fcbb9e2ebea0b5bd6d392101ac5',1,'ACX_DEV_PCIe_device::device_id()']]],
+  ['device_5fopen_5fcount_409',['Device_open_count',['../structDevice__open__count.html',1,'']]],
+  ['direction_410',['direction',['../structACX__DMA__list__node.html#a68d3510e009281832e5237d1904ada0b',1,'ACX_DMA_list_node::direction()'],['../structACX__DMA__transaction.html#ab9e09c6b71da08905e49a5e303c2f263',1,'ACX_DMA_transaction::direction()']]],
+  ['dma_2ec_411',['dma.c',['../dma_8c.html',1,'']]],
+  ['dma_5faddr_412',['dma_addr',['../structACX__DMA__buffer.html#a7ca755a72147a85a922fce077957150f',1,'ACX_DMA_buffer']]],
+  ['dma_5fbuffer_413',['dma_buffer',['../structACX__DMA__transaction.html#a936c5f56d9de7d8772c444e1433ca5fe',1,'ACX_DMA_transaction']]],
+  ['dma_5fbuffers_414',['dma_buffers',['../structACX__DMA__list__node.html#aa75d187a24069a0f680ea1599f6a766d',1,'ACX_DMA_list_node']]],
+  ['dma_5fmap_415',['dma_map',['../structdma__map.html',1,'']]],
+  ['dma_5fresults_416',['DMA_Results',['../structDMA__Results.html',1,'']]],
+  ['dmaoptions_417',['DMAOptions',['../structDMAOptions.html',1,'']]],
+  ['domain_418',['domain',['../structacxdev__getpcieinfo__s.html#acaba82023d3751c9f170f6f2fdd98a87',1,'acxdev_getpcieinfo_s']]]
+];

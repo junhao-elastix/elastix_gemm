@@ -118,14 +118,14 @@ module gfp8_nv_dot (
             exp_right_stable <= exp_right_prop;
             man_left_stable <= man_left_prop;
             man_right_stable <= man_right_prop;
-            `ifdef SIMULATION
-            if (man_left_prop[0] != 0) begin
-                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[0]=0x%064x (from prop)",
-                         $time, man_left_prop[0]);
-                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[3]=0x%064x (from prop)",
-                         $time, man_left_prop[3]);
-            end
-            `endif
+            // `ifdef SIMULATION
+            // if (man_left_prop[0] != 0) begin
+            //     $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[0]=0x%064x (from prop)",
+            //              $time, man_left_prop[0]);
+            //     $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[3]=0x%064x (from prop)",
+            //              $time, man_left_prop[3]);
+            // end
+            // `endif
         end
     end
     

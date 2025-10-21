@@ -1,0 +1,26 @@
+var Achronix__PCIe_8c =
+[
+    [ "acx_pcie_alloc_dma_hand", "Achronix__PCIe_8c.html#a827c5207357befc8606330318f9efe98", null ],
+    [ "acx_pcie_cancel_wait", "Achronix__PCIe_8c.html#a1db0fc2951f11aef93e9ff088a0612bc", null ],
+    [ "acx_pcie_close_bar_hand", "Achronix__PCIe_8c.html#a5a39cd5aa93936a63cc617aa1bb987c7", null ],
+    [ "acx_pcie_close_device_hand", "Achronix__PCIe_8c.html#abd32e09b578d77173959a37909bb40c9", null ],
+    [ "acx_pcie_free_dma_hand", "Achronix__PCIe_8c.html#a8a9f5b7ab09f190c035a4d877e33cc4e", null ],
+    [ "acx_pcie_get_bar_idx", "Achronix__PCIe_8c.html#ac0c09d57516a698e2237a1214ad6bfb2", null ],
+    [ "acx_pcie_get_bar_size", "Achronix__PCIe_8c.html#aa273b96373e5f39e75f08f5d897b3667", null ],
+    [ "acx_pcie_get_bar_start", "Achronix__PCIe_8c.html#a980ee7fa26df733575c35f73dffd697f", null ],
+    [ "acx_pcie_get_device_info", "Achronix__PCIe_8c.html#a8e41cb2aefcea889ecbb674e31c4d703", null ],
+    [ "acx_pcie_get_num_devices", "Achronix__PCIe_8c.html#a46fbda6a3d1a4e388edc8f3a72df492e", null ],
+    [ "acx_pcie_get_sdk_version", "Achronix__PCIe_8c.html#ab9dbd561ce40a9a18deeb72dd2ef4db6", null ],
+    [ "acx_pcie_interrupt_wait", "Achronix__PCIe_8c.html#adf9309d8e8490cf8781229e1394bc534", null ],
+    [ "acx_pcie_open_bar_hand", "Achronix__PCIe_8c.html#abbdf67b5ede5e7f3f4bbc315ecde19a7", null ],
+    [ "acx_pcie_open_device_hand_bdf", "Achronix__PCIe_8c.html#a9354e383deca85e70676e05fe6183c79", null ],
+    [ "acx_pcie_open_device_hand_idx", "Achronix__PCIe_8c.html#a64e19b14f8c8fb7d142ab213fffc9f0f", null ],
+    [ "acx_pcie_read_uint16", "Achronix__PCIe_8c.html#a97031690386ab74efc147e9dd8047092", null ],
+    [ "acx_pcie_read_uint32", "Achronix__PCIe_8c.html#aba025559ae6fa6df6228ad49a01344e2", null ],
+    [ "acx_pcie_read_uint64", "Achronix__PCIe_8c.html#a74ac9448a3e5f002918f4f7156904441", null ],
+    [ "acx_pcie_read_uint8", "Achronix__PCIe_8c.html#a4f25f9c01eaeb561b9943af9777d7052", null ],
+    [ "acx_pcie_write_uint16", "Achronix__PCIe_8c.html#aa682f757fe351b2d465b6b1772eacc65", null ],
+    [ "acx_pcie_write_uint32", "Achronix__PCIe_8c.html#aca38a009e6d02dd8162dde3dd8be2450", null ],
+    [ "acx_pcie_write_uint64", "Achronix__PCIe_8c.html#a8cfd7035cf0c0d4262e01fde49a7264f", null ],
+    [ "acx_pcie_write_uint8", "Achronix__PCIe_8c.html#a301b8e0a78e9d33ae8eea4066dc9520d", null ]
+];

@@ -1,0 +1,66 @@
+/*!
+ @defgroup sdk_lib SDK Library
+ @brief Interfaces for the SDK library.
+ Individulal SDK interface functionality are documented as sub-topics.
+*/
+
+/*!
+ @defgroup sdk_lib_common SDK Library Macros and Utility functions
+ @ingroup sdk_lib
+ @brief SDK common macros and helper functions
+*/
+
+/*!
+ @defgroup sdk_lib_atu SDK Library ATU Interface
+ @ingroup sdk_lib
+ @brief SDK interface for ATU operations.
+ This interface makes use of the @ref sdk_lib_IP_DBI low level IP interface
+*/
+
+/*!
+ @defgroup sdk_lib_dma SDK Library DMA Interface
+ @ingroup sdk_lib
+ @brief SDK interface for DMA operations.
+ This interface makes use of the @ref sdk_lib_IP_DBI low level IP interface
+*/
+
+/*!
+ @defgroup sdk_lib_mmio SDK Library MMIO Interface
+ @ingroup sdk_lib
+ @brief SDK interface for PCIe MMIO operations
+*/
+
+/*!
+ @defgroup sdk_lib_msix SDK Library MSI-X Interface
+ @ingroup sdk_lib
+ @brief SDK interface for MSI-X interrupts
+*/
+
+/*!
+ @defgroup sdk_lib_device SDK Library Driver Independent PCIe Device Interface 
+ @ingroup sdk_lib
+ @brief SDK interface for driver independent PCIe devices 
+*/
+
+/*!
+ @defgroup sdk_lib_IP SDK Library Abstract IP Interface
+ @ingroup sdk_lib
+ @brief SDK interface for IP interface abstraction.
+ The individual Achronix supported IP interfaces are documented as sub-topics.
+ @details What follows are the interfaces for managment of additional IP interfaces
+*/
+
+/*!
+ @defgroup sdk_lib_IP_DBI SDK Library DBI Interface
+ @ingroup sdk_lib_IP
+ @brief Low level interface for PCIe DBI access
+ @warning This interface is normally intended for SDK library internal use (e.g. @ref sdk_lib_atu or @ref sdk_lib_dma)
+*/
+
+
+
+/*!
+ @defgroup driver_lib PCIe Driver Interface Library
+ @brief User space library interface for the Achronix PCIe driver
+ @warning This interface is normally intended for @ref sdk_lib internal use
+*/

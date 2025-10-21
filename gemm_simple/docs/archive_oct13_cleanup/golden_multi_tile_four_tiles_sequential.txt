@@ -1,0 +1,52 @@
+Multi-Tile Golden Reference: four_tiles_sequential
+Description: 4 tiles processing sequential regions
+Number of tiles: 4
+
+--- Tile 0 ---
+Description: Tile 0
+left_addr=0, right_addr=0, B=4, C=4, V=4
+Result shape: torch.Size([4, 4])
+Min: -0.259155, Max: 0.492615
+Mean: 0.103598
+Results:
+-0.107910 -0.259155 0.085342 0.077148 
+0.211594 0.263901 0.329346 0.492615 
+-0.030685 0.206680 0.175735 -0.166946 
+-0.037033 0.403320 0.188919 -0.175308 
+
+--- Tile 1 ---
+Description: Tile 1
+left_addr=64, right_addr=64, B=4, C=4, V=4
+Result shape: torch.Size([4, 4])
+Min: -0.290588, Max: 0.522003
+Mean: 0.062067
+Results:
+0.200607 0.512634 -0.050629 0.086243 
+-0.153519 0.173676 0.159088 0.522003 
+-0.082458 -0.063446 -0.156601 -0.290588 
+-0.199905 -0.187851 0.248917 0.274902 
+
+--- Tile 2 ---
+Description: Tile 2
+left_addr=128, right_addr=128, B=4, C=4, V=4
+Result shape: torch.Size([4, 4])
+Min: -0.424561, Max: 0.426834
+Mean: 0.000854
+Results:
+-0.062073 -0.268326 -0.424561 -0.096771 
+0.199333 -0.041107 0.426834 -0.322342 
+0.143982 0.114365 0.093445 0.381821 
+0.132233 0.022675 -0.253555 -0.032288 
+
+--- Tile 3 ---
+Description: Tile 3
+left_addr=192, right_addr=192, B=4, C=4, V=4
+Result shape: torch.Size([4, 4])
+Min: -0.300568, Max: 0.597641
+Mean: 0.072962
+Results:
+-0.170883 0.145416 -0.021561 -0.187790 
+0.024231 0.085770 0.117538 -0.014999 
+0.597641 0.052902 0.595520 -0.018570 
+-0.300568 0.188858 -0.052872 0.126755 
+

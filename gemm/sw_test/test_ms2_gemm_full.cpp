@@ -997,8 +997,8 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
         step_end = get_time();
         step_times[4] = to_us(step_end - step_start);  // Step 10 (Read Results) -> index 4
 
-        uint32_t result_count = device.mmioRead32(0, ENGINE_RESULT_COUNT);  // Unused - removed to eliminate warning
-        cout << "  Result count register: " << result_count << " FP16 values" << endl;
+        // uint32_t result_count = device.mmioRead32(0, ENGINE_RESULT_COUNT);  // Unused - removed to eliminate warning
+        // cout << "  Result count register: " << result_count << " FP16 values" << endl;
 
         // Read first 4 results from dedicated registers (quick access for small matrices)
         // cout << "  Reading first 4 results from registers..." << endl;

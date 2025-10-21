@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "WebFetch(domain:)",
+      "Bash(g++:*)",
+      "Bash(test_dispatcher_path.cpp /home/dev/Dev/eus/shell/devices/acx/vp815/api/vp815.cpp )",
+      "Bash(sudo:*)",
+      "Bash(sed:*)",
+      "Bash(cp:*)",
+      "Bash(awk:*)"
+    ]
+  },
+  "outputStyle": "concise-technical"
+}

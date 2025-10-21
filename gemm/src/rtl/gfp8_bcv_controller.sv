@@ -38,12 +38,12 @@ module gfp8_bcv_controller (
     input  logic [10:0] i_right_base_addr,    // Base address for right matrix in BRAM
     output logic        o_tile_done,
     
-    // BRAM Mantissa Read Interface (to dispatcher_bram)
-    output logic [10:0] o_mem_left_rd_addr,
+    // BRAM Mantissa Read Interface (to tile_bram - 512 entries, 9-bit addr)
+    output logic [8:0]  o_mem_left_rd_addr,
     output logic        o_mem_left_rd_en,
     input  logic [255:0] i_mem_left_rd_data,
-    
-    output logic [10:0] o_mem_right_rd_addr,
+
+    output logic [8:0]  o_mem_right_rd_addr,
     output logic        o_mem_right_rd_en,
     input  logic [255:0] i_mem_right_rd_data,
     
@@ -241,8 +241,8 @@ module gfp8_bcv_controller (
             automatic logic [15:0] right_nv_index;
             automatic logic [15:0] left_base_nv;
             automatic logic [15:0] right_base_nv;
-            automatic logic [10:0] left_line_addr;   // EXPANDED: 11-bit for full 0-511 range
-            automatic logic [10:0] right_line_addr;  // EXPANDED: 11-bit for full 0-511 range
+            automatic logic [8:0] left_line_addr;   // 9-bit for tile_bram (512 entries, 0-511 range)
+            automatic logic [8:0] right_line_addr;  // 9-bit for tile_bram (512 entries, 0-511 range)
             automatic logic [1:0] g_idx;
             
             // Convert line addresses to NV indices (divide by 4: addr[10:2])
@@ -267,9 +267,9 @@ module gfp8_bcv_controller (
             if (fill_cycle == 4'd0 || fill_cycle == 4'd1 || fill_cycle == 4'd2) begin
                 // Cycles 0-2: Read exponent for group 0 (hold addr for 3 cycles)
                 g_idx = 2'd0;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};   // Proper 11-bit addition
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx}; // Proper 11-bit addition
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};   // 9-bit: 128 NVs max (7-bit idx)
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx}; // 9-bit: 128 NVs max (7-bit idx)
+
                 left_exp_addr_next = left_line_addr[8:0];   // Exponent port is 9-bit
                 right_exp_addr_next = right_line_addr[8:0];
                 left_exp_en_next = 1'b1;
@@ -277,9 +277,9 @@ module gfp8_bcv_controller (
             end else if (fill_cycle == 4'd3 || fill_cycle == 4'd4 || fill_cycle == 5'd5) begin
                 // Cycles 3-5: Read exponent for group 1 (hold addr for 3 cycles)
                 g_idx = 2'd1;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_exp_addr_next = left_line_addr[8:0];   // Exponent port is 9-bit
                 right_exp_addr_next = right_line_addr[8:0];
                 left_exp_en_next = 1'b1;
@@ -287,9 +287,9 @@ module gfp8_bcv_controller (
             end else if (fill_cycle == 5'd6 || fill_cycle == 5'd7 || fill_cycle == 5'd8) begin
                 // Cycles 6-8: Read exponent for group 2 (hold addr for 3 cycles)
                 g_idx = 2'd2;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_exp_addr_next = left_line_addr[8:0];   // Exponent port is 9-bit
                 right_exp_addr_next = right_line_addr[8:0];
                 left_exp_en_next = 1'b1;
@@ -297,9 +297,9 @@ module gfp8_bcv_controller (
             end else if (fill_cycle == 5'd9 || fill_cycle == 5'd10 || fill_cycle == 5'd11) begin
                 // Cycles 9-11: Read exponent for group 3 (hold addr for 3 cycles)
                 g_idx = 2'd3;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_exp_addr_next = left_line_addr[8:0];   // Exponent port is 9-bit
                 right_exp_addr_next = right_line_addr[8:0];
                 left_exp_en_next = 1'b1;
@@ -308,19 +308,19 @@ module gfp8_bcv_controller (
                 // Cycles 12-14: Read mantissa Group 0
                 // NEW: NO +16 offset needed - exp and man are in separate BRAMs
                 g_idx = 2'd0;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
-                left_addr_next = left_line_addr;   // Full 11-bit addressing [0-2047]
-                right_addr_next = right_line_addr; // Full 11-bit addressing [0-2047]
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
+                left_addr_next = left_line_addr;   // 9-bit addressing for tile_bram [0-511]
+                right_addr_next = right_line_addr; // 9-bit addressing for tile_bram [0-511]
                 left_en_next = 1'b1;
                 right_en_next = 1'b1;
             end else if (fill_cycle == 5'd15 || fill_cycle == 5'd16 || fill_cycle == 5'd17) begin
                 // Cycles 15-17: Read mantissa Group 1
                 g_idx = 2'd1;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_addr_next = left_line_addr;
                 right_addr_next = right_line_addr;
                 left_en_next = 1'b1;
@@ -328,9 +328,9 @@ module gfp8_bcv_controller (
             end else if (fill_cycle == 5'd18 || fill_cycle == 5'd19 || fill_cycle == 5'd20) begin
                 // Cycles 18-20: Read mantissa Group 2
                 g_idx = 2'd2;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_addr_next = left_line_addr;
                 right_addr_next = right_line_addr;
                 left_en_next = 1'b1;
@@ -338,9 +338,9 @@ module gfp8_bcv_controller (
             end else if (fill_cycle == 5'd21 || fill_cycle == 5'd22 || fill_cycle == 5'd23) begin
                 // Cycles 21-23: Read mantissa Group 3
                 g_idx = 2'd3;
-                left_line_addr = ({left_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                right_line_addr = ({right_nv_index[8:0], 2'b00}) + {11'd0, g_idx};
-                
+                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx};
+
                 left_addr_next = left_line_addr;
                 right_addr_next = right_line_addr;
                 left_en_next = 1'b1;
@@ -369,12 +369,12 @@ module gfp8_bcv_controller (
             o_left_exp_rd_addr <= left_exp_addr_next;
             o_right_exp_rd_addr <= right_exp_addr_next;
             
-            `ifdef SIMULATION
-            if (b_idx == 0 && c_idx == 0 && v_idx == 0 && fill_cycle <= 5'd5) begin  // Show cycles 0-5 for first iteration
-                $display("[BCV_ADDR_REG] @%0t cycle=%0d: right_exp_addr_next=%0d, will be registered to o_right_exp_rd_addr",
-                         $time, fill_cycle, right_exp_addr_next);
-            end
-            `endif
+            // `ifdef SIMULATION
+            // if (b_idx == 0 && c_idx == 0 && v_idx == 0 && fill_cycle <= 5'd5) begin  // Show cycles 0-5 for first iteration
+            //     $display("[BCV_ADDR_REG] @%0t cycle=%0d: right_exp_addr_next=%0d, will be registered to o_right_exp_rd_addr",
+            //              $time, fill_cycle, right_exp_addr_next);
+            // end
+            // `endif
         end
     end
     

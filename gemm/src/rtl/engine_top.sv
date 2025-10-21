@@ -32,7 +32,8 @@ import gemm_pkg::*;
 #(
     parameter [8:0] GDDR6_PAGE_ID = 9'd2,   // GDDR6 Channel page ID
     parameter TGT_DATA_WIDTH = 256,         // Target data width (256-bit AXI)
-    parameter AXI_ADDR_WIDTH = 42           // AXI address width (42-bit for GDDR6)
+    parameter AXI_ADDR_WIDTH = 42,          // AXI address width (42-bit for GDDR6)
+    parameter NUM_TILES = 16                // Number of parallel compute tiles (max 16)
 )
 (
     // Clock and Reset
@@ -68,7 +69,7 @@ import gemm_pkg::*;
     output logic [3:0]                   o_mc_state,      // Master control state
     output logic [3:0]                   o_mc_state_next, // Master control next state
     output logic [3:0]                   o_dc_state,      // Dispatcher control state
-    output logic [3:0]                   o_ce_state,      // Compute engine state
+    output logic [3:0]                   o_ce_state [0:NUM_TILES-1], // Per-tile compute engine states
     output logic [cmd_op_width_gp-1:0]   o_last_opcode,   // Last executed opcode
 
     // ====================================================================
@@ -107,8 +108,9 @@ import gemm_pkg::*;
     logic                                mc_dc_man_4b_8b_n;
     logic                                dc_mc_disp_done;
 
-    // Master Control → Compute Engine
+    // Master Control → Compute Tile Array
     logic                                mc_ce_tile_en;
+    logic [NUM_TILES-1:0]                mc_ce_column_enable;  // NEW: Which tiles to execute
     logic [tile_mem_addr_width_gp-1:0]   mc_ce_left_addr;
     logic [tile_mem_addr_width_gp-1:0]   mc_ce_right_addr;
     logic [tile_mem_addr_width_gp-1:0]   mc_ce_left_ugd_len;
@@ -122,48 +124,50 @@ import gemm_pkg::*;
     logic                                mc_ce_main_loop_over_left;
     logic                                ce_mc_tile_done;
 
-    // Dispatcher Control BRAM → Compute Engine (Dual Read Ports)
-    // Left matrix mantissa port
-    logic [10:0]   ce_dc_bram_rd_addr_left;
-    logic [255:0]  dc_ce_bram_rd_data_left;
-    logic          ce_dc_bram_rd_en_left;
-    
-    // Right matrix mantissa port
-    logic [10:0]   ce_dc_bram_rd_addr_right;
-    logic [255:0]  dc_ce_bram_rd_data_right;
-    logic          ce_dc_bram_rd_en_right;
-    
-    // NEW: Dispatcher Control Exponent BRAM → Compute Engine
-    // Exponent write ports (from dispatcher unpacking)
-    logic [8:0]    dc_left_exp_wr_addr;
-    logic [7:0]    dc_left_exp_wr_data;
-    logic          dc_left_exp_wr_en;
-    
-    logic [8:0]    dc_right_exp_wr_addr;
-    logic [7:0]    dc_right_exp_wr_data;
-    logic          dc_right_exp_wr_en;
-    
-    // Exponent read ports (to compute engine)
-    logic [8:0]    ce_dc_left_exp_rd_addr;
-    logic [7:0]    dc_ce_left_exp_rd_data;
-    
-    logic [8:0]    ce_dc_right_exp_rd_addr;
-    logic [7:0]    dc_ce_right_exp_rd_data;
+    // NEW: Dispatcher Control → Tile Array Write Interface
+    // Left mantissa writes (broadcast to all tiles)
+    logic [NUM_TILES-1:0]  dc_tile_man_wr_en_left;
+    logic [8:0]            dc_tile_man_wr_addr_left;
+    logic [255:0]          dc_tile_man_wr_data_left;
 
-    // Compute Engine → Result FIFO
+    // Right mantissa writes (distribute to tiles)
+    logic [NUM_TILES-1:0]  dc_tile_man_wr_en_right;
+    logic [8:0]            dc_tile_man_wr_addr_right;
+    logic [255:0]          dc_tile_man_wr_data_right;
+
+    // Left exponent writes (broadcast to all tiles)
+    logic [NUM_TILES-1:0]  dc_tile_exp_wr_en_left;
+    logic [8:0]            dc_tile_exp_wr_addr_left;
+    logic [7:0]            dc_tile_exp_wr_data_left;
+
+    // Right exponent writes (distribute to tiles)
+    logic [NUM_TILES-1:0]  dc_tile_exp_wr_en_right;
+    logic [8:0]            dc_tile_exp_wr_addr_right;
+    logic [7:0]            dc_tile_exp_wr_data_right;
+
+    // Compute Tile Array → Result FIFO
     logic [15:0]   ce_result_data;     // FP16 results
     logic          ce_result_valid;
+    logic [3:0]    ce_result_tile_id;  // NEW: Which tile produced this result
     logic          result_fifo_full;
     logic          result_fifo_afull;
+
+    // Hardcoded single-tile configuration for Phase 1
+    // Phase 3 will update master_control to provide column_enable from MATMUL command
+    assign mc_ce_column_enable = 16'h0001;  // Enable only tile 0 for Phase 1
 
     // Debug signals
     logic [3:0]  mc_state;
     logic [3:0]  mc_state_next;
     logic [3:0]  dc_state;
-    logic [3:0]  ce_state;
+    logic [3:0]  ce_state [0:NUM_TILES-1];  // Per-tile states
     logic [cmd_op_width_gp-1:0] last_opcode;
     logic [9:0]  bram_wr_count;
     logic [15:0] result_count;
+
+    // Phase 2: Dispatcher write ports now connected (minimal DISPATCH implementation)
+    // These will be properly driven by dispatcher_control during ST_DISPATCH
+    // (Removed temporary tie-offs)
 
     // ===================================================================
     // Module Instantiations
@@ -208,6 +212,11 @@ import gemm_pkg::*;
         .i_cmd_fifo_empty   (cmd_fifo_empty),
         .i_cmd_fifo_count   (cmd_fifo_count),
         .o_cmd_fifo_ren     (cmd_fifo_ren),
+        
+        // Peripheral State Inputs (for command synchronization)
+        .i_dc_state         (dc_state),
+        .i_ce_state         (ce_state[0]),      // Phase 1: Use tile[0] state for single-tile compatibility
+        .i_result_fifo_afull(result_fifo_afull),
 
         // Dispatcher Control Interface (FETCH/DISP commands)
         .o_dc_fetch_en      (mc_dc_fetch_en),
@@ -256,7 +265,8 @@ import gemm_pkg::*;
         .TGT_DATA_WIDTH     (TGT_DATA_WIDTH),
         .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
         .BRAM_DEPTH         (2048),           // Dual 128×128 matrix buffer
-        .GDDR6_PAGE_ID      (GDDR6_PAGE_ID)
+        .GDDR6_PAGE_ID      (GDDR6_PAGE_ID),
+        .NUM_TILES          (NUM_TILES)       // NEW: Number of tiles
     ) u_dispatcher_control (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
@@ -274,30 +284,46 @@ import gemm_pkg::*;
         .i_man_4b_8b_n      (mc_dc_man_4b_8b_n),
         .o_disp_done        (dc_mc_disp_done),
 
-        // Dual BRAM Read Ports (for Compute Engine)
-        .i_bram_rd_addr_left    (ce_dc_bram_rd_addr_left),
-        .o_bram_rd_data_left    (dc_ce_bram_rd_data_left),
-        .i_bram_rd_en_left      (ce_dc_bram_rd_en_left),
-        
-        .i_bram_rd_addr_right   (ce_dc_bram_rd_addr_right),
-        .o_bram_rd_data_right   (dc_ce_bram_rd_data_right),
-        .i_bram_rd_en_right     (ce_dc_bram_rd_en_right),
-        
-        // NEW: Exponent Write Ports (from unpacking logic)
-        .o_left_exp_wr_addr     (dc_left_exp_wr_addr),
-        .o_left_exp_wr_data     (dc_left_exp_wr_data),
-        .o_left_exp_wr_en       (dc_left_exp_wr_en),
-        
-        .o_right_exp_wr_addr    (dc_right_exp_wr_addr),
-        .o_right_exp_wr_data    (dc_right_exp_wr_data),
-        .o_right_exp_wr_en      (dc_right_exp_wr_en),
-        
-        // NEW: Exponent Read Ports (from Compute Engine)
-        .i_left_exp_rd_addr     (ce_dc_left_exp_rd_addr),
-        .o_left_exp_rd_data     (dc_ce_left_exp_rd_data),
-        
-        .i_right_exp_rd_addr    (ce_dc_right_exp_rd_addr),
-        .o_right_exp_rd_data    (dc_ce_right_exp_rd_data),
+        // NOTE: BRAM/Exponent ports kept for Phase 1 compatibility
+        // These read ports are now unused (compute_tile_array has private tile_bram)
+        .i_bram_rd_addr_left    (11'd0),            // Tied off
+        .o_bram_rd_data_left    (),                 // Unconnected
+        .i_bram_rd_en_left      (1'b0),             // Tied off
+
+        .i_bram_rd_addr_right   (11'd0),            // Tied off
+        .o_bram_rd_data_right   (),                 // Unconnected
+        .i_bram_rd_en_right     (1'b0),             // Tied off
+
+        .o_left_exp_wr_addr     (),                 // Unconnected
+        .o_left_exp_wr_data     (),                 // Unconnected
+        .o_left_exp_wr_en       (),                 // Unconnected
+
+        .o_right_exp_wr_addr    (),                 // Unconnected
+        .o_right_exp_wr_data    (),                 // Unconnected
+        .o_right_exp_wr_en      (),                 // Unconnected
+
+        .i_left_exp_rd_addr     (9'd0),             // Tied off
+        .o_left_exp_rd_data     (),                 // Unconnected
+
+        .i_right_exp_rd_addr    (9'd0),             // Tied off
+        .o_right_exp_rd_data    (),                 // Unconnected
+
+        // NEW Phase 2: Tile BRAM Write Interface (DISPATCH)
+        .o_tile_man_wr_en_left      (dc_tile_man_wr_en_left),
+        .o_tile_man_wr_addr_left    (dc_tile_man_wr_addr_left),
+        .o_tile_man_wr_data_left    (dc_tile_man_wr_data_left),
+
+        .o_tile_man_wr_en_right     (dc_tile_man_wr_en_right),
+        .o_tile_man_wr_addr_right   (dc_tile_man_wr_addr_right),
+        .o_tile_man_wr_data_right   (dc_tile_man_wr_data_right),
+
+        .o_tile_exp_wr_en_left      (dc_tile_exp_wr_en_left),
+        .o_tile_exp_wr_addr_left    (dc_tile_exp_wr_addr_left),
+        .o_tile_exp_wr_data_left    (dc_tile_exp_wr_data_left),
+
+        .o_tile_exp_wr_en_right     (dc_tile_exp_wr_en_right),
+        .o_tile_exp_wr_addr_right   (dc_tile_exp_wr_addr_right),
+        .o_tile_exp_wr_data_right   (dc_tile_exp_wr_data_right),
 
         // AXI GDDR6 Interface
         .axi_ddr_if         (nap_axi),
@@ -308,14 +334,20 @@ import gemm_pkg::*;
     );
 
     // ------------------------------------------------------------------
-    // Compute Engine - Modular GFP8 matrix multiplication with FP16 output
+    // Compute Tile Array - NUM_TILES parallel compute engines with private L1 BRAMs
     // ------------------------------------------------------------------
-    compute_engine_modular u_compute_engine (
+    compute_tile_array #(
+        .NUM_TILES          (NUM_TILES),
+        .TILE_BRAM_DEPTH    (512),              // 512 lines = 128 NVs per tile
+        .TILE_BRAM_WIDTH    (256),              // 256 bits/line
+        .TILE_BRAM_ADDR_WIDTH (9)               // 9 bits for 512 depth
+    ) u_compute_tile_array (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
 
-        // Master Control Interface
+        // Tile Command Interface (from Master Control)
         .i_tile_en          (mc_ce_tile_en),
+        .i_column_enable    (mc_ce_column_enable),  // NEW: Which tiles to execute
         .i_left_addr        (mc_ce_left_addr),
         .i_right_addr       (mc_ce_right_addr),
         .i_left_ugd_len     (mc_ce_left_ugd_len),
@@ -329,31 +361,35 @@ import gemm_pkg::*;
         .i_main_loop_over_left (mc_ce_main_loop_over_left),
         .o_tile_done        (ce_mc_tile_done),
 
-        // Dual BRAM Mantissa Read Interface (from Dispatcher Control)
-        .o_bram_left_rd_addr    (ce_dc_bram_rd_addr_left),
-        .i_bram_left_rd_data    (dc_ce_bram_rd_data_left),
-        .o_bram_left_rd_en      (ce_dc_bram_rd_en_left),
-        
-        .o_bram_right_rd_addr   (ce_dc_bram_rd_addr_right),
-        .i_bram_right_rd_data   (dc_ce_bram_rd_data_right),
-        .o_bram_right_rd_en     (ce_dc_bram_rd_en_right),
-        
-        // NEW: Exponent Read Interface (from Dispatcher Control)
-        .o_left_exp_rd_addr     (ce_dc_left_exp_rd_addr),
-        .i_left_exp_rd_data     (dc_ce_left_exp_rd_data),
-        
-        .o_right_exp_rd_addr    (ce_dc_right_exp_rd_addr),
-        .i_right_exp_rd_data    (dc_ce_right_exp_rd_data),
+        // Dispatcher Write Interface - Left Mantissa (broadcast)
+        .i_dispatcher_man_wr_en_left    (dc_tile_man_wr_en_left),
+        .i_dispatcher_man_wr_addr_left  (dc_tile_man_wr_addr_left),
+        .i_dispatcher_man_wr_data_left  (dc_tile_man_wr_data_left),
 
-        // Result FIFO Write Interface
+        // Dispatcher Write Interface - Right Mantissa (distribute)
+        .i_dispatcher_man_wr_en_right   (dc_tile_man_wr_en_right),
+        .i_dispatcher_man_wr_addr_right (dc_tile_man_wr_addr_right),
+        .i_dispatcher_man_wr_data_right (dc_tile_man_wr_data_right),
+
+        // Dispatcher Write Interface - Left Exponent (broadcast)
+        .i_dispatcher_exp_wr_en_left    (dc_tile_exp_wr_en_left),
+        .i_dispatcher_exp_wr_addr_left  (dc_tile_exp_wr_addr_left),
+        .i_dispatcher_exp_wr_data_left  (dc_tile_exp_wr_data_left),
+
+        // Dispatcher Write Interface - Right Exponent (distribute)
+        .i_dispatcher_exp_wr_en_right   (dc_tile_exp_wr_en_right),
+        .i_dispatcher_exp_wr_addr_right (dc_tile_exp_wr_addr_right),
+        .i_dispatcher_exp_wr_data_right (dc_tile_exp_wr_data_right),
+
+        // Result Interface (tile-major output)
         .o_result_data      (ce_result_data),
         .o_result_valid     (ce_result_valid),
+        .o_result_tile_id   (ce_result_tile_id),    // NEW: Tile ID for results
         .i_result_full      (result_fifo_full),
         .i_result_afull     (result_fifo_afull),
 
         // Debug
-        .o_ce_state         (ce_state),
-        .o_result_count     (result_count)
+        .o_ce_state         (ce_state)              // Per-tile states array
     );
 
     // ------------------------------------------------------------------
@@ -383,10 +419,21 @@ import gemm_pkg::*;
     // ===================================================================
 
     // Engine is busy if any component is active
+    logic any_tile_busy;
+    always_comb begin
+        any_tile_busy = 1'b0;
+        for (int i = 0; i < NUM_TILES; i++) begin
+            if (ce_state[i] != 4'd0) begin
+                any_tile_busy = 1'b1;
+                break;
+            end
+        end
+    end
+
     assign o_engine_busy = (cmd_fifo_count != 13'd0) ||
                           (mc_state != 4'd0) ||
                           (dc_state != 4'd0) ||
-                          (ce_state != 4'd0);
+                          any_tile_busy;
 
     // ===================================================================
     // Debug Output Assignments

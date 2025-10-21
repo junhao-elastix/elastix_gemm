@@ -1,0 +1,29 @@
+# Archive Information - Oct 20, 2025 Cleanup
+
+## Summary
+This archive contains documentation from the Oct 20, 2025 cleanup that established
+gemm_simple/ as a clean baseline reference for the MS2.0 GEMM engine.
+
+## Archived Files (2 docs + 8 sim = 10 total)
+
+### From Root:
+1. MULTITILE_TEST_STATUS.md (Oct 15) - Documents multi-tile addressing hardware limitation
+
+### From docs/:
+2. CLEANUP_VERIFICATION.md (Oct 13) - Verification of previous Oct 13 cleanup
+
+## Reason for Archival
+These files were historical status documents and debugging artifacts that have been
+superseded by:
+- sim/vector_system_test/ with 9/9 tests passing (100%)
+- Updated CLAUDE.md and README.md with current status
+- CHANGELOG.md with complete historical record
+
+## What Replaced Them
+- Simulation validation: sim/vector_system_test/README.md (updated Oct 20)
+- Test results: sim/vector_system_test/ with professional logging
+- Multi-tile status: Documented in CHANGELOG.md as known limitation
+- Cleanup verification: Incorporated into Oct 20 CHANGELOG entry
+
+## Archive Date
+Mon Oct 20 21:02:35 PDT 2025

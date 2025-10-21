@@ -1,0 +1,64 @@
+================================================================================
+FILE GUIDE - What Each File Does
+================================================================================
+
+START HERE:
+-----------
+00_READ_ME_FIRST.txt    → Read this first! (30 seconds)
+START_HERE.txt          → Quick instructions to run
+SUMMARY.md              → What this is, why it matters (2 min)
+
+RUN THE SIMULATION:
+-------------------
+run_sim.sh              → Execute this to run everything
+                          (Automated: setup + compile + simulate)
+
+CORE FILES:
+-----------
+tb_engine_gddr6.sv      → Main testbench (660 lines)
+                          Full system: CSR → engine → GDDR6
+Makefile                → Build system (FULLCHIP_BFM flow)
+wave.do                 → Waveform configuration for GUI
+setup.sh                → Dependency verification script
+
+IF SOMETHING FAILS:
+-------------------
+RUN_NOW.md              → Detailed manual steps
+CHECKLIST.md            → Step-by-step verification
+STATUS.md               → Current status + TODO items
+
+REFERENCE DOCS:
+---------------
+README.md               → Quick reference guide
+RUNNING_SIMULATION.md   → Complete simulation instructions
+SIMULATION_OVERVIEW.md  → Architecture and debugging guide
+FILE_GUIDE.txt          → This file
+
+OUTPUTS (after run):
+--------------------
+logs/                   → Simulation logs
+work/                   → Compiled library
+transcript              → Riviera transcript
+sim_output.wlf          → Waveform database (if GUI used)
+
+
+QUICK COMMANDS:
+===============
+Run everything:      bash run_sim.sh
+Compile only:        make clean && make run_compile
+Simulate only:       make run_vsim
+Debug with GUI:      make debug
+Clean all:           make clean
+View logs:           cat logs/FULLCHIP_BFM_simulation.log
+
+
+FILE COUNT: 14 files created
+TOTAL LINES: ~2000+ lines of code and documentation
+DEPENDENCIES: All verified and present
+STATUS: Ready to run
+
+================================================================================
+Just run: bash run_sim.sh
+================================================================================
+
+

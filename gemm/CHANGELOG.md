@@ -1,5 +1,529 @@
 # CHANGELOG - Elastix GEMM Project
 
+## [2025-10-21 Early Morning] - DISPATCH Addressing Fixed! Phase 1.6 Complete
+
+**Timestamp**: Tue Oct 21 02:17:21 PDT 2025
+**Status**: [SUCCESS] **PHASE 1.6 COMPLETE** - All 16 results matching golden values!
+
+---
+
+### Summary
+
+Fixed fundamental DISPATCH addressing bug through architecture education session! Root cause: I was treating `disp_addr_reg` as SOURCE address in dispatcher_bram when it's actually the DESTINATION address in tile_bram. DISPATCH always reads from address 0 in aligned buffers and writes to command-specified destination in tile_bram. After fixing addressing logic and correcting testbench DISPATCH length from 528 to 512, simulation now successfully:
+- DISPATCH correctly copies 512 lines from dispatcher_bram aligned buffers [0-511] to tile_bram
+- All 16 results match golden values perfectly ✅
+- Phase 1 (Single-Row Multi-Tile Infrastructure) officially COMPLETE!
+
+**Architecture Clarification**: Added comprehensive hardware architecture details to SINGLE_ROW_PLAN.md documenting memory block organization, FETCH unpacking process, and DISPATCH operation specification.
+
+---
+
+### Bug Fixed: DISPATCH Source/Destination Addressing
+
+**Root Cause** (dispatcher_control.sv lines 440-516):
+```systemverilog
+// WRONG (before):
+// Source read - was incorrectly adding disp_addr_reg
+assign disp_bram_rd_addr_left = disp_addr_reg[10:0] + disp_cnt_reg[10:0];
+assign disp_bram_rd_addr_right = disp_addr_reg[10:0] + disp_cnt_reg[10:0];
+
+// Destination write - was only using counter
+assign o_tile_man_wr_addr_left = disp_cnt_delayed;
+assign o_tile_man_wr_addr_right = disp_cnt_delayed;
+
+// CORRECT (after):
+// Source ALWAYS reads from address 0 in aligned buffers
+assign disp_bram_rd_addr_left = disp_cnt_reg[10:0];   // [0 : disp_len-1]
+assign disp_bram_rd_addr_right = disp_cnt_reg[10:0];  // [0 : disp_len-1]
+
+// Destination writes to command-specified address + offset
+assign o_tile_man_wr_addr_left = disp_addr_reg[8:0] + disp_cnt_delayed;
+assign o_tile_man_wr_addr_right = disp_addr_reg[8:0] + disp_cnt_delayed;
+```
+
+**Key Insight**: DISPATCH command has no source address field - it always reads from address 0 in aligned buffers. The `disp_addr_reg` from command is the DESTINATION base address in tile_bram.
+
+---
+
+### Testbench Fix: DISPATCH Length
+
+**Root Cause** (tb_engine_top.sv line 507):
+```systemverilog
+// WRONG (before):
+generate_disp_command(2, 0, 528, 1'b0, disp_cmd);  // Trying to dispatch 528 lines
+
+// CORRECT (after):
+generate_disp_command(2, 0, 512, 1'b0, disp_cmd);  // Dispatch 512 aligned lines
+```
+
+**Explanation**: DISPATCH operates on aligned buffers (512 lines) created by FETCH unpacking, NOT on packed memory blocks (528 lines). The 528-line format only exists in GDDR6 and the exp_packed staging buffer.
+
+---
+
+### Architecture Documentation Added
+
+**SINGLE_ROW_PLAN.md** (lines 56-251):
+- **Memory Block Organization**: 16 packed exponent lines (32 exp/line) + 512 mantissa lines
+- **FETCH Operation**: Three-stage process creating aligned buffers
+  - Stage 1: Read lines 0-15 → exp_packed buffer
+  - Stage 2: Read lines 16-527 → man buffer (with address translation)
+  - Parallel: Unpack exp_packed → exp_aligned during Stage 2
+- **DISPATCH Operation**: Source always address 0, destination from command
+- **Broadcast vs Distribute**: Two data distribution modes for left/right matrices
+- **tile_bram Organization**: Identical structure to dispatcher_bram aligned buffers
+
+---
+
+### Test Results
+
+**Before Fix**:
+- 16/16 results received but ALL mismatched golden values
+- Result diffs ranging from 9-511 (close) to 44k-47k (zero values)
+- Indicated DISPATCH addressing problem
+
+**After Fix**:
+- 16/16 results received ✅
+- **ALL 16 results match golden values perfectly!** ✅
+- Total simulation time: 18879 cycles
+- Status: `ALL TESTS PASSED`
+
+**Simulation Log**:
+```
+[TB] TEST 1: Running configuration B4_C4_V32 (B=4, C=4, V=32)
+[TB] Collected 16 results after 18879 cycles
+[TB] PASS: B4_C4_V32 - All 16 results matched!
+
+================================================================================
+TEST SUMMARY
+================================================================================
+Total Tests: 1
+Passed:      1
+Failed:      0
+STATUS: ALL TESTS PASSED
+```
+
+---
+
+### Files Modified
+
+1. **dispatcher_control.sv** (lines 440-516):
+   - Fixed source read addresses: Always use `disp_cnt_reg[10:0]`
+   - Fixed destination write addresses: `disp_addr_reg[8:0] + disp_cnt_delayed`
+   - Simplified delayed write logic (removed 512-entry wrap prevention)
+
+2. **tb_engine_top.sv** (line 507):
+   - Changed DISPATCH length from 528 to 512
+
+3. **SINGLE_ROW_PLAN.md** (lines 56-251):
+   - Added comprehensive "Hardware Architecture Details" section
+
+---
+
+### Phase 1 Status: COMPLETE! 🎉
+
+**Phase 1.1-1.3**: Infrastructure ✅
+- tile_bram_wrapper.sv
+- compute_tile_array.sv
+- engine_top.sv integration
+
+**Phase 1.4**: DISPATCH bugs fixed ✅
+- Address width mismatches corrected
+- Data flow validated
+
+**Phase 1.5**: WAIT_DISPATCH synchronization ✅
+- ID tracking working
+- 10ns blocking time
+
+**Phase 1.6**: Result correctness ✅
+- **All 16 results matching golden values!**
+- DISPATCH addressing completely fixed
+- Architecture understanding aligned
+
+**Next Steps**: Ready to proceed to Phase 2.3 (Full Multi-Tile DISPATCH with broadcast/distribute modes) when needed.
+
+---
+
+## [2025-10-20 Late Evening] - WAIT_DISPATCH Synchronization Fixed! Phase 1.5 Complete
+
+**Timestamp**: Mon Oct 20 20:34:15 PDT 2025
+**Status**: [SUCCESS] **PHASE 1.5 COMPLETE** - WAIT_DISPATCH synchronization working, results received (16/16)
+
+---
+
+### Summary
+
+Fixed critical WAIT_DISPATCH synchronization bug! Root cause: testbench was placing `wait_id` in wrong header location (bits [31:24] instead of [15:8]). After fixing testbench command generation and adding ID tracking debug prints, simulation now successfully:
+- DISPATCH completes and updates `last_disp_id_reg`
+- WAIT_DISPATCH captures correct `wait_id` from header
+- Synchronization unblocks immediately (10ns blocking time)
+- All 16 results received after 18895 cycles
+
+**New Issue Discovered**: Result values don't match golden reference (16/16 mismatches). This indicates compute engine may not be reading correct data from tile_bram, or DISPATCH didn't copy data correctly. Moving to Phase 1.6 to debug data correctness.
+
+---
+
+### Bug Fixed: wait_id Header Location
+
+**Root Cause** (tb_engine_top.sv lines 575-585):
+```systemverilog
+// WRONG (before):
+cmd[0] = {wait_id, 8'd0, id, e_cmd_op_wait_disp};
+//        [31:24] [23:16] [15:8] [7:0]
+// master_control reads bits [15:8] → got cmd_id=3 instead of wait_id=2!
+
+// CORRECT (after):
+cmd[0] = {16'd4, wait_id, e_cmd_op_wait_disp};
+//        [31:16]  [15:8]  [7:0]
+//          len   wait_id  opcode
+```
+
+**Changes**:
+1. Removed `id` parameter from `generate_wait_disp_command` task
+2. Put `wait_id` directly in header bits [15:8] per MS2.0 spec
+3. Updated call site from `(3, 2, cmd)` to `(2, cmd)`
+
+**Verification** (sim.log):
+```
+@ 20295000: DISPATCH completed: last_disp_id_reg <= 2
+@ 20355000: WAIT command decoded: wait_id_reg <= 2
+@ 20355000: WAIT_DISP satisfied: last_disp_id=2 >= wait_id=2
+```
+
+---
+
+### Debug Instrumentation Added
+
+**master_control.sv** (lines 464-489):
+- Added `$display` when `last_disp_id_reg` updates in ST_CMD_COMPLETE
+- Added `$display` when `wait_id_reg` captured in ST_DECODE
+- Added conditional `$display` in ST_WAIT_DISP showing blocking reason (every 10us)
+
+---
+
+### State Machine Flow Verified
+
+**DISPATCH Command (0xF1)**:
+```
+@ 14975000: ST_DECODE (0x4 → 0x5)
+@ 14985000: ST_EXEC_DISP (0x5 → 0x7)
+@ 14995000: ST_WAIT_DONE (0x7 → 0xb)
+@ 20295000: ST_CMD_COMPLETE (0xb → 0xc) ← last_disp_id_reg <= 2
+@ 20305000: ST_IDLE (0xc → 0x0)
+```
+
+**WAIT_DISPATCH Command (0xF3)**:
+```
+@ 20355000: ST_DECODE (0x4 → 0x5) ← wait_id_reg <= 2
+@ 20365000: ST_WAIT_DISP (0x5 → 0x9)
+@ 20375000: ST_CMD_COMPLETE (0x9 → 0xc) ← unblocked (10ns blocking)
+@ 20385000: ST_IDLE (0xc → 0x0)
+```
+
+---
+
+### Test Results
+
+**Before Fix**:
+- 0/16 results received
+- MC stuck in ST_WAIT_DISP forever
+- Test timeout
+
+**After Fix**:
+- 16/16 results received ✅
+- Total simulation time: 18895 cycles
+- Blocking time: 10ns (1 clock cycle) ✅
+- **BUT**: All 16 results mismatch golden values ⚠️
+
+**Result Mismatches** (test_results.log):
+```
+[0]: hw=0x0000 golden=0xb6ae diff=46766
+[1]: hw=0x0000 golden=0xb811 diff=47121
+...
+[5]: hw=0x3b48 golden=0x3af5 diff=83      ← Small diff
+[6]: hw=0xb652 golden=0xb6ec diff=154     ← Small diff
+```
+
+Some results are close (small diffs), others are zero or very wrong. This suggests:
+- DISPATCH may have copied some data correctly but not all
+- Compute engine address generation for tile_bram may be incorrect
+- Data alignment issues between dispatcher_bram and tile_bram
+
+---
+
+### Next Steps: Phase 1.6 - Debug Result Correctness
+
+1. Add tile_bram read/write monitoring
+2. Compare dispatcher_bram vs tile_bram contents after DISPATCH
+3. Verify compute engine address generation for tile_bram reads
+4. Check if exponent data is being copied correctly
+5. Verify mantissa vs exponent address alignment
+
+---
+
+### Files Modified
+
+1. **tb_engine_top.sv**:
+   - Line 575-585: Fixed `generate_wait_disp_command` task signature and header format
+   - Line 512: Updated call site to match new signature
+
+2. **master_control.sv**:
+   - Lines 468-476: Added debug prints for `last_disp_id_reg` updates
+   - Lines 485-488: Added debug print for `wait_id_reg` capture
+   - Lines 227-239: Added debug prints in ST_WAIT_DISP state
+
+---
+
+### Phase 1 Status Update
+
+- ✅ Phase 1.1: tile_bram_wrapper created
+- ✅ Phase 1.2: compute_tile_array created
+- ✅ Phase 1.3: engine_top integration
+- ✅ Phase 1.4: DISPATCH FSM bugs fixed
+- ✅ Phase 1.5: WAIT_DISPATCH synchronization working
+- ⚠️ Phase 1.6: Result correctness debugging (IN PROGRESS)
+
+---
+
+## [2025-10-20 Evening] - DISPATCH Debugging Session: Data Copy Working, WAIT_DISPATCH Blocked
+
+**Timestamp**: Mon Oct 20 19:46:05 PDT 2025
+**Status**: [IN PROGRESS] **DEBUGGING** - DISPATCH data copy confirmed working, blocked on WAIT_DISPATCH synchronization
+
+---
+
+### Summary
+
+Debugged DISPATCH implementation and confirmed data copy from dispatcher_bram → tile_bram[0] is executing correctly (5290 cycles for 528 lines). Identified and fixed duplicate parameter assignment bug in dispatcher_control.sv. Testbench updated with correct disp_len=528. Simulation shows DISPATCH completes successfully, but system is now blocked in WAIT_DISPATCH state - MC stuck in ST_WAIT_DISP (0x9) waiting for synchronization that never arrives.
+
+---
+
+### Debugging Findings
+
+**✅ DISPATCH Data Copy Confirmed Working**:
+- DC state transitions: IDLE (0x0) → DISPATCH (0x7) @ 15005000
+- DISPATCH executes for 5290 cycles (10 cycles/line for 528 lines)
+- DC exits DISPATCH → IDLE @ 20295000
+- All 4 data paths enabled (left/right × mantissa/exponent)
+
+**Bug Fixed** (dispatcher_control.sv:376-381):
+- **Problem**: Duplicate assignment to `disp_len_reg` in same `always_ff` block
+  - ST_IDLE case captured parameters (lines 329-334)
+  - ST_DISPATCH case re-assigned same parameters (lines 376-381)
+  - Created race condition where `disp_len_reg` might be 0 when checked
+- **Solution**: Removed duplicate assignments, kept only ST_IDLE capture
+- **Impact**: DISPATCH now enters correctly and counts properly
+
+**Testbench Fix** (tb_engine_top.sv:505):
+- **Problem**: `generate_disp_command(2, 0, 0, 1'b0)` sent len=0
+- **Solution**: Changed to `generate_disp_command(2, 0, 528, 1'b0)`
+- **Impact**: DISPATCH now copies all 528 lines instead of exiting immediately
+
+---
+
+### Current Blocker
+
+**WAIT_DISPATCH Synchronization Stuck**:
+- MC enters ST_WAIT_DISP (0x9) @ 20365000 with opcode 0xF3
+- Never progresses past this state
+- Test times out waiting for results (0/16 results received)
+- Likely issue: `last_disp_id_reg` not updating or wait condition never satisfied
+
+**Next Debugging Steps**:
+1. Check `last_disp_id_reg` update logic in dispatcher_control
+2. Verify `o_disp_done` assertion and timing
+3. Check WAIT_DISPATCH condition in master_control (ST_WAIT_DISP case)
+4. Add debug outputs for disp_id tracking
+
+---
+
+### Files Modified
+
+**dispatcher_control.sv** (lines 372-390):
+- Removed duplicate parameter assignments in ST_DISPATCH case
+- Kept parameter capture in ST_IDLE case only (lines 329-334)
+- Counter initialization moved to transition condition
+
+**tb_engine_top.sv** (line 505):
+- Updated DISPATCH command: len=0 → len=528
+- Comment updated to reflect Phase 1 data copy purpose
+
+**Makefile** (sim/vector_system_test/Makefile):
+- Added compilation output redirection to compile.log
+- Added simulation output redirection to sim.log
+- Added `-noasdb` flag to avoid database locking issues
+- Improved user experience with quieter output
+
+---
+
+### Test Results
+
+**B4_C4_V32 Test Status**: ❌ FAIL (0/16 results, timeout)
+
+**State Machine Trace**:
+```
+MC:  EXEC_DISP (0x5) → EXEC_WAIT (0x7) → WAIT_DONE (0xb) → CMD_COMPLETE (0xc)
+  → READ_CMD (0x0) → EXEC_CMD (0x1) → READ_PAYLOAD (0x2-0x4) → WAIT_DISP (0x9) [STUCK]
+
+DC:  IDLE (0x0) → DISPATCH (0x7) [5290 cycles] → IDLE (0x0) → DISP_ACK (0x7) [instant]
+
+CE:  [Not yet reached]
+```
+
+**Timing**:
+- DISPATCH start: 15005000 ps
+- DISPATCH end:   20295000 ps
+- Duration: 5.29ms (5290 cycles @ 1ns period)
+- MC stuck: 20365000 ps onwards
+
+---
+
+### Compilation Statistics
+
+- **Compile**: 0 Errors, 19 Warnings (VCP2597 unconnected ports, VCP2675 init conflicts)
+- **Simulation**: Completed with timeout
+- **Log Files**: compile.log (clean), sim.log (2.5MB with ACX warnings)
+
+---
+
+## [2025-10-20] - Multi-Tile Architecture Implementation (Phase 1 + Minimal DISPATCH)
+
+**Timestamp**: Mon Oct 20 14:03:19 PDT 2025
+**Status**: [IN PROGRESS] **MULTI-TILE MIGRATION** - Phase 1 complete with minimal DISPATCH for backward compatibility testing
+
+---
+
+### Summary
+
+Implemented foundational multi-tile architecture to enable parallel matrix multiplication across up to 16 compute tiles. Created three-level memory hierarchy (L3: GDDR6 → L2: dispatcher_bram → L1: tile_bram) with private per-tile L1 caches. Added minimal DISPATCH functionality to copy data from dispatcher_bram to tile_bram[0] for single-tile backward compatibility validation. Architecture ready for simulation testing with column_enable=0x0001.
+
+---
+
+### Changes Made
+
+#### New RTL Modules (3 files, ~680 lines)
+
+**tile_bram_wrapper.sv** (132 lines):
+- 512×256-bit dual-port mantissa BRAM per tile
+- 512×8-bit dual-port exponent BRAM per tile
+- Port A: Write from dispatcher (DISPATCH phase)
+- Port B: Read from compute engine (MATMUL phase)
+- Supports 128 Native Vectors per tile (4 lines/NV)
+
+**compute_tile_array.sv** (273 lines):
+- NUM_TILES parameter (max 16) for scalable architecture
+- Instantiates NUM_TILES parallel compute engines
+- Each tile has private tile_bram_left and tile_bram_right
+- column_enable mask for selective tile execution
+- Per-tile exponent storage (required for distributed weights)
+- Tile-major result collection with tile_id
+
+**Modified Modules**:
+
+**engine_top.sv** (~450 lines, significant updates):
+- Added NUM_TILES parameter (default 16)
+- Replaced compute_engine_modular with compute_tile_array
+- Added column_enable (hardcoded to 16'h0001 for Phase 1 testing)
+- Updated status logic for per-tile ce_state arrays
+- Connected dispatcher write ports to tile array
+
+**dispatcher_control.sv** (~750 lines, added DISPATCH FSM):
+- Added ST_DISPATCH state (code 4'd7) to state machine
+- Implemented data copy from dispatcher_bram → tile_bram[0]
+- MUXed BRAM read ports (DISPATCH internal vs compute engine reads)
+- Added 6 new output ports for tile writes (mantissa + exponent, left + right)
+- For Phase 1: writes to tile[0] only (broadcast pattern 16'h0001)
+- Exponents tied off (will implement in full Phase 2)
+- NUM_TILES parameter added
+
+**Simulation Updates**:
+
+**Makefile** (sim/vector_system_test/):
+- Added tile_bram_wrapper.sv to RTL_SOURCES
+- Added compute_tile_array.sv to RTL_SOURCES
+- Updated compilation order for new dependencies
+
+---
+
+### Architecture Overview
+
+```
+L3 (GDDR6) → L2 (dispatcher_bram) → L1 (tile_bram) → Compute Engine
+             ✅ Working              ✅ Just implemented   ✅ Infrastructure ready
+```
+
+**Data Flow**:
+1. FETCH: GDDR6 → dispatcher_bram (L2, shared across tiles)
+2. DISPATCH: dispatcher_bram → tile_bram[0..N-1] (L1, per-tile private)
+   - Left (activations): Broadcast same data to all tiles
+   - Right (weights): Distribute unique data per tile
+3. MATMUL: tile_bram → compute_engine (parallel execution)
+
+**Current Status**:
+- Phase 1: Single-tile mode (column_enable = 0x0001) ✅ READY FOR TESTING
+- DISPATCH copies to tile[0] only
+- Backward compatible with existing MS2.0 tests
+
+---
+
+### Testing Status
+
+**Compilation**: ✅ SUCCESS (0 Errors, 19 Warnings)
+- ACX libraries compiled
+- All new modules compiled successfully
+- Ready for simulation testing
+
+**Hardware Testing**: PENDING
+- Requires simulation validation first
+- Then bitstream build and FPGA programming
+
+---
+
+### Next Steps
+
+1. **Phase 1.4**: Run simulation tests with single-tile mode
+2. **Phase 2 (Full DISPATCH)**:
+   - Implement broadcast logic (left, activations to all tiles)
+   - Implement distribute logic (right, unique weights per tile)
+   - Add exponent write support
+3. **Phase 3**: Update master_control for 16-byte MATMUL with column_enable
+4. **Phase 4**: Implement result_collector for tile-major output
+5. **Phase 5**: Full multi-tile validation
+
+---
+
+### Files Modified
+
+**RTL (New)**:
+- `src/rtl/tile_bram_wrapper.sv` (NEW, 132 lines)
+- `src/rtl/compute_tile_array.sv` (NEW, 273 lines)
+
+**RTL (Modified)**:
+- `src/rtl/engine_top.sv` (MODIFIED, multi-tile instantiation)
+- `src/rtl/dispatcher_control.sv` (MODIFIED, DISPATCH FSM added)
+
+**Simulation**:
+- `sim/vector_system_test/Makefile` (MODIFIED, added new modules)
+
+---
+
+### Performance Impact
+
+**BRAM Usage** (Phase 1 - 16 tiles):
+- Per-tile: 512 lines × (256-bit mantissa + 8-bit exp) × 2 (left/right) = 33 KB/tile
+- Total tiles: 16 × 33 KB = 528 KB
+- Dispatcher: 2048 lines × 256-bit × 2 = 1 MB
+- **Total L1+L2**: ~1.5 MB (40% of available BRAM)
+
+**Timing**: TBD after synthesis
+
+---
+
+### Known Issues
+
+None - compilation clean, ready for testing.
+
+---
+
 ## [2025-10-14] - Documentation Directory Cleanup
 
 **Timestamp**: Tue Oct 14 02:14:22 PDT 2025

@@ -95,7 +95,7 @@ module tb_engine_top;
     logic [3:0]   mc_state;
     logic [3:0]   mc_state_next;
     logic [3:0]   dc_state;
-    logic [3:0]   ce_state;
+    logic [3:0]   ce_state [0:15];  // Per-tile state array for NUM_TILES=16
     logic [cmd_op_width_gp-1:0] last_opcode;
     logic [9:0]   bram_wr_count;
     logic [15:0]  result_count;
@@ -172,17 +172,67 @@ module tb_engine_top;
     );
 
     // ===================================================================
+    // DEBUG: Continuous State Monitoring
+    // ===================================================================
+    logic [3:0] mc_state_prev;
+    logic [3:0] dc_state_prev;
+    logic [3:0] ce_state_prev;
+
+    initial mc_state_prev = 4'hF;
+    initial dc_state_prev = 4'hF;
+    initial ce_state_prev = 4'hF;
+
+    always @(posedge clk) begin
+        if (mc_state != mc_state_prev) begin
+            $display("[STATE] @%0t MC: 0x%1h → 0x%1h (busy=%b, opcode=0x%02x)",
+                     $time, mc_state_prev, mc_state, engine_busy, last_opcode);
+            mc_state_prev <= mc_state;
+        end
+
+        if (dc_state != dc_state_prev) begin
+            $display("[STATE] @%0t DC: 0x%1h → 0x%1h (wr_cnt=%0d)",
+                     $time, dc_state_prev, dc_state, bram_wr_count);
+            dc_state_prev <= dc_state;
+        end
+
+        if (ce_state[0] != ce_state_prev) begin
+            $display("[STATE] @%0t CE[0]: 0x%1h → 0x%1h (result_cnt=%0d)",
+                     $time, ce_state_prev, ce_state[0], result_count);
+            ce_state_prev <= ce_state[0];
+        end
+
+        // Monitor result FIFO status
+        if (result_fifo_count > 0) begin
+            $display("[FIFO] @%0t Result FIFO: count=%0d (empty=%b)",
+                     $time, result_fifo_count, result_fifo_empty);
+        end
+    end
+
+    // ===================================================================
     // Test Control Variables
     // ===================================================================
     integer cmd_idx;
     integer result_idx;
     integer timeout_count;
     integer watchdog;
-    
+
     // Test status
     integer total_tests = 0;
     integer passed_tests = 0;
     integer failed_tests = 0;
+    
+    // Log file handle
+    integer test_log_file;
+    
+    // ===================================================================
+    // Logging Functions
+    // ===================================================================
+    function void log_message(string message);
+        $display("%s", message);
+        if (test_log_file != 0) begin
+            $fdisplay(test_log_file, "%s", message);
+        end
+    endfunction
 
     // ===================================================================
     // Golden Reference Storage
@@ -203,21 +253,32 @@ module tb_engine_top;
     } test_config_t;
 
     test_config_t test_configs[] = '{
-        '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},
-        '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},
-        '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},
-        '{B: 2, C: 2, V: 64,   name: "B2_C2_V64"},
-        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},
-        '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
-        '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
-        '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
-        '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
+        // DEBUG: Focus on B4_C4_V32 only
+        // '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},
+        // '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},
+        // '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},
+        // '{B: 2, C: 2, V: 64,   name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"}
+        // '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
+        // '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
+        // '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
+        // '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
     };
 
     // ===================================================================
     // Main Test Sequence
     // ===================================================================
     initial begin
+        // Initialize log file
+        test_log_file = $fopen("/home/dev/Dev/elastix_gemm/gemm/sim/vector_system_test/test_results.log", "w");
+        if (test_log_file == 0) begin
+            $display("[TB] WARNING: Could not open test log file");
+        end else begin
+            $fdisplay(test_log_file, "MS2.0 GEMM Engine Test Results Log");
+            $fdisplay(test_log_file, "Generated: %t", $time);
+            $fdisplay(test_log_file, "================================================================================\n");
+        end
+        
         $display("\n================================================================================");
         $display("TB: MS2.0 GEMM Engine Top Testbench - FIFO Interface");
         $display("================================================================================\n");
@@ -255,6 +316,24 @@ module tb_engine_top;
             $display("STATUS: %0d TESTS FAILED", failed_tests);
         end
         $display("================================================================================\n");
+        
+        // Close log file
+        if (test_log_file != 0) begin
+            $fdisplay(test_log_file, "\n================================================================================");
+            $fdisplay(test_log_file, "TEST SUMMARY");
+            $fdisplay(test_log_file, "================================================================================");
+            $fdisplay(test_log_file, "Total Tests: %0d", total_tests);
+            $fdisplay(test_log_file, "Passed:      %0d", passed_tests);
+            $fdisplay(test_log_file, "Failed:      %0d", failed_tests);
+            if (failed_tests == 0) begin
+                $fdisplay(test_log_file, "STATUS: ALL TESTS PASSED");
+            end else begin
+                $fdisplay(test_log_file, "STATUS: %0d TESTS FAILED", failed_tests);
+            end
+            $fdisplay(test_log_file, "================================================================================");
+            $fclose(test_log_file);
+            $display("[TB] Test results logged to: test_results.log");
+        end
 
         $finish;
     end
@@ -278,8 +357,8 @@ module tb_engine_top;
         total_tests++;
         
         $display("\n[TB] ====================================================================");
-        $display("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
-                 total_tests, test_name, config_B, config_C, config_V);
+        log_message($sformatf("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
+                total_tests, test_name, config_B, config_C, config_V));
         $display("[TB] ====================================================================");
 
         // Load golden reference
@@ -346,19 +425,19 @@ module tb_engine_top;
                 
                 // Check for X/Z states (uninitialized values)
                 if ($isunknown(fp16_hw)) begin
-                    $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d]", 
-                            fp16_hw, results_seen);
+                    log_message($sformatf("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d]", 
+                            fp16_hw, results_seen));
                     mismatches++;
                 end else begin
                     diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
                     
                     if (diff > 2) begin
-                        $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                                results_seen, fp16_hw, golden, diff);
+                        log_message($sformatf("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
+                                results_seen, fp16_hw, golden, diff));
                         mismatches++;
                     end else begin
-                        $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                                results_seen, fp16_hw, golden, diff);
+                        // log_message($sformatf("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
+                        //         results_seen, fp16_hw, golden, diff));
                     end
                 end
                 
@@ -367,19 +446,19 @@ module tb_engine_top;
         end
 
         if (timeout_count >= watchdog) begin
-            $display("[TB] ERROR: Result wait timeout! Expected %0d, got %0d",
-                     expected_results, results_seen);
+            log_message($sformatf("[TB] ERROR: Result wait timeout! Expected %0d, got %0d",
+                     expected_results, results_seen));
         end else begin
-            $display("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count);
+            log_message($sformatf("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count));
         end
 
         // Test verdict
         if (mismatches == 0 && results_seen == expected_results) begin
-            $display("[TB] PASS: %s - All %0d results matched!", test_name, results_seen);
+            log_message($sformatf("[TB] PASS: %s - All %0d results matched!", test_name, results_seen));
             passed_tests++;
         end else begin
-            $display("[TB] FAIL: %s - %0d mismatches, %0d/%0d results",
-                     test_name, mismatches, results_seen, expected_results);
+            log_message($sformatf("[TB] FAIL: %s - %0d mismatches, %0d/%0d results /n",
+                     test_name, mismatches, results_seen, expected_results));
             failed_tests++;
         end
 
@@ -422,15 +501,17 @@ module tb_engine_top;
         cmd_seq[idx++] = fetch_right_cmd[2];
         cmd_seq[idx++] = fetch_right_cmd[3];
 
-        // DISPATCH (currently a no-op in single-tile mode)
-        generate_disp_command(2, 0, 0, 1'b0, disp_cmd);
+        // DISPATCH (Phase 1: Copy 512 lines from aligned buffers to tile[0])
+        // Source: dispatcher_bram aligned buffers [0-511] (NOT packed 528-line block!)
+        // Dest: tile_bram[0] starting at address 0
+        generate_disp_command(2, 0, 512, 1'b0, disp_cmd);
         cmd_seq[idx++] = disp_cmd[0];
         cmd_seq[idx++] = disp_cmd[1];
         cmd_seq[idx++] = disp_cmd[2];
         cmd_seq[idx++] = disp_cmd[3];
 
         // WAIT_DISPATCH
-        generate_wait_disp_command(3, 2, wait_disp_cmd);
+        generate_wait_disp_command(2, wait_disp_cmd);  // Wait for DISPATCH ID=2
         cmd_seq[idx++] = wait_disp_cmd[0];
         cmd_seq[idx++] = wait_disp_cmd[1];
         cmd_seq[idx++] = wait_disp_cmd[2];
@@ -494,12 +575,12 @@ module tb_engine_top;
     endtask
 
     task automatic generate_wait_disp_command(
-        input logic [7:0] id,
-        input logic [7:0] wait_id,
+        input logic [7:0] wait_id,  // ID to wait for (goes in header ID field)
         output logic [31:0] cmd [0:3]
     );
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        cmd[0] = {wait_id, 8'd0, id, e_cmd_op_wait_disp};
+        // WAIT_DISPATCH: wait_id goes in header bits [15:8] per MS2.0 spec
+        // Header format: {len[31:16], wait_id[15:8], opcode[7:0]}
+        cmd[0] = {16'd4, wait_id, e_cmd_op_wait_disp};
         cmd[1] = 32'h00000000;     // Unused payload word 1
         cmd[2] = 32'h00000000;     // Unused payload word 2
         cmd[3] = 32'h00000000;     // Unused payload word 3

@@ -1,0 +1,5 @@
+# KERNEL: [MC] @15435000 EXEC_TILE: B=1, C=1, V=1, left_addr=0, right_addr=528, bypass=0
+# KERNEL: [CE_MODULAR] @15445000 TILE_EN RISING EDGE DETECTED! B=1, C=1, V=1, left_addr=0, right_addr=528
+# KERNEL: [CE_MODULAR] @15445000 TILE_START: B=1, C=1, V=1, left_addr=0, right_addr=528
+# KERNEL: [CE_MODULAR] @15625000 TILE_DONE: result_count=0
+# KERNEL: [TB] All results produced: 1

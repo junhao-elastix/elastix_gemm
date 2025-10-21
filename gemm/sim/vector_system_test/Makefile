@@ -35,12 +35,14 @@ INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)
 # Testbench sources
 TB_SOURCES = ../../src/tb/tb_memory_model.sv tb_engine_top.sv
 
-# RTL sources (from gemm - MS2.0 FIFO architecture!)
+# RTL sources (from gemm - MS2.0 Multi-Tile architecture!)
 RTL_SOURCES = \
 	$(GEMM_RTL)/cmd_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram_dual_read.sv \
+	$(GEMM_RTL)/tile_bram_wrapper.sv \
+	$(GEMM_RTL)/compute_tile_array.sv \
 	$(GEMM_RTL)/compute_engine_modular.sv \
 	$(GEMM_RTL)/gfp8_bcv_controller.sv \
 	$(GEMM_RTL)/gfp8_nv_dot.sv \
@@ -63,10 +65,10 @@ $(WORK):
 
 # Compile
 compile: $(WORK)
-	@echo "Compiling packages first..."
+	@echo "Compiling packages first..." | tee compile.log
 	$(VLOG) -sv $(INCLUDES) -work $(WORK) \
-		$(GEMM_INC)/gemm_pkg.sv
-	@echo "Compiling ACX libraries and primitives..."
+		$(GEMM_INC)/gemm_pkg.sv >> compile.log 2>&1
+	@echo "Compiling ACX libraries and primitives..." | tee -a compile.log
 	@export LD_LIBRARY_PATH="" && \
 	$(VLOG) -sv $(INCLUDES) +define+SIMULATION \
 		-timescale "1ps/1ps" \
@@ -74,15 +76,16 @@ compile: $(WORK)
 		$(DSM_COMPILE_FILE) \
 		$(DEVICE_MODELS) \
 		$(ACX_LIB_S7T)/common/acx_floating_point.sv \
-		$(ACX_LIB_S7T)/common/acx_integer.sv
-	@echo "Compiling testbench and RTL..."
+		$(ACX_LIB_S7T)/common/acx_integer.sv >> compile.log 2>&1
+	@echo "Compiling testbench and RTL..." | tee -a compile.log
 	@export LD_LIBRARY_PATH="" && \
 	$(VLOG) -sv $(INCLUDES) +define+SIMULATION +define+SIM_VERBOSE \
 		-err VCP2675 W1 \
 		-work $(WORK) \
 		$(NAP_WRAPPER) \
 		$(RTL_SOURCES) \
-		$(TB_SOURCES)
+		$(TB_SOURCES) >> compile.log 2>&1
+	@echo "Compilation complete. Check compile.log for details."
 
 # Run simulation
 run: compile
@@ -91,7 +94,9 @@ run: compile
 	@echo "  Running GEMM Engine Top (FIFO Interface)  "
 	@echo "=============================================="
 	@echo ""
-	$(VSIM) -c -do "run -all; quit -force" $(WORK).$(TOP)
+	@echo "Simulation output redirected to sim.log"
+	$(VSIM) -c -noasdb -do "run -all; quit -force" $(WORK).$(TOP) > sim.log 2>&1
+	@echo "Simulation complete. Check sim.log for details."
 
 # Run with GUI for debugging
 debug: compile
@@ -106,6 +111,8 @@ clean:
 	rm -f transcript
 	rm -f *.wlf
 	rm -f *.log
+	rm -f compile.log
+	rm -f sim.log
 	rm -f *.vcd
 	rm -f *.asdb
 
