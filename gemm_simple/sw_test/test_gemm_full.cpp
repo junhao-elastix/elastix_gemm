@@ -1,4 +1,3 @@
-// ============================================================================
 // MS2.0 GEMM Engine Full Integration Test
 //
 // Tests complete GEMM workflow with MS2.0 engine using 5 microcode commands:
@@ -21,7 +20,6 @@
 //
 // Author: Reconstructed from project memory
 // Date: Tue Oct 8 2025
-// ============================================================================
 
 #include <iostream>
 #include <iomanip>
@@ -42,9 +40,7 @@
 using namespace std;
 using namespace achronix;
 
-// ============================================================================
 // MS2.0 GEMM Engine Register Map (BAR0)
-// ============================================================================
 #define ENGINE_CMD_WORD0        0x3C    // Command word 0 (opcode) - shifted +3 for MC payload debug regs
 #define ENGINE_CMD_WORD1        0x40    // Command word 1 - shifted +3 for MC payload debug regs
 #define ENGINE_CMD_WORD2        0x44    // Command word 2 - shifted +3 for MC payload debug regs
@@ -59,18 +55,14 @@ using namespace achronix;
 #define MC_PAYLOAD_WORD2        0x30    // Master control raw payload word 2
 #define MC_PAYLOAD_WORD3        0x34    // Master control raw payload word 3
 
-// ============================================================================
 // MS2.0 Microcode Opcodes
-// ============================================================================
 #define OPCODE_FETCH            0xF0    // Fetch memory block from GDDR6
 #define OPCODE_DISPATCH         0xF1    // Dispatch vectors to tiles
 #define OPCODE_MATMUL           0xF2    // Matrix multiplication (TILE)
 #define OPCODE_WAIT_DISPATCH    0xF3    // Wait for dispatch done
 #define OPCODE_WAIT_MATMUL      0xF4    // Wait for matmul done
 
-// ============================================================================
 // Test Configuration
-// ============================================================================
 // Configurable test parameters (can be set via command-line)
 // Default values (will be overridden by command-line args if provided)
 static int MATRIX_ROWS = 4;       // B parameter (result rows)
@@ -94,9 +86,26 @@ static int VLOOP_SIZE = 32;       // V parameter (vectors per row/col)
 // Result BRAM base address - calculated in main() using acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5)
 static uint64_t BRAM_RESULT_BASE = 0;
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
+
+float fp16ToFloat(uint16_t fp16_val) {
+    uint16_t sign = (fp16_val >> 15) & 1;
+    uint16_t exp = (fp16_val >> 10) & 0x1F;
+    uint16_t frac = fp16_val & 0x3FF;
+
+    if (exp == 0) {
+        if (frac == 0) {
+            return sign ? -0.0f : 0.0f;
+        }
+        // Subnormal
+        return (sign ? -1.0f : 1.0f) * (frac / 1024.0f) * powf(2.0f, -14.0f);
+    } else if (exp == 31) {
+        return (frac == 0) ? (sign ? -INFINITY : INFINITY) : NAN;
+    } else {
+        // Normal
+        return (sign ? -1.0f : 1.0f) * (1.0f + frac / 1024.0f) * powf(2.0f, (int)exp - 15);
+    }
+}
 
 // Wait for engine to become idle (ENGINE_STATUS bit 0)
 bool waitEngineIdle(VP815& device, uint32_t timeout_ms = 10000) {
@@ -116,7 +125,6 @@ bool waitEngineIdle(VP815& device, uint32_t timeout_ms = 10000) {
             return false;
         }
 
-        // this_thread::sleep_for(chrono::milliseconds(0.1));
     }
 }
 
@@ -181,12 +189,11 @@ bool loadHexMatrix(const string& filename, vector<uint8_t>& data) {
         return false;
     }
 
-    // cout << "  Loaded hex file: " << filename << endl;
-    // cout << "    " << line_num << " lines × 32 bytes = " << data.size()
-    //      << " bytes (GDDR6 memory format)" << endl;
-
     return true;
 }
+
+// Forward declaration
+uint16_t floatToFP16(float val);
 
 // Load golden reference from file
 // Load golden reference from .hex file (FP16 hex values, one per line)
@@ -202,37 +209,9 @@ bool loadGoldenReferenceHex(const string& filename, vector<float>& golden, int e
 
     string line;
     while (getline(file, line)) {
-        // Skip empty lines and comments
         if (line.empty() || line[0] == '#') continue;
-
-        // Parse hex value (4 hex digits for FP16)
         uint16_t fp16_val = stoi(line, nullptr, 16);
-        
-        // Convert FP16 to float
-        uint16_t sign = (fp16_val >> 15) & 1;
-        uint16_t exp = (fp16_val >> 10) & 0x1F;
-        uint16_t frac = fp16_val & 0x3FF;
-        
-        float result;
-        if (exp == 0) {
-            if (frac == 0) {
-                result = sign ? -0.0f : 0.0f;
-            } else {
-                // Subnormal
-                result = (sign ? -1.0f : 1.0f) * (frac / 1024.0f) * powf(2.0f, -14.0f);
-            }
-        } else if (exp == 31) {
-            if (frac == 0) {
-                result = sign ? -INFINITY : INFINITY;
-            } else {
-                result = NAN;
-            }
-        } else {
-            // Normal
-            result = (sign ? -1.0f : 1.0f) * (1.0f + frac / 1024.0f) * powf(2.0f, (int)exp - 15);
-        }
-        
-        golden.push_back(result);
+        golden.push_back(fp16ToFloat(fp16_val));
     }
 
     if ((int)golden.size() != expected_count) {
@@ -240,7 +219,7 @@ bool loadGoldenReferenceHex(const string& filename, vector<float>& golden, int e
         return false;
     }
 
-    // cout << "  Loaded golden reference from hex file: " << golden.size() << " FP16 values" << endl;
+    cout << "  Loaded golden reference: " << filename << " (" << golden.size() << " values)" << endl;
     return true;
 }
 
@@ -255,16 +234,43 @@ uint16_t floatToFP16(float val) {
     uint32_t mant = bits & 0x7FFFFF;
 
     // Handle special cases
-    if (exp == 0) return (sign << 15);  // Zero
+    if (exp == 0) return (sign << 15);  // Zero (float subnormals become FP16 zero)
     if (exp == 0xFF) return (sign << 15) | 0x7C00;  // Inf/NaN
 
     // Rebias exponent
     int32_t new_exp = (int32_t)exp - 127 + 15;
-    if (new_exp <= 0) return (sign << 15);  // Underflow
+    
+    // Handle subnormal FP16 output
+    if (new_exp <= 0) {
+        // Shift mantissa to create subnormal
+        // FP16 subnormal: value = mantissa * 2^(-14) / 1024
+        // We need to shift the mantissa right by (1 - new_exp) positions
+        int shift = 1 - new_exp;
+        if (shift >= 24) return (sign << 15);  // Too small, underflow to zero
+        
+        // Add implicit 1 to mantissa for normal float
+        uint32_t full_mant = (1 << 23) | mant;
+        // Shift to FP16 position and account for subnormal exponent
+        uint32_t new_mant = (full_mant + (1 << (shift + 12))) >> (shift + 13);
+        
+        if (new_mant > 0x3FF) {
+            // Rounding caused overflow to normal number
+            return (sign << 15) | (1 << 10);
+        }
+        return (sign << 15) | (new_mant & 0x3FF);
+    }
+    
     if (new_exp >= 31) return (sign << 15) | 0x7C00;  // Overflow
 
     // Round mantissa
     uint32_t new_mant = (mant + 0x1000) >> 13;
+    
+    // Check for mantissa overflow after rounding
+    if (new_mant > 0x3FF) {
+        new_exp++;
+        new_mant = 0;
+        if (new_exp >= 31) return (sign << 15) | 0x7C00;  // Overflow
+    }
 
     return (sign << 15) | (new_exp << 10) | (new_mant & 0x3FF);
 }
@@ -305,9 +311,7 @@ bool compareResults(const vector<float>& result, const vector<float>& golden,
     return true;
 }
 
-// ============================================================================
 // Test Configuration Structure
-// ============================================================================
 struct TestConfig {
     int B;
     int C;
@@ -320,7 +324,7 @@ const TestConfig test_configs[] = {
     {1, 1, 1, "B1_C1_V1"},
     {2, 2, 2, "B2_C2_V2"},
     {4, 4, 4, "B4_C4_V4"},
-    {2, 2, 32, "B2_C2_V32"},
+    {2, 2, 64, "B2_C2_V64"},
     {4, 4, 32, "B4_C4_V32"},
     {8, 8, 16, "B8_C8_V16"},
     {16, 16, 8, "B16_C16_V8"},
@@ -337,9 +341,7 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
 // Run multi-tile test (single FETCH, multiple DISPATCH/TILE)
 bool run_multitile_test(VP815& device, int B, int C, int V, bool verbose);
 
-// ============================================================================
 // Main Test
-// ============================================================================
 int main(int argc, char* argv[]) {
     cout << "========================================" << endl;
     cout << "MS2.0 GEMM Engine" << endl;
@@ -426,7 +428,7 @@ int main(int argc, char* argv[]) {
 
         // Calculate Result BRAM base address
         BRAM_RESULT_BASE = acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5);
-        // cout << "  Result BRAM NAP[3][5] address: 0x" << hex << BRAM_RESULT_BASE << dec << endl;
+
         // Multi-tile test mode
         if (run_multitile) {
             cout << "\n========================================" << endl;
@@ -561,40 +563,28 @@ int main(int argc, char* argv[]) {
             // Validate all results (Step 11 moved here)
             for (size_t i = 0; i < active_configs.size(); i++) {
                 if (test_success[i]) {
-                    // Debug: Check if results were collected
-                    if (verbose) {
-                        cout << "\nDEBUG: Test " << active_configs[i].name << " collected " << all_results[i].size() << " results" << endl;
-                    }
+        // Debug: Check if results were collected
+        if (verbose) {
+            cout << "\nDEBUG: Test " << active_configs[i].name << " collected " << all_results[i].size() << " results" << endl;
+        }
                     
                     // Convert FP16 results to float for comparison
                     vector<float> result_float(all_results[i].size());
                     for (size_t j = 0; j < all_results[i].size(); j++) {
-                        // Simple FP16 to float conversion
-                        uint16_t fp16 = all_results[i][j];
-                        uint32_t sign = (fp16 >> 15) & 0x1;
-                        uint32_t exp = (fp16 >> 10) & 0x1F;
-                        uint32_t mant = fp16 & 0x3FF;
-
-                        if (exp == 0) {
-                            result_float[j] = 0.0f;  // Zero or denormal
-                        } else if (exp == 31) {
-                            result_float[j] = sign ? -INFINITY : INFINITY;  // Inf/NaN
-                        } else {
-                            uint32_t float_exp = exp - 15 + 127;  // Rebias
-                            uint32_t float_mant = mant << 13;  // Shift to float position
-                            uint32_t float_bits = (sign << 31) | (float_exp << 23) | float_mant;
-                            memcpy(&result_float[j], &float_bits, sizeof(float));
-                        }
+                        result_float[j] = fp16ToFloat(all_results[i][j]);
                     }
                     
                     // Display results if verbose
                     if (verbose) {
-                        cout << "\nHardware Results vs Golden Reference:" << endl;
-                        cout << "Index | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
-                        cout << "------|----------------|------------------|--------------|----------------|------" << endl;
+                        cout << "\nHardware Results vs Golden Reference (2D Matrix View):" << endl;
+                        cout << "Matrix dimensions: B=" << active_configs[i].B << " rows × C=" << active_configs[i].C << " cols" << endl;
+                        cout << "Format: [B][C] | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
+                        cout << "--------|----------------|------------------|--------------|----------------|------" << endl;
                     }
-                    
+
                     int matches = 0;
+                    int C = active_configs[i].C;
+                    
                     for (size_t j = 0; j < all_results[i].size() && j < golden_results[i].size(); j++) {
                         uint16_t golden_fp16 = floatToFP16(golden_results[i][j]);
                         float diff = fabs(result_float[j] - golden_results[i][j]);
@@ -604,11 +594,17 @@ int main(int argc, char* argv[]) {
                         if (match) matches++;
                         
                         if (verbose) {
-                            cout << setw(5) << j << " | 0x" << hex << setw(4) << setfill('0') << all_results[i][j] << dec 
+                            // Convert 1D index to 2D coordinates (row-major order)
+                            int row = j / C;  // B dimension (row)
+                            int col = j % C;  // C dimension (column)
+                            
+                            if (!match) {
+                            cout << "[" << setw(2) << row << "][" << setw(2) << col << "] | 0x" << hex << setw(4) << setfill('0') << all_results[i][j] << dec 
                                  << "         | " << setw(15) << setprecision(6) << result_float[j]
                                  << " | 0x" << hex << setw(4) << setfill('0') << golden_fp16 << dec
                                     << "        | " << setw(15) << setprecision(6) << golden_results[i][j]
                                     << " | " << (match ? "Y" : "N") << endl;
+                            }
                         }
                     }
                     
@@ -658,9 +654,7 @@ int main(int argc, char* argv[]) {
     }
 }
 
-// ============================================================================
 // Run Single Test Configuration
-// ============================================================================
 bool run_single_test(VP815& device, const TestConfig& config, int stress_factor, bool verbose, 
                      const vector<uint8_t>& left_data, const vector<uint8_t>& right_data, vector<uint16_t>& result_fp16, bool print_time) {
     // Set test parameters
@@ -688,9 +682,7 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
 
         // Assert engine soft reset (Control Register bit 1)
         device.mmioWrite32(0, 0x0, 0x2);  // Set bit 1 = soft reset
-        // this_thread::sleep_for(chrono::milliseconds(0.1));  // Hold reset
         device.mmioWrite32(0, 0x0, 0x0);  // Release reset
-        // this_thread::sleep_for(chrono::milliseconds(0.1));  // Settle time
 
         // Verify engine is idle
         uint32_t status_after_reset = device.mmioRead32(0, ENGINE_STATUS);
@@ -755,21 +747,7 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
         uint32_t cmd_fetch_word2 = left_lines;  // len in [15:0], fetch_right=0 in bit 16
         uint32_t cmd_fetch_word3 = 0x00000000;
 
-        // cout << "  Fetching left matrix: " << left_lines << " lines from 0x"
-        //      << hex << GDDR6_BASE_LEFT << dec << endl;
-
         issueCommand(device, cmd_fetch_word0, cmd_fetch_word1, cmd_fetch_word2, cmd_fetch_word3);
-
-        // if (!waitEngineIdle(device)) {
-        //     cerr << "ERROR: FETCH command timeout" << endl;
-        //     return false;
-        // }
-        // cout << "  ✓ Left FETCH completed" << endl;
-        
-        // DEBUG: Check dispatcher BRAM write count after left FETCH (commented out)
-        // uint32_t dc_bram_count_left = device.mmioRead32(0, 0x60);
-        // cout << "  DEBUG: DC_BRAM_WR_COUNT after left FETCH: " << (dc_bram_count_left & 0x3FF) 
-        //      << " lines (expected: 528)" << endl;
 
         // Second FETCH for right matrix (id=1, addr=528, len=528 lines)
         cmd_fetch_word0 = (0x00 << 24) | (12 << 16) | (1 << 8) | OPCODE_FETCH;
@@ -777,16 +755,8 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
         cmd_fetch_word2 = right_lines | (1 << 16);  // len in [15:0], fetch_right=1 in bit 16
         cmd_fetch_word3 = 0x00000000;
 
-        // cout << "  Fetching right matrix: " << right_lines << " lines from 0x"
-        //      << hex << GDDR6_BASE_RIGHT << dec << endl;
-
         issueCommand(device, cmd_fetch_word0, cmd_fetch_word1, cmd_fetch_word2, cmd_fetch_word3);
 
-        // if (!waitEngineIdle(device)) {
-        //     cerr << "ERROR: Right FETCH command timeout" << endl;
-        //     return false;
-        // }
-        
         step_end = get_time();
         step_times[2] = to_us(step_end - step_start);  // Step 5 (FETCH) -> index 2
 
@@ -800,68 +770,35 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
             // ====================================================================
             // Step 6: Issue DISPATCH commands (LEFT and RIGHT matrices)
             // ====================================================================
-            // Step 6: Issue DISPATCH commands (LEFT and RIGHT matrices)
-            // ====================================================================
-            // cout << "\n[Step 6] Issuing DISPATCH commands..." << endl;
 
             // DISPATCH command encoding per cmd_disp_s structure:
             // bits [10:0]: tile_addr, [21:11]: len, [22]: man_4b_8b_n, [31:23]: reserved
             uint32_t man_4b_8b_n = 0;         // 8-bit mantissa mode
 
             // DISPATCH LEFT matrix (id=3, tile_addr=0, len=128)
-            // cout << "  Dispatching left matrix..." << endl;
             uint32_t cmd_disp_left_word0 = (0x00 << 24) | (8 << 16) | (3 << 8) | OPCODE_DISPATCH;
             uint32_t cmd_disp_left_word1 = (man_4b_8b_n << 22) | (128 << 11) | 0;
             issueCommand(device, cmd_disp_left_word0, cmd_disp_left_word1, 0, 0);
-
-            // if (!waitEngineIdle(device)) {
-            //     cerr << "ERROR: Left DISPATCH timeout" << endl;
-            //     return false;
-            // }
-            // cout << "  ✓ Left DISPATCH completed" << endl;
 
             // WAIT_DISPATCH for left (id=3)
             uint32_t cmd_wait_disp_left_word0 = (0x00 << 24) | (3 << 16) | (0 << 8) | OPCODE_WAIT_DISPATCH;
             issueCommand(device, cmd_wait_disp_left_word0, 0, 0, 0);
 
-            // if (!waitEngineIdle(device)) {
-            //     cerr << "ERROR: Left WAIT_DISPATCH timeout" << endl;
-            //     return false;
-            // }
-            // cout << "  ✓ Left dispatch wait completed" << endl;
-
             // DISPATCH RIGHT matrix (id=5, tile_addr=528, len=128)
-            // cout << "  Dispatching right matrix..." << endl;
             uint32_t cmd_disp_right_word0 = (0x00 << 24) | (8 << 16) | (5 << 8) | OPCODE_DISPATCH;
             uint32_t cmd_disp_right_word1 = (man_4b_8b_n << 22) | (128 << 11) | 528;
             issueCommand(device, cmd_disp_right_word0, cmd_disp_right_word1, 0, 0);
 
-            // if (!waitEngineIdle(device)) {
-            //     cerr << "ERROR: Right DISPATCH timeout" << endl;
-            //     return false;
-            // }
-            // cout << "  ✓ Right DISPATCH completed" << endl;
-
             // ====================================================================
             // Step 7: Issue WAIT_DISPATCH command for right matrix
             // ====================================================================
-            // cout << "\n[Step 7] Issuing final WAIT_DISPATCH command..." << endl;
 
             uint32_t cmd_wait_disp_right_word0 = (0x00 << 24) | (5 << 16) | (0 << 8) | OPCODE_WAIT_DISPATCH;
             issueCommand(device, cmd_wait_disp_right_word0, 0, 0, 0);
 
-            // if (!waitEngineIdle(device)) {
-            //     cerr << "ERROR: Right WAIT_DISPATCH timeout" << endl;
-            //     return false;
-            // }
-            // cout << "  ✓ Final dispatch wait completed" << endl;
-
             // ====================================================================
             // Step 8: Issue MATMUL command
             // ====================================================================
-            // cout << "\n[Step 8] Issuing MATMUL command..." << endl;
-            // cout << "  MATMUL params: B=" << MATRIX_ROWS << ", C=" << MATRIX_COLS
-            //      << ", V=" << VLOOP_SIZE << ", left_addr=0, right_addr=0 (TWO-BRAM)" << endl;
 
             // MATMUL command format (cmd_header_s from gemm_pkg.sv):
             //   Word0: [31:24]=reserved, [23:16]=len, [15:8]=id, [7:0]=opcode
@@ -924,33 +861,9 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
 
             issueCommand(device, cmd_matmul_word0, cmd_matmul_word1, cmd_matmul_word2, cmd_matmul_word3);
 
-            // if (!waitEngineIdle(device)) {
-            //     cerr << "ERROR: MATMUL command timeout" << endl;
-
-            //     // DIAGNOSTIC: Check if any results were written to result BRAM despite timeout (commented out)
-            //     // cout << "\n[DEBUG] Checking result BRAM contents despite timeout..." << endl;
-
-            //     // uint32_t result_count_reg = device.mmioRead32(0, ENGINE_RESULT_COUNT);
-            //     // cout << "  Result count register: " << result_count_reg << endl;
-
-            //     // Read first 64 bytes (16 FP16 values = 4×4 matrix) from result BRAM directly (commented out)
-            //     // cout << "  Reading first 16 words from Result BRAM (BAR2 @ 0x4460008000):" << endl;
-            //     // uint64_t result_bram_base = 0x4460008000ULL;
-            //     // for (int i = 0; i < 16; i++) {
-            //     //     uint32_t val = device.mmioRead32(2, result_bram_base + i*4);
-            //     //     cout << "    Word[" << dec << i << "] = 0x" << hex << setw(8) << setfill('0') << val;
-            //     //     if (val != 0) cout << " *NON-ZERO*";
-            //     //     cout << dec << endl;
-            //     // }
-
-            //     return false;
-            // }
-            // cout << "  ✓ MATMUL completed" << endl;
-
             // ====================================================================
             // Step 9: Issue WAIT_MATMUL command
             // ====================================================================
-            // cout << "\n[Step 9] Issuing WAIT_MATMUL command..." << endl;
 
             uint32_t cmd_wait_matmul_word0 = (0x00 << 24) | (4 << 16) | (1 << 8) | OPCODE_WAIT_MATMUL;  // reserved, len, id=1, opcode
             uint32_t cmd_wait_matmul_word1 = 0x00000000;  // ID=0
@@ -961,7 +874,7 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
                 cerr << "ERROR: WAIT_MATMUL timeout" << endl;
                 return false;
             }
-            // cout << "  ✓ Matmul wait completed" << endl;
+
             if (stress_factor > 100 && stress_iter % 100 == 0) {
                 cout << "Stress test iteration " << stress_iter << " of " << stress_factor << " completed" << endl;
             }
@@ -997,47 +910,11 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
         step_end = get_time();
         step_times[4] = to_us(step_end - step_start);  // Step 10 (Read Results) -> index 4
 
-        // uint32_t result_count = device.mmioRead32(0, ENGINE_RESULT_COUNT);  // Unused - removed to eliminate warning
-        // cout << "  Result count register: " << result_count << " FP16 values" << endl;
-
-        // Read first 4 results from dedicated registers (quick access for small matrices)
-        // cout << "  Reading first 4 results from registers..." << endl;
-        // uint32_t reg_result_0 = device.mmioRead32(0, 0x21C);  // RESULT_REG_0 - Unused - removed to eliminate warning
-        // uint32_t reg_result_1 = device.mmioRead32(0, 0x220);  // RESULT_REG_1 - Unused - removed to eliminate warning
-        // uint32_t reg_result_2 = device.mmioRead32(0, 0x224);  // RESULT_REG_2 - Unused - removed to eliminate warning
-        // uint32_t reg_result_3 = device.mmioRead32(0, 0x228);  // RESULT_REG_3 - Unused - removed to eliminate warning
-
-        // cout << "  Register results:" << endl;
-        // cout << "    Result[0] = 0x" << hex << (reg_result_0 & 0xFFFF) << dec << endl;
-        // cout << "    Result[1] = 0x" << hex << (reg_result_1 & 0xFFFF) << dec << endl;
-        // cout << "    Result[2] = 0x" << hex << (reg_result_2 & 0xFFFF) << dec << endl;
-        // cout << "    Result[3] = 0x" << hex << (reg_result_3 & 0xFFFF) << dec << endl;
-
         // Convert FP16 results to float for comparison
         vector<float> result_float(MATRIX_ROWS * MATRIX_COLS);
         for (size_t i = 0; i < result_fp16.size(); i++) {
-            // Simple FP16 to float conversion (can be improved)
-            uint16_t fp16 = result_fp16[i];
-            uint32_t sign = (fp16 >> 15) & 0x1;
-            uint32_t exp = (fp16 >> 10) & 0x1F;
-            uint32_t mant = fp16 & 0x3FF;
-
-            if (exp == 0) {
-                result_float[i] = 0.0f;  // Zero or denormal
-            } else if (exp == 31) {
-                result_float[i] = sign ? -INFINITY : INFINITY;  // Inf/NaN
-            } else {
-                uint32_t float_exp = exp - 15 + 127;  // Rebias
-                uint32_t float_mant = mant << 13;  // Shift to float position
-                uint32_t float_bits = (sign << 31) | (float_exp << 23) | float_mant;
-                memcpy(&result_float[i], &float_bits, sizeof(float));
-            }
+            result_float[i] = fp16ToFloat(result_fp16[i]);
         }
-
-        // ====================================================================
-        // Step 11: Validate results (MOVED TO MAIN FUNCTION)
-        // ====================================================================
-        // Validation is now done in main() after collecting all results  // Step 11 (Validation) -> index 5
 
         // ====================================================================
         // Step 12: Soft reset engine before exit
@@ -1046,9 +923,7 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
 
         // Assert engine soft reset (Control Register bit 1)
         device.mmioWrite32(0, 0x0, 0x2);  // Set bit 1 = soft reset
-        // this_thread::sleep_for(chrono::milliseconds(0.1));  // Hold reset
         device.mmioWrite32(0, 0x0, 0x0);  // Release reset
-        // this_thread::sleep_for(chrono::milliseconds(0.1));  // Settle time
 
         step_end = get_time();
         step_times[5] = to_us(step_end - step_start);  // Step 12 (Final Reset) -> index 5
@@ -1312,23 +1187,8 @@ bool run_multitile_test(VP815& device, int B, int C, int V, bool verbose) {
         
         for (size_t i = 0; i < all_results.size() && i < golden_results.size(); i++) {
             // Convert FP16 to float
-            uint16_t fp16 = all_results[i];
-            uint32_t sign = (fp16 >> 15) & 0x1;
-            uint32_t exp = (fp16 >> 10) & 0x1F;
-            uint32_t mant = fp16 & 0x3FF;
-            
-            float result_float;
-            if (exp == 0) {
-                result_float = 0.0f;
-            } else if (exp == 31) {
-                result_float = sign ? -INFINITY : INFINITY;
-            } else {
-                uint32_t float_exp = exp - 15 + 127;
-                uint32_t float_mant = mant << 13;
-                uint32_t float_bits = (sign << 31) | (float_exp << 23) | float_mant;
-                memcpy(&result_float, &float_bits, sizeof(float));
-            }
-            
+            float result_float = fp16ToFloat(all_results[i]);
+
             // Compare with tolerance
             float diff = fabs(result_float - golden_results[i]);
             float rel_err = (golden_results[i] != 0.0f) ? diff / fabs(golden_results[i]) : diff;
@@ -1339,8 +1199,8 @@ bool run_multitile_test(VP815& device, int B, int C, int V, bool verbose) {
             } else {
                 mismatches++;
                 uint16_t golden_fp16 = floatToFP16(golden_results[i]);
-                cerr << "  Mismatch [" << i << "]: HW=0x" << hex << setw(4) << setfill('0') 
-                     << fp16 << " (" << dec << result_float 
+                cerr << "  Mismatch [" << i << "]: HW=0x" << hex << setw(4) << setfill('0')
+                     << all_results[i] << " (" << dec << result_float
                      << "), Golden=0x" << hex << setw(4) << setfill('0')
                      << golden_fp16 << " (" << dec << golden_results[i] << "), rel_err=" << rel_err << endl;
             }

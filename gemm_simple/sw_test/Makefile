@@ -1,29 +1,26 @@
 # Makefile for Elastix GEMM Software Tests
 # 128-register configuration test suite for AC7t1500 Speedster7t
 
+DEV_ROOT = /home/workstation
+
 CXX = g++
 CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -DDRIVER_ACX
-INCLUDES = -I/home/dev/Dev/acxsdk/include \
-           -I/home/dev/Dev/acxsdk/drivers/lib \
-           -I/home/dev/Dev/eus/shell/devices \
-           -I/home/dev/Dev/eus/shell/devices/acx/vp815/api \
-           -I/home/dev/Dev/eus/shell/common/api
-LIBS = -L/home/dev/Dev/acxsdk/lib \
-       -L/home/dev/Dev/acxsdk/drivers/lib \
+INCLUDES = -I$(DEV_ROOT)/acxsdk/include \
+           -I$(DEV_ROOT)/acxsdk/drivers/lib \
+           -I$(DEV_ROOT)/eus/shell/devices \
+           -I$(DEV_ROOT)/eus/shell/devices/acx/vp815/api \
+           -I$(DEV_ROOT)/eus/shell/common/api
+LIBS = -L$(DEV_ROOT)/acxsdk/lib \
+       -L$(DEV_ROOT)/acxsdk/drivers/lib \
        -lacxsdk -lacxdev \
-       -Wl,-rpath,/home/dev/Dev/acxsdk/lib:/home/dev/Dev/acxsdk/drivers/lib
+       -Wl,-rpath,$(DEV_ROOT)/acxsdk/lib:$(DEV_ROOT)/acxsdk/drivers/lib
 
 # VP815 API dependency
-VP815_API = /home/dev/Dev/eus/shell/devices/acx/vp815/api/vp815.cpp
+VP815_API = $(DEV_ROOT)/eus/shell/devices/acx/vp815/api/vp815.cpp
 
-# Essential test binaries (133-register configuration - Oct 10, 2025)
-# Debug/development tests archived in obsolete_debug_tests/
 
-# Clean version of MS2.0 GEMM test
-test_ms2_gemm_clean: test_ms2_gemm_clean.cpp $(VP815_API)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) test_ms2_gemm_clean.cpp $(VP815_API) $(LIBS) -o test_ms2_gemm_clean
-ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram test_ms2_gemm_full test_bulk_dma
-ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access
+ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram
+ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full
 
 # Aliases for convenience
 BINS = $(ESSENTIAL_BINS)
@@ -53,7 +50,10 @@ dma_example: DMA_example.cpp
 dma_simple_example: DMA_simple_example.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
-test_ms2_gemm_full: test_ms2_gemm_full.cpp
+test_gemm: test_gemm.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_gemm_full: test_gemm_full.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_dma_access: test_dma_access.cpp
