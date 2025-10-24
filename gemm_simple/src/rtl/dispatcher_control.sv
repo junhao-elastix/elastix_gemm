@@ -61,7 +61,7 @@ import gemm_pkg::*;
     input  logic                         i_bram_rd_en_right,
     
     // ====================================================================
-    // NEW: Exponent BRAM Write Ports (for post-fetch unpacking)
+    // Exponent BRAM Write Ports (for post-fetch unpacking)
     // ====================================================================
     output logic [8:0]                   o_left_exp_wr_addr,
     output logic [7:0]                   o_left_exp_wr_data,
@@ -72,7 +72,7 @@ import gemm_pkg::*;
     output logic                         o_right_exp_wr_en,
 
     // ====================================================================
-    // NEW: Exponent BRAM Read Ports (from Compute Engine)
+    // Exponent BRAM Read Ports (from Compute Engine)
     // ====================================================================
     input  logic [8:0]                   i_left_exp_rd_addr,
     output logic [7:0]                   o_left_exp_rd_data,
@@ -131,8 +131,8 @@ import gemm_pkg::*;
     logic [link_addr_width_gp-1:0] fetch_addr_reg;
     logic        fetch_target_reg;  // 0=left, 1=right (captured from i_fetch_target)
     logic [10:0] current_line_reg;  // Increased from 10 to 11 bits for 2048-entry BRAM
-    
-    // NEW: Counters for tracking exp and mantissa lines during fetch
+
+    // Counters for tracking exp and mantissa lines during fetch
     logic [4:0]  exp_lines_fetched_reg;   // 0-15: exponent lines fetched
     logic [9:0]  man_lines_fetched_reg;   // 0-511: mantissa lines fetched
 
@@ -141,11 +141,6 @@ import gemm_pkg::*;
     logic axi_r_ready_reg;
     logic [7:0] beat_count_reg;
 
-    // DISP command tracking
-    logic [tile_mem_addr_width_gp-1:0] disp_addr_reg;
-    logic [tile_mem_addr_width_gp-1:0] disp_len_reg;
-    logic disp_man_4b_reg;
-
     // Status flags
     logic fetch_done_reg;
     logic disp_done_reg;
@@ -153,8 +148,8 @@ import gemm_pkg::*;
     // Edge detection for command enables (prevent double-triggering)
     logic fetch_en_prev;
     logic disp_en_prev;
-    
-    // NEW: Parallel unpacking signals (for 3-buffer architecture)
+
+    // Parallel unpacking signals (for 3-buffer architecture)
     logic [3:0]  unpack_exp_packed_rd_addr_reg; // 0-15: which exp_packed line to read
     logic [TGT_DATA_WIDTH-1:0] exp_packed_rd_data_wire; // Data from exp_packed BRAM
 
@@ -259,10 +254,6 @@ import gemm_pkg::*;
             exp_lines_fetched_reg <= '0;
             man_lines_fetched_reg <= '0;
             fetch_done_reg <= 1'b0;
-
-            disp_addr_reg <= '0;
-            disp_len_reg <= '0;
-            disp_man_4b_reg <= 1'b0;
             disp_done_reg <= 1'b0;
         end else begin
             fetch_done_reg <= 1'b0;  // Default
@@ -287,13 +278,6 @@ import gemm_pkg::*;
                         $display("[DC_DEBUG] @%0t FETCH_START: DDR_addr=%0d, len=%0d, current_line=%0d, target=%s",
                                  $time, i_fetch_addr, i_fetch_len, current_line_reg,
                                  i_fetch_target ? "RIGHT" : "LEFT");
-                    end
-
-                    if (i_disp_en) begin
-                        disp_addr_reg <= i_disp_addr;
-                        disp_len_reg <= i_disp_len;
-                        disp_man_4b_reg <= i_man_4b_8b_n;
-                        
                     end
                 end
 
@@ -336,42 +320,6 @@ import gemm_pkg::*;
     end
 
     assign o_fetch_done = fetch_done_reg;
-
-    // // ===================================================================
-    // // DISP Command Processing
-    // // ===================================================================
-    // always_ff @(posedge i_clk) begin
-    //     if (~i_reset_n) begin
-    //         disp_addr_reg <= '0;
-    //         disp_len_reg <= '0;
-    //         disp_man_4b_reg <= 1'b0;
-    //         disp_done_reg <= 1'b0;
-    //     end else begin
-    //         disp_done_reg <= 1'b0;  // Default
-
-    //         case (state_reg)
-    //             ST_IDLE: begin
-    //                 if (i_disp_en) begin
-    //                     disp_addr_reg <= i_disp_addr;
-    //                     disp_len_reg <= i_disp_len;
-    //                     disp_man_4b_reg <= i_man_4b_8b_n;
-                        
-    //                 end
-
-    //             end
-
-    //             ST_DISP_ACK: begin
-    //                 // Acknowledge DISP command (configuration stored)
-    //                 disp_done_reg <= 1'b1;
-    //                 current_line_reg <= '0;
-                    
-    //                 // Reset phase counters for new fetch
-    //                 exp_lines_fetched_reg <= '0;
-    //                 man_lines_fetched_reg <= '0;
-    //             end
-    //         endcase
-    //     end
-    // end
 
     assign o_disp_done = disp_done_reg;
 
@@ -502,7 +450,7 @@ import gemm_pkg::*;
         .i_wr_data          (bram_wr_data_reg),
         .i_wr_addr          (bram_wr_addr_reg),
         .i_wr_en            (bram_wr_en_reg),
-        .i_wr_target        (bram_wr_target_reg),  // NEW: 0=left, 1=right
+        .i_wr_target        (bram_wr_target_reg),  // 0=left, 1=right
         
         // Exponent aligned write ports (from unpacking logic)
         .i_left_exp_aligned_wr_addr  (o_left_exp_wr_addr),
@@ -688,8 +636,7 @@ import gemm_pkg::*;
             end
 
             if (state_reg == ST_DISP_ACK) begin
-                $display("[DISPATCHER_CONTROL] DISP: addr=%0d, len=%0d, man_4b=%0b",
-                         disp_addr_reg, disp_len_reg, disp_man_4b_reg);
+                $display("[DISPATCHER_CONTROL] DISP acknowledged");
             end
         end
     `endif

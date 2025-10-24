@@ -59,7 +59,7 @@ import gemm_pkg::*;
     output logic                          o_bram_right_rd_en,
     
     // ====================================================================
-    // NEW: Exponent Read Interface (from dispatcher_bram exp ports)
+    // Exponent Read Interface (from dispatcher_bram exp ports)
     // ====================================================================
     output logic [8:0]                    o_left_exp_rd_addr,
     input  logic [7:0]                    i_left_exp_rd_data,
@@ -174,7 +174,7 @@ import gemm_pkg::*;
         .o_mem_right_rd_en  (o_bram_right_rd_en),
         .i_mem_right_rd_data(i_bram_right_rd_data),
         
-        // NEW: Exponent interface - separate read ports
+        // Exponent interface - separate read ports
         .o_left_exp_rd_addr (o_left_exp_rd_addr),
         .i_left_exp_rd_data (i_left_exp_rd_data),
         

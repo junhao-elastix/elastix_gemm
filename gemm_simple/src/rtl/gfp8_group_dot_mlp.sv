@@ -45,11 +45,11 @@ module gfp8_group_dot_mlp #(
     input  logic         i_reset_n,
     
     // Group A (left vector)
-    input  logic [4:0]   i_exp_left,      // 5-bit exponent (bias=15)
+    input  logic [7:0]   i_exp_left,      // 8-bit exponent (bias=15)
     input  logic [255:0] i_man_left,      // 32 x 8-bit signed mantissas
     
     // Group B (right vector)  
-    input  logic [4:0]   i_exp_right,     // 5-bit exponent (bias=15)
+    input  logic [7:0]   i_exp_right,     // 8-bit exponent (bias=15)
     input  logic [255:0] i_man_right,     // 32 x 8-bit signed mantissas
     
     // Result (GFP format) - registered outputs
@@ -123,29 +123,22 @@ module gfp8_group_dot_mlp #(
     // Final Accumulation and Exponent Calculation
     // ===================================================================
     always_comb begin
-        // Handle special case: zero exponents -> zero result
-        if (i_exp_left == 5'h00 || i_exp_right == 5'h00) begin
-            accumulator = 32'sd0;
-            exp_sum = 8'sd0;
-        end else begin
-            // Sum all 4 partial results from MLP primitives
-            accumulator = mult_add_result[0] + mult_add_result[1] + 
-                         mult_add_result[2] + mult_add_result[3];
-            
-            // Calculate result exponent: exp_left + exp_right - 2*bias
-            // With bias=15: exp_sum = exp_left + exp_right - 30
-            // Note: Result can be negative when both exponents are small
-            exp_sum = $signed({3'b0, i_exp_left} + {3'b0, i_exp_right}) - 8'sd30;
-            
-            `ifdef SIM_VERBOSE
-            if (i_exp_left != 0 && i_exp_right != 0) begin
-                $display("[GROUP_DOT_MLP_G%0d] @%0t exp_left=%0d, exp_right=%0d -> exp_sum=%0d (formula: %0d+%0d-30)",
-                         GROUP_ID, $time, i_exp_left, i_exp_right, exp_sum, i_exp_left, i_exp_right);
-                $display("[GROUP_DOT_MLP_G%0d] @%0t Partial sums: [0]=%0d, [1]=%0d, [2]=%0d, [3]=%0d, total=%0d",
-                         GROUP_ID, $time, mult_add_result[0], mult_add_result[1], mult_add_result[2], mult_add_result[3], accumulator);
-            end
-            `endif
-        end
+        // Sum all 4 partial results from MLP primitives
+        accumulator = mult_add_result[0] + mult_add_result[1] + 
+                     mult_add_result[2] + mult_add_result[3];
+        
+        // Calculate result exponent: exp_left + exp_right - 2*bias
+        // With bias=15: exp_sum = exp_left + exp_right - 30
+        // Note: Result can be negative when both exponents are small
+        // Note: exp=0 is a valid GFP8 exponent (represents 2^(-15)), not zero!
+        exp_sum = $signed(i_exp_left + i_exp_right) - 8'sd30;
+        
+        `ifdef SIM_VERBOSE
+        $display("[GROUP_DOT_MLP_G%0d] @%0t exp_left=%0d, exp_right=%0d -> exp_sum=%0d (formula: %0d+%0d-30)",
+                 GROUP_ID, $time, i_exp_left, i_exp_right, exp_sum, i_exp_left, i_exp_right);
+        $display("[GROUP_DOT_MLP_G%0d] @%0t Partial sums: [0]=%0d, [1]=%0d, [2]=%0d, [3]=%0d, total=%0d",
+                 GROUP_ID, $time, mult_add_result[0], mult_add_result[1], mult_add_result[2], mult_add_result[3], accumulator);
+        `endif
     end
     
     // ===================================================================

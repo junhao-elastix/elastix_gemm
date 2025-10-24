@@ -1,28 +1,28 @@
 # CLAUDE.md - Elastix GEMM Engine Project
 
 **Project Status**: ✅ **PRODUCTION READY** - MS2.0 Modular GEMM Engine with Dual BRAM Architecture
-**Last Updated**: Mon Oct 20 21:02:35 PDT 2025
-**Current Bitstream**: elastix_gemm_top.VP815.1.1.hex (Build: 10/14 01:57, ID: 0x10140157)
-**Validation Status**: Hardware tested - 8/9 tests passing (88%), Simulation - 9/9 tests passing (100%)
+**Last Updated**: Fri Oct 24 09:30:00 PDT 2025
+**Current Bitstream**: In progress (Oct 24 RTL cleanup build)
+**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - Awaiting validation
 **Top-Level Module**: `elastix_gemm_top.sv`
 
 ## Quick Start
 
 ```bash
 # Build FPGA bitstream (automated)
-cd /home/dev/Dev/elastix_gemm/gemm
+cd /home/workstation/elastix_gemm/gemm_simple
 ./build_and_flash.sh                    # Full build + program + validate
 
 # Manual build workflow
-cd /home/dev/Dev/elastix_gemm/gemm/build
-make clean && make run                  # ~9 minutes synthesis + P&R
+cd /home/workstation/elastix_gemm/gemm_simple/build
+make clean && make run                  # ~5-6 minutes synthesis + P&R
 
 # Program FPGA
-/home/dev/Dev/hex.sh
+./flash.sh
 
 # Rescan PCIe and validate
-source /home/dev/rescan
-cd ../sw_test && make validate
+cd sw_test && make all
+./test_registers && ./test_ms2_gemm_full
 ```
 
 ---
@@ -217,11 +217,12 @@ make summary                    # View test results summary
 make view-log                   # View full simulation log
 ```
 
-**Simulation Status** (Oct 20, 2025):
-- ✅ **9/9 tests passing (100%)**
+**Simulation Status** (Oct 24, 2025):
+- ✅ **10/10 tests passing (100%)**
 - ✅ Professional logging to `sim.log`
 - ✅ Clean terminal output with automatic test summary extraction
-- Test configurations: B1_C1_V1 through B1_C1_V128
+- ✅ Oct 24 RTL cleanup validated (256 lines removed, all tests still pass)
+- Test configurations: B1_C1_V{1,2,4,8,16,32,64,128}, B2_C2_V2, B4_C4_V4
 
 See `sim/vector_system_test/README.md` for detailed simulation documentation.
 
@@ -233,13 +234,13 @@ See `sim/vector_system_test/README.md` for detailed simulation documentation.
 
 ```bash
 # After flashing bitstream (automated)
-cd /home/dev/Dev/elastix_gemm/gemm
+cd /home/workstation/elastix_gemm/gemm_simple
 ./build_and_flash.sh    # Includes automatic validation
 
 # Manual validation
-source /home/dev/rescan
-cd /home/dev/Dev/elastix_gemm/gemm/sw_test
-make validate
+cd /home/workstation/elastix_gemm/gemm_simple/sw_test
+./test_registers        # Device health check
+./test_ms2_gemm_full    # Full GEMM functionality test
 ```
 
 **Expected Output**:
@@ -552,14 +553,15 @@ sudo reboot
 
 ## Project Evolution Notes
 
-**Oct 14, 2025**: **COMPREHENSIVE CLEANUP & VALIDATION** - Streamlined project structure (66 files archived across all categories), validated with full hardware test suite (8/9 tests = 88% pass), production-ready codebase achieved  
-**Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Migrated to modular compute engine with dual BRAM interface for improved throughput, production ready  
-**Oct 7, 2025**: **MAJOR CLEANUP** - Initial cleanup phase, removed legacy +42 processing, fixed constraints, GEMM-focused architecture achieved  
-**Oct 6, 2025**: Project renamed from `dma_test_top` to `elastix_gemm_top` to reflect focus on GEMM operations  
-**Oct 4, 2025**: GDDR6 integration completed, register map expanded to 133 registers accessible via PCIe BAR0  
+**Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds (SETTLE states, complex ID tracking, unused registers), 10/10 simulation tests passing, awaiting hardware validation
+**Oct 14, 2025**: **COMPREHENSIVE CLEANUP & VALIDATION** - Streamlined project structure (66 files archived across all categories), validated with full hardware test suite (8/9 tests = 88% pass), production-ready codebase achieved
+**Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Migrated to modular compute engine with dual BRAM interface for improved throughput, production ready
+**Oct 7, 2025**: **MAJOR CLEANUP** - Initial cleanup phase, removed legacy +42 processing, fixed constraints, GEMM-focused architecture achieved
+**Oct 6, 2025**: Project renamed from `dma_test_top` to `elastix_gemm_top` to reflect focus on GEMM operations
+**Oct 4, 2025**: GDDR6 integration completed, register map expanded to 133 registers accessible via PCIe BAR0
 **Oct 3, 2025**: MS2.0 GEMM engine integration completed (architecture ready, data flow connections pending)
 
 ---
 
-**Maintained by**: Claude Code (claude.ai/code)  
-**Last Validation**: Tue Oct 14 02:22:38 PDT 2025 - Hardware tested (8/9 = 88% pass), all production tests validated, comprehensive cleanup complete ✅
+**Maintained by**: Claude Code (claude.ai/code)
+**Last Validation**: Fri Oct 24 09:30:00 PDT 2025 - Simulation tested (10/10 = 100% pass), RTL cleanup complete, hardware validation in progress ✅

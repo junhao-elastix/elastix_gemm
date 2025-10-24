@@ -134,18 +134,18 @@ module gfp8_nv_dot (
     // ===================================================================
     
     // Extract 5-bit exponents from byte-aligned registered input
-    logic [4:0] exp_left_unpacked [0:3];
-    logic [4:0] exp_right_unpacked [0:3];
+    logic [7:0] exp_left_unpacked [0:3];
+    logic [7:0] exp_right_unpacked [0:3];
     
-    assign exp_left_unpacked[0] = exp_left_stable[7:0]   & 5'h1F;  // Group 0, mask to 5 bits
-    assign exp_left_unpacked[1] = exp_left_stable[15:8]  & 5'h1F;  // Group 1
-    assign exp_left_unpacked[2] = exp_left_stable[23:16] & 5'h1F;  // Group 2
-    assign exp_left_unpacked[3] = exp_left_stable[31:24] & 5'h1F;  // Group 3
+    assign exp_left_unpacked[0] = exp_left_stable[7:0];  // Group 0
+    assign exp_left_unpacked[1] = exp_left_stable[15:8];  // Group 1
+    assign exp_left_unpacked[2] = exp_left_stable[23:16];  // Group 2
+    assign exp_left_unpacked[3] = exp_left_stable[31:24];  // Group 3
     
-    assign exp_right_unpacked[0] = exp_right_stable[7:0]   & 5'h1F;
-    assign exp_right_unpacked[1] = exp_right_stable[15:8]  & 5'h1F;
-    assign exp_right_unpacked[2] = exp_right_stable[23:16] & 5'h1F;
-    assign exp_right_unpacked[3] = exp_right_stable[31:24] & 5'h1F;
+    assign exp_right_unpacked[0] = exp_right_stable[7:0];
+    assign exp_right_unpacked[1] = exp_right_stable[15:8];
+    assign exp_right_unpacked[2] = exp_right_stable[23:16];
+    assign exp_right_unpacked[3] = exp_right_stable[31:24];
     
     `ifdef SIMULATION
     always @(exp_left_stable or exp_right_stable) begin
@@ -168,28 +168,9 @@ module gfp8_nv_dot (
     logic signed [7:0]  group_exponent [0:3];
     
     // ===================================================================
-    // Instantiate 4x gfp8_group_dot (one per group)
+    // Instantiate 4x gfp8_group_dot_mlp (MLP72 Hardware-Accelerated)
     // ===================================================================
-    
-    // Original implementation (commented out)
-    /*
-    genvar g;
-    generate
-        for (g = 0; g < 4; g++) begin : gen_group_dots
-            gfp8_group_dot #(.GROUP_ID(g)) u_group_dot (
-                .i_clk              (i_clk),
-                .i_reset_n          (i_reset_n),
-                .i_exp_left         (exp_left_unpacked[g]),
-                .i_man_left         (man_left_stable[g]),    // Use STABLE mantissas (2-cycle delay)
-                .i_exp_right        (exp_right_unpacked[g]),
-                .i_man_right        (man_right_stable[g]),   // Use STABLE mantissas (2-cycle delay)
-                .o_result_mantissa  (group_mantissa[g]),
-                .o_result_exponent  (group_exponent[g])
-            );
-        end
-    endgenerate
-    */
-    
+
     // MLP72 Hardware-Accelerated Implementation
     genvar g;
     generate

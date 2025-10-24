@@ -77,19 +77,19 @@ import gemm_pkg::*;
     // State Machine Definition
     // ===================================================================
     typedef enum logic [3:0] {
-        ST_IDLE         = 4'd0,
-        ST_READ_HDR     = 4'd1,
+        ST_IDLE          = 4'd0,
+        ST_READ_HDR      = 4'd1,
         ST_READ_PAYLOAD1 = 4'd2,
         ST_READ_PAYLOAD2 = 4'd3,
         ST_READ_PAYLOAD3 = 4'd4,  // Added for 3-word TILE command payload
-        ST_DECODE       = 4'd5,
-        ST_EXEC_FETCH   = 4'd6,
-        ST_EXEC_DISP    = 4'd7,
-        ST_EXEC_TILE    = 4'd8,
-        ST_WAIT_DISP    = 4'd9,   // Separate WAIT_DISP state for proper blocking
-        ST_WAIT_TILE    = 4'd10,  // Separate WAIT_TILE state for proper blocking
-        ST_WAIT_DONE    = 4'd11,
-        ST_CMD_COMPLETE = 4'd12
+        ST_DECODE        = 4'd5,
+        ST_EXEC_FETCH    = 4'd6,
+        ST_EXEC_DISP     = 4'd7,
+        ST_EXEC_TILE     = 4'd8,
+        ST_WAIT_FETCH    = 4'd9,
+        ST_WAIT_DISP     = 4'd10,
+        ST_WAIT_TILE     = 4'd11,
+        ST_CMD_COMPLETE  = 4'd12
     } state_t;
 
     state_t state_reg, state_next;
@@ -101,15 +101,11 @@ import gemm_pkg::*;
     // Command header fields
     logic [cmd_op_width_gp-1:0]  cmd_op_reg;
     logic [cmd_id_width_gp-1:0]  cmd_id_reg;
-    logic [cmd_len_width_gp-1:0] cmd_len_reg;
 
     // Payload storage (up to 2 words for cmd_tile_s)
     logic [31:0] payload_word1_reg;
     logic [31:0] payload_word2_reg;
     logic [31:0] payload_word3_reg;  // Added for 74-bit TILE command payload
-
-    // Payload read counter (always 3 payload words in 4-word-per-command architecture)
-    logic [2:0] payload_count_reg;
 
     // ID tracking for WAIT commands
     logic [cmd_id_width_gp-1:0] last_disp_id_reg;
@@ -138,8 +134,7 @@ import gemm_pkg::*;
     end
 
     // Next state combinational logic
-    // NEW: Fixed 4-word-per-command architecture
-    // All commands are 4 words: header + 3 payload words (unused words ignored)
+    // Fixed 4-word-per-command architecture: header + 3 payload words (unused words ignored)
     always_comb begin
         state_next = state_reg;
 
@@ -147,12 +142,18 @@ import gemm_pkg::*;
             ST_IDLE: begin
                 // Only start next command if:
                 // 1. Command FIFO has data
-                // 2. All peripherals are idle
+                // 2. All peripherals are idle (OR command is WAIT, which monitors busy engines)
                 // 3. Result FIFO is not almost-full (backpressure)
-                if (!i_cmd_fifo_empty && 
-                    (i_dc_state == 4'd0) && 
-                    (i_ce_state == 4'd0) &&
+                //
+                // NOTE: WAIT commands must be accepted even when engines are busy,
+                // otherwise we get deadlock: TILE launches CE -> CE busy -> WAIT_TILE
+                // stuck in FIFO because we won't accept commands while CE busy
+                $display("[MC] @%0t IDLE: i_cmd_fifo_empty=%b, i_dc_state=%d, i_ce_state=%d, i_result_fifo_afull=%b",
+                         $time, i_cmd_fifo_empty, i_dc_state, i_ce_state, i_result_fifo_afull);
+                if (!i_cmd_fifo_empty &&
                     !i_result_fifo_afull) begin
+                    // Accept all commands when engines idle, or any command when FIFO has data
+                    // The actual busy check will happen per-command type in execution states
                     state_next = ST_READ_HDR;
                 end
             end
@@ -206,31 +207,49 @@ import gemm_pkg::*;
             end
 
             ST_EXEC_FETCH: begin
-                state_next = ST_WAIT_DONE;
+                // Only execute FETCH if dispatcher is idle
+                if (i_dc_state == 4'd0) begin
+                    state_next = ST_WAIT_FETCH;
+                end else begin
+                    state_next = ST_EXEC_FETCH;  // Wait for DC to be idle
+                    $display("[MC] @%0t EXEC_FETCH blocked: i_dc_state=%d (waiting for idle)",
+                             $time, i_dc_state);
+                end
+            end
+
+            ST_WAIT_FETCH: begin
+                if (i_dc_fetch_done) begin
+                    state_next = ST_CMD_COMPLETE;
+                end else begin
+                    state_next = ST_WAIT_FETCH;
+                end
             end
 
             ST_EXEC_DISP: begin
-                state_next = ST_WAIT_DONE;
+                // DISP command is quick (1-2 cycles), just execute and move on
+                state_next = ST_CMD_COMPLETE;
             end
 
             ST_EXEC_TILE: begin
                 // Stay in EXEC_TILE for 2 cycles: cycle 1 sets params, cycle 2 asserts enable
                 if (ce_tile_params_set) begin
-                    state_next = ST_WAIT_DONE;
+                    state_next = ST_CMD_COMPLETE;
                 end
             end
 
             ST_WAIT_DISP: begin
-                // Block until dispatcher operation with ID >= wait_id completes
+                // Wait until the DISPATCH command with the specified ID has completed
                 if (last_disp_id_reg >= wait_id_reg) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_DISP; // Keep blocking
+                    $display("[MC] @%0t WAIT_DISP blocking: last_disp_id=%0d < wait_id=%0d",
+                             $time, last_disp_id_reg, wait_id_reg);
                 end
             end
 
             ST_WAIT_TILE: begin
-                // Block until tile operation with ID >= wait_id completes
+                // Wait until the TILE command with the specified ID has completed
                 if (last_tile_id_reg >= wait_id_reg) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
@@ -240,17 +259,7 @@ import gemm_pkg::*;
                 end
             end
 
-            ST_WAIT_DONE: begin
-                if ((dc_fetch_en_reg && i_dc_fetch_done) ||
-                    (dc_disp_en_reg && i_dc_disp_done) ||
-                    (ce_tile_en_reg && i_ce_tile_done)) begin
-                    state_next = ST_CMD_COMPLETE;
-                end
-            end
-
             ST_CMD_COMPLETE: begin
-                $display("[MC_DEBUG] @%0t CMD_COMPLETE: dc_fetch_en=%b, dc_disp_en=%b, clearing enables",
-                         $time, dc_fetch_en_reg, dc_disp_en_reg);
                 state_next = ST_IDLE;
             end
 
@@ -267,11 +276,9 @@ import gemm_pkg::*;
         if (~i_reset_n) begin
             cmd_op_reg <= 8'h00;
             cmd_id_reg <= 8'h00;
-            cmd_len_reg <= 8'h00;
             payload_word1_reg <= 32'h0;
             payload_word2_reg <= 32'h0;
             payload_word3_reg <= 32'h0;
-            payload_count_reg <= 3'd0;
         end else begin
             case (state_reg)
                 ST_READ_HDR: begin
@@ -284,10 +291,8 @@ import gemm_pkg::*;
                     if (state_reg != state_next) begin  // Transitioning to PAYLOAD2
                         cmd_op_reg  <= i_cmd_fifo_rdata[7:0];
                         cmd_id_reg  <= i_cmd_fifo_rdata[15:8];
-                        cmd_len_reg <= i_cmd_fifo_rdata[23:16];
-                        payload_count_reg <= 3'd0;
-                        $display("[MC] @%0t LATCH_HDR: op=0x%02x, id=%0d, len=%0d",
-                                 $time, i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8], i_cmd_fifo_rdata[23:16]);
+                        $display("[MC] @%0t LATCH_HDR: op=0x%02x, id=%0d",
+                                 $time, i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8]);
                     end
                 end
 
@@ -295,7 +300,6 @@ import gemm_pkg::*;
                     // Latch payload word 1 ONLY if we successfully transitioned
                     if (state_reg != state_next) begin  // Transitioning to PAYLOAD3
                         payload_word1_reg <= i_cmd_fifo_rdata;
-                        payload_count_reg <= 3'd1;
                         $display("[MC] @%0t LATCH_PAYLOAD1: cmd[1]=0x%08x", $time, i_cmd_fifo_rdata);
                     end
                 end
@@ -304,7 +308,6 @@ import gemm_pkg::*;
                     // Latch payload word 2 ONLY if we successfully transitioned
                     if (state_reg != state_next) begin  // Transitioning to DECODE
                         payload_word2_reg <= i_cmd_fifo_rdata;
-                        payload_count_reg <= 3'd2;
                         $display("[MC] @%0t LATCH_PAYLOAD2: cmd[2]=0x%08x", $time, i_cmd_fifo_rdata);
                     end
                 end
@@ -313,16 +316,15 @@ import gemm_pkg::*;
                     // Latch payload word 3 (final word from ST_READ_PAYLOAD3 read)
                     // This happens as we enter DECODE state
                     payload_word3_reg <= i_cmd_fifo_rdata;
-                    payload_count_reg <= 3'd3;
                     $display("[MC] @%0t LATCH_PAYLOAD3: cmd[3]=0x%08x", $time, i_cmd_fifo_rdata);
-                    
+
                     // Display decoded command with all 4 words
                     $display("[MC] @%0t DECODE: op=0x%02x, payload=[0x%08x, 0x%08x, 0x%08x]",
                              $time, cmd_op_reg, payload_word1_reg, payload_word2_reg, payload_word3_reg);
                 end
 
                 ST_CMD_COMPLETE: begin
-                    payload_count_reg <= 3'd0;
+                    // Command complete, ready for next command
                 end
             endcase
         end
@@ -344,12 +346,23 @@ import gemm_pkg::*;
             o_dc_disp_len   <= '0;
             o_dc_man_4b_8b_n <= 1'b0;
         end else begin
+            // Clear enables when transitioning out of EXEC states
+            if (state_reg == ST_EXEC_FETCH && state_next != ST_EXEC_FETCH) begin
+                dc_fetch_en_reg <= 1'b0;
+            end
+            if (state_reg == ST_EXEC_DISP && state_next != ST_EXEC_DISP) begin
+                dc_disp_en_reg <= 1'b0;
+            end
+            // Note: ce_tile_en_reg is managed in its own always_ff block below
+            
             // Clear enables immediately when done signal detected in WAIT_DONE state
             // This prevents re-triggering when peripheral returns to IDLE before we do
-            if (state_reg == ST_WAIT_DONE) begin
+            if (state_reg == ST_WAIT_FETCH) begin
                 if (dc_fetch_en_reg && i_dc_fetch_done) begin
                     dc_fetch_en_reg <= 1'b0;
                 end
+            end
+            if (state_reg == ST_WAIT_DISP) begin
                 if (dc_disp_en_reg && i_dc_disp_done) begin
                     dc_disp_en_reg <= 1'b0;
                 end
@@ -365,7 +378,7 @@ import gemm_pkg::*;
                     o_dc_fetch_len  <= payload_word2_reg[link_len_width_gp-1:0];
                     o_dc_fetch_target <= payload_word2_reg[16];  // Extract fetch_right bit
                     $display("[MC] @%0t EXEC_FETCH: addr=0x%08x, len=%0d, target=%s",
-                             $time, payload_word1_reg[link_addr_width_gp-1:0], 
+                             $time, payload_word1_reg[link_addr_width_gp-1:0],
                              payload_word2_reg[link_len_width_gp-1:0],
                              payload_word2_reg[16] ? "RIGHT" : "LEFT");
                 end
@@ -379,8 +392,8 @@ import gemm_pkg::*;
                     o_dc_disp_addr   <= disp_cmd.tile_addr;
                     o_dc_disp_len    <= disp_cmd.len;
                     o_dc_man_4b_8b_n <= disp_cmd.man_4b_8b_n;
-                    $display("[MC] @%0t EXEC_DISP: tile_addr=%0d, len=%0d, man_4b=%0b",
-                             $time, disp_cmd.tile_addr, disp_cmd.len, disp_cmd.man_4b_8b_n);
+                    $display("[MC] @%0t EXEC_DISP: tile_addr=%0d, len=%0d, man_4b=%0b, id=%0d",
+                             $time, disp_cmd.tile_addr, disp_cmd.len, disp_cmd.man_4b_8b_n, cmd_id_reg);
                 end
             endcase
         end
@@ -408,13 +421,8 @@ import gemm_pkg::*;
             // Clear params_set flag when command completes (ready for next TILE)
             if (state_reg == ST_CMD_COMPLETE) begin
                 ce_tile_params_set <= 1'b0;
-                $display("[MC] @%0t CMD_COMPLETE: Clearing ce_tile_params_set for next tile", $time);
-            end
-            
-            // Clear enable when tile completes (in WAIT_DONE state)
-            if (state_reg == ST_WAIT_DONE && ce_tile_en_reg && i_ce_tile_done) begin
                 ce_tile_en_reg <= 1'b0;
-                $display("[MC] @%0t WAIT_DONE: Tile complete, clearing ce_tile_en", $time);
+                $display("[MC] @%0t CMD_COMPLETE: Clearing ce_tile_params_set and ce_tile_en for next tile", $time);
             end
 
             if (state_reg == ST_EXEC_TILE) begin
@@ -454,6 +462,8 @@ import gemm_pkg::*;
 
     // ===================================================================
     // ID Tracking for WAIT Commands
+    // FIX: Auto-increment counters instead of using cmd_id from header
+    // (Software sends cmd_id=0 for all commands, breaking ID-based tracking)
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
@@ -461,21 +471,21 @@ import gemm_pkg::*;
             last_tile_id_reg <= 8'h00;
             wait_id_reg <= 8'h00;
         end else begin
-            // Track last completed DISP/TILE IDs
-            if (state_reg == ST_CMD_COMPLETE) begin
-                if (cmd_op_reg == e_cmd_op_disp) begin
-                    last_disp_id_reg <= cmd_id_reg;
-                end else if (cmd_op_reg == e_cmd_op_tile) begin
-                    last_tile_id_reg <= cmd_id_reg;
-                end
+            // Simplified ID tracking: Update when command is issued
+            if (state_reg == ST_EXEC_DISP) begin
+                last_disp_id_reg <= cmd_id_reg;
+                $display("[MC] @%0t Update last_disp_id=%0d", $time, cmd_id_reg);
+            end
+
+            if (state_reg == ST_EXEC_TILE) begin
+                last_tile_id_reg <= cmd_id_reg;
+                $display("[MC] @%0t Update last_tile_id=%0d", $time, cmd_id_reg);
             end
 
             // Capture wait ID for WAIT commands
             if (state_reg == ST_DECODE &&
                 (cmd_op_reg == e_cmd_op_wait_disp || cmd_op_reg == e_cmd_op_wait_tile)) begin
-                // wait_id is in header bits [15:8] (id field) per software spec
-                // Software constructs: {reserved[31:24], len[23:16], wait_id[15:8], opcode[7:0]}
-                wait_id_reg <= cmd_id_reg;
+                wait_id_reg <= payload_word1_reg[7:0];
             end
         end
     end
