@@ -49,6 +49,7 @@ import numpy as np
 import sys
 import struct
 import os
+import argparse
 
 # Add hex utilities from local directory
 script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
@@ -146,243 +147,39 @@ class HardwareGFPCompute:
         # Hardware returns this as GFP, only converts to FP16 after V-loop accumulation
         return (sum_mantissa, max_exponent)
 
-    def gfp_add(self, gfp1, gfp2):
-        """
-        Add two GFP values using exponent-aligned integer addition.
-        
-        Matches hardware gfp8_bcv_controller.sv accumulation logic.
-        
-        Args:
-            gfp1: (mantissa1, exponent1) tuple
-            gfp2: (mantissa2, exponent2) tuple
-        
-        Returns:
-            (mantissa_sum, exponent_max) tuple
-        """
-        mant1, exp1 = gfp1
-        mant2, exp2 = gfp2
-        
-        # Find maximum exponent
-        max_exp = max(exp1, exp2)
-        
-        # Align mantissas to max exponent
-        exp_diff1 = max_exp - exp1
-        exp_diff2 = max_exp - exp2
-        
-        # Right shift with underflow check
-        # Python's >> operator performs arithmetic right shift (same as SystemVerilog >>>)
-        if exp_diff1 > 31:
-            aligned_mant1 = 0
-        else:
-            aligned_mant1 = mant1 >> exp_diff1
-
-        if exp_diff2 > 31:
-            aligned_mant2 = 0
-        else:
-            aligned_mant2 = mant2 >> exp_diff2
-        
-        # Integer addition of aligned mantissas
-        sum_mant = aligned_mant1 + aligned_mant2
-        
-        return (sum_mant, max_exp)
-
-    def gfp_to_float(self, gfp):
-        """
-        Convert GFP (mantissa, exponent) to floating-point value.
-        
-        Args:
-            gfp: (mantissa, exponent) tuple
-        
-        Returns:
-            float: Real value
-        """
-        mantissa, exponent = gfp
-        scale_factor = 2.0 ** exponent
-        return float(mantissa) * scale_factor
-
     def gfp_to_fp16(self, gfp):
         """
-        Convert GFP (mantissa, exponent) directly to FP16 format.
-        
-        Matches gfp8_to_fp16.sv hardware behavior exactly.
-        
+        Convert GFP (mantissa, exponent) to FP16 format.
+
+        Converts GFP to float, clamps to FP16 range, then converts to FP16
+        using IEEE 754 round-to-nearest-even.
+
         Args:
-            gfp: (mantissa, exponent) tuple where mantissa is signed 32-bit int
-        
+            gfp: (mantissa, exponent) tuple
+
         Returns:
             uint16: FP16 representation
         """
         mantissa, exponent = gfp
-        
-        # Handle zero case
-        if mantissa == 0:
-            return 0x0000
-        
-        # Extract sign
-        sign = 1 if mantissa < 0 else 0
-        abs_mantissa = abs(mantissa)
-        
-        # Find leading zeros (matching hardware casez logic exactly)
-        # Hardware counts from MSB down, looking for first 1 bit
-        if abs_mantissa == 0:
-            leading_zeros = 32
-        else:
-            # Count leading zeros by finding position of MSB
-            leading_zeros = 0
-            for i in range(31, -1, -1):
-                if (abs_mantissa >> i) & 1:
-                    break
-                leading_zeros += 1
-        
-        # Normalize mantissa by shifting left
-        normalized_mantissa = abs_mantissa << leading_zeros
-        
-        # Calculate FP16 exponent
-        # Formula: fp16_exp_signed = exp_signed + 31 - leading_zeros + 15
-        fp16_exp_signed = int(exponent) + 31 - leading_zeros + 15
-        
-        # Handle exponent range
-        if fp16_exp_signed < -10:
-            # Underflow to zero
-            return 0x0000 | (sign << 15)
-        elif fp16_exp_signed < 1:
-            # Denormal range
-            denorm_shift = 1 - fp16_exp_signed
-            denorm_mantissa = abs_mantissa >> denorm_shift
-            
-            # Extract mantissa and rounding bits
-            mant_truncated = (denorm_mantissa >> 21) & 0x3FF
-            round_bit = (denorm_mantissa >> 20) & 1
-            sticky_bit = (denorm_mantissa & 0xFFFFF) != 0
-            
-            # IEEE 754 round-to-nearest-even
-            if round_bit and (sticky_bit or (mant_truncated & 1)):
-                mant_rounded = mant_truncated + 1
-                fp16_mant = mant_rounded & 0x3FF
-            else:
-                fp16_mant = mant_truncated
-            
-            return (sign << 15) | fp16_mant
-        elif fp16_exp_signed > 30:
-            # Overflow to infinity
-            return (sign << 15) | 0x7C00
-        else:
-            # Normal case
-            fp16_exp = fp16_exp_signed
-            
-            # Extract mantissa and rounding bits from normalized mantissa
-            mant_truncated = (normalized_mantissa >> 21) & 0x3FF
-            round_bit = (normalized_mantissa >> 20) & 1
-            sticky_bit = (normalized_mantissa & 0xFFFFF) != 0
-            
-            # IEEE 754 round-to-nearest-even
-            if round_bit and (sticky_bit or (mant_truncated & 1)):
-                mant_rounded = mant_truncated + 1
-                if mant_rounded >= 1024:  # Overflow into exponent
-                    fp16_exp += 1
-                    fp16_mant = 0
-                    if fp16_exp >= 31:
-                        return (sign << 15) | 0x7C00
-                else:
-                    fp16_mant = mant_rounded
-            else:
-                fp16_mant = mant_truncated
-            
-            return (sign << 15) | (fp16_exp << 10) | fp16_mant
 
-    def real_to_fp16(self, val):
-        """
-        Convert real value to FP16 using IEEE 754 round-to-nearest-even.
+        # Convert GFP to float
+        scale_factor = 2.0 ** exponent
+        float_val = float(mantissa) * scale_factor
 
-        Uses numpy's float16 conversion which implements IEEE 754 rounding correctly.
-
-        Args:
-            val: Float value to convert
-
-        Returns:
-            uint16: FP16 representation
-        """
-        # Clamp to FP16 range (matching hardware's clamp at line 553-559)
+        # Clamp to FP16 range
         FP16_MAX = 65504.0
-        if val > FP16_MAX:
+        if float_val > FP16_MAX:
             clamped_val = FP16_MAX
-        elif val < -FP16_MAX:
+        elif float_val < -FP16_MAX:
             clamped_val = -FP16_MAX
         else:
-            clamped_val = val
-        
-        # Use numpy's float16 conversion which matches IEEE 754 behavior
-        # Hardware uses IEEE 754 round-to-nearest-even, which numpy implements
+            clamped_val = float_val
+
+        # Convert to FP16 using numpy (IEEE 754 round-to-nearest-even)
         fp16_val = np.float16(clamped_val)
         fp16_bits = fp16_val.view(np.uint16)
-        
+
         return fp16_bits
-
-    def compute_gemm(self, left_mant, left_exp, right_mant, right_exp,
-                     output_rows=128, output_cols=128):
-        """
-        Compute full GEMM using hardware algorithm.
-
-        Hardware computes in 4×4 tiles, processing in tile-major order.
-        Each tile computes 16 dot products.
-
-        Args:
-            left_mant: [128, 128] left mantissa matrix
-            left_exp: [128, 4] left exponent matrix
-            right_mant: [128, 128] right mantissa matrix (transposed)
-            right_exp: [128, 4] right exponent matrix (transposed)
-            output_rows: Number of output rows (default 128)
-            output_cols: Number of output columns (default 128)
-
-        Returns:
-            [16384] array of FP16 results in tile-major order
-        """
-        results_tile_major = []
-
-        # Process in tile-major order: tile(0,0), tile(0,1), ..., tile(31,31)
-        # Addressing matches hardware testbench (tb_ucode_gen.sv):
-        # - left_addr = row_block * 16 (base address, hardware adds +16 for mantissas)
-        # - right_addr = 528 + col_block * 16 (base address, hardware adds +16 for mantissas)
-        # Python directly indexes matrices, so we just use row/col indices
-
-        num_tile_rows = output_rows // 4
-        num_tile_cols = output_cols // 4
-
-        for tile_row in range(num_tile_rows):
-            for tile_col in range(num_tile_cols):
-                # Compute 4×4 tile
-                for row_in_tile in range(4):
-                    for col_in_tile in range(4):
-                        # Output matrix position
-                        out_row = tile_row * 4 + row_in_tile
-                        out_col = tile_col * 4 + col_in_tile
-
-                        # Extract vectors for this dot product
-                        # Left: row from left matrix (A[out_row, :])
-                        left_vec_mant = left_mant[out_row, :]
-                        left_vec_exp = left_exp[out_row, :]
-
-                        # Right: row from right matrix (B^T[out_col, :] = B[:, out_col])
-                        right_vec_mant = right_mant[out_col, :]
-                        right_vec_exp = right_exp[out_col, :]
-
-                        # Compute dot product using hardware algorithm
-                        gfp_result = self.compute_dot_product(
-                            left_vec_mant, left_vec_exp,
-                            right_vec_mant, right_vec_exp
-                        )
-
-                        # Convert GFP to float then to FP16
-                        dot_result = self.gfp_to_float(gfp_result)
-                        fp16_result = self.real_to_fp16(dot_result)
-                        results_tile_major.append(fp16_result)
-
-                # Progress indicator
-                tile_num = tile_row * num_tile_cols + tile_col
-                if (tile_num + 1) % 64 == 0:
-                    print(f"Progress: {tile_num + 1}/{num_tile_rows * num_tile_cols} tiles completed")
-
-        return np.array(results_tile_major, dtype=np.uint16)
 
     def compute_gemm_with_bcv(self, left_mant, left_exp, right_mant, right_exp, B, C, V, left_start_addr=0, right_start_addr=0):
         """
@@ -413,14 +210,14 @@ class HardwareGFPCompute:
         results = []
 
         print(f"   Computing with V-loop accumulation:")
-        print(f"   - For each of {B}×{C} outputs: collect {V} dot products")
+        print(f"   - For each of {B}x{C} outputs: collect {V} dot products")
         print(f"   - Apply global max-exponent alignment and sum")
         print(f"   - Total: {B*C*V} dot products")
 
         # Iterate over output positions
         for b in range(B):
             for c in range(C):
-                # V-loop: Collect all dot products first (matching emulator)
+                # V-loop: Collect all dot products first
                 v_dot_products = []  # List of (mantissa, exponent) tuples
                 
                 for v in range(V):
@@ -458,35 +255,32 @@ class HardwareGFPCompute:
                 
                 # Result is (aligned_sum, max_exponent)
                 accumulator_gfp = (aligned_sum, max_exponent)
-                
-                # Convert GFP to float then to FP16 (matching emulator behavior)
-                accumulator_float = self.gfp_to_float(accumulator_gfp)
-                fp16_result = self.real_to_fp16(accumulator_float)
+
+                # Convert GFP to FP16
+                fp16_result = self.gfp_to_fp16(accumulator_gfp)
                 results.append(fp16_result)
-                
+
                 # Debug first output
                 if b == 0 and c == 0:
                     print(f"   Output[{b},{c}]: {V} dots, max_exp={max_exponent}")
                     print(f"                acc_gfp=({accumulator_gfp[0]}, {accumulator_gfp[1]})")
-                    print(f"                     = {accumulator_float:.6f} -> FP16=0x{fp16_result:04x}")
+                    print(f"                     -> FP16=0x{fp16_result:04x}")
         
         return np.array(results, dtype=np.uint16)
 
 def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     """
     Generate multi-tile golden reference with command sequence.
-    
+
     Args:
         B: Output rows (batch size)
-        C: Output columns  
+        C: Output columns
         V: Inner dimension multiplier (V Native Vectors per output)
         output_prefix: Prefix for output files
-    
+
     Returns:
         tuple: (flat_results, command_sequence)
     """
-    import os
-    
     # Calculate tile dimensions
     num_left_tile = 128 // (B * V)
     num_right_tile = 128 // (C * V)
@@ -497,9 +291,8 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     print(f"  B={B}, C={C}, V={V}")
     print(f"  num_left_tile={num_left_tile}, num_right_tile={num_right_tile}")
     print(f"  total_tiles={total_tiles}, total_results={total_results}")
-    
+
     # Load matrices from hex files
-    script_dir = os.path.dirname(os.path.abspath(__file__))
     left_hex_path = os.path.join(script_dir, 'left.hex')
     right_hex_path = os.path.join(script_dir, 'right.hex')
     
@@ -531,7 +324,7 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
             left_addr = (left_tile_idx * B * V) * 4
             right_addr = (right_tile_idx * C * V) * 4
             
-            # Compute B×C results for this tile
+            # Compute BxC results for this tile
             tile_results = hw_compute.compute_gemm_with_bcv(
                 left_mant, left_exp, right_mant, right_exp, 
                 B, C, V, left_addr, right_addr
@@ -626,9 +419,9 @@ def compute_emulator_golden(B, C, V, left_mant, left_exp, right_mant, right_exp)
     left_float_full = gfp_to_float_matrix(left_mant, left_exp)
     right_float_full = gfp_to_float_matrix(right_mant, right_exp)
 
-    # Extract submatrices for B×C×V configuration
-    left_float = left_float_full[:B*V, :]  # Shape: (B*V) × 128
-    right_float = right_float_full[:C*V, :]  # Shape: (C*V) × 128
+    # Extract submatrices for BxCxV configuration
+    left_float = left_float_full[:B*V, :]  # Shape: (B*V) x 128
+    right_float = right_float_full[:C*V, :]  # Shape: (C*V) x 128
 
     # Convert to torch tensors
     left_tensor = torch.from_numpy(left_float).float()
@@ -651,7 +444,7 @@ def compute_emulator_golden(B, C, V, left_mant, left_exp, right_mant, right_exp)
     )
 
     # For Matrix B, we need to transpose since it's stored transposed in hex
-    right_tensor_transposed = right_tensor.T  # Shape: 128 × (C*V)
+    right_tensor_transposed = right_tensor.T  # Shape: 128 x (C*V)
     gfp_b = GFPTensor(
         original_shape=right_tensor_transposed.shape,
         group_axis=0,  # Matrix B: group along rows
@@ -666,7 +459,7 @@ def compute_emulator_golden(B, C, V, left_mant, left_exp, right_mant, right_exp)
     print(f"   Dequantized Matrix A range: [{deq_a.min():.6f}, {deq_a.max():.6f}]")
     print(f"   Dequantized Matrix B range: [{deq_b.min():.6f}, {deq_b.max():.6f}]")
 
-    # Define GEMM data types (matching generate_nv_hex.py lines 266-275)
+    # Define GEMM data types
     product_dtype = GFPDataType(
         mantissa_bits=19,
         exp_bits=8,
@@ -678,11 +471,10 @@ def compute_emulator_golden(B, C, V, left_mant, left_exp, right_mant, right_exp)
         mantissa_signed=True
     )
 
-    # Run GFP GEMM (matching generate_nv_hex.py lines 277-279)
-    # This computes (B*V) × (C*V) GEMM
+    # Run GFP GEMM - computes (B*V) x (C*V) GEMM
     gemm = GFPGemm(accum_dtype=accum_dtype, product_dtype=product_dtype)
     gfp_result = gemm(gfp_a, gfp_b)
-    result_full = gfp_result.dequantize().cpu().numpy()  # Shape: (B*V) × (C*V)
+    result_full = gfp_result.dequantize().cpu().numpy()  # Shape: (B*V) x (C*V)
 
     print(f"   Full GEMM result shape: {result_full.shape}")
     print(f"   Result range: [{result_full.min():.6f}, {result_full.max():.6f}]")
@@ -697,34 +489,30 @@ def compute_emulator_golden(B, C, V, left_mant, left_exp, right_mant, right_exp)
 
     print(f"   Accumulated result shape: {result_accumulated.shape}")
 
-    # Convert to FP16 hex (matching generate_nv_hex.py lines 298-303)
+    # Convert to FP16 hex
     result_fp16 = result_accumulated.astype(np.float16).flatten()
     results_emulator = np.array([np.frombuffer(val.tobytes(), dtype=np.uint16)[0] for val in result_fp16], dtype=np.uint16)
 
-    print(f"   ✓ Generated {len(results_emulator)} FP16 results ({B}×{C})")
+    print(f"   ✓ Generated {len(results_emulator)} FP16 results ({B}x{C})")
     print(f"   First 4 values: {' '.join(f'0x{v:04x}' for v in results_emulator[:min(4, len(results_emulator))])}")
 
     return results_emulator
 
 
 def main():
-    import argparse
-    
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Generate hardware-accurate GFP GEMM golden reference')
     parser.add_argument('--B', type=int, default=128, help='Output rows (batch size)')
     parser.add_argument('--C', type=int, default=128, help='Output columns')
     parser.add_argument('--V', type=int, default=1, help='Inner dimension multiplier (V Native Vectors)')
     parser.add_argument('--multitile', action='store_true', help='Generate multi-tile golden reference')
-    parser.add_argument('--seed', type=int, default=1234, help='Random seed (must match generate_nv_hex.py)')
-    parser.add_argument('--std', type=float, default=0.002, help='Standard deviation (must match generate_nv_hex.py)')
     args = parser.parse_args()
     
     B, C, V = args.B, args.C, args.V
     
     # Validate parameters
     if B * V > 128 or C * V > 128:
-        print(f"ERROR: Invalid parameters! B×V={B*V} and C×V={C*V} must both be ≤ 128")
+        print(f"ERROR: Invalid parameters! BxV={B*V} and CxV={C*V} must both be ≤ 128")
         sys.exit(1)
     
     # Handle multi-tile mode
@@ -749,24 +537,24 @@ def main():
     print("Hardware-Accurate GFP GEMM Reference Generation")
     print("=" * 80)
     print(f"\nConfiguration: B={B}, C={C}, V={V}")
-    print(f"  Matrix A: {B} × {128*V} (uses {B*V} Native Vectors)")
-    print(f"  Matrix B: {128*V} × {C} (uses {C*V} Native Vectors)")
-    print(f"  Output:   {B} × {C} = {B*C} results")
+    print(f"  Matrix A: {B} x {128*V} (uses {B*V} Native Vectors)")
+    print(f"  Matrix B: {128*V} x {C} (uses {C*V} Native Vectors)")
+    print(f"  Output:   {B} x {C} = {B*C} results")
 
     # Load matrices from hex files
     print("\n1. Loading matrices from hex files...")
     left_hex_path = os.path.join(script_dir, 'left.hex')
     right_hex_path = os.path.join(script_dir, 'right.hex')
-    
+
     exp_left_raw, man_left_raw = load_hex_file(left_hex_path)
-    left_exp_torch = decode_exponents(exp_left_raw)      # [128, 4] torch.Tensor
-    left_exp = left_exp_torch.numpy()                     # Convert to numpy for processing
-    left_mant = decode_mantissas(man_left_raw)           # [128, 128] numpy array
+    left_exp_torch = decode_exponents(exp_left_raw)
+    left_exp = left_exp_torch.numpy()
+    left_mant = decode_mantissas(man_left_raw)
 
     exp_right_raw, man_right_raw = load_hex_file(right_hex_path)
-    right_exp_torch = decode_exponents(exp_right_raw)    # [128, 4] torch.Tensor
-    right_exp = right_exp_torch.numpy()                   # Convert to numpy for processing
-    right_mant = decode_mantissas(man_right_raw)         # [128, 128] numpy array (already transposed)
+    right_exp_torch = decode_exponents(exp_right_raw)
+    right_exp = right_exp_torch.numpy()
+    right_mant = decode_mantissas(man_right_raw)
 
     print(f"   Left matrix: {left_mant.shape}, exponents: {left_exp.shape}")
     print(f"   Right matrix: {right_mant.shape}, exponents: {right_exp.shape}")
@@ -780,9 +568,9 @@ def main():
     # Initialize hardware-accurate compute engine
     print("\n2. Computing with Hardware-Accurate Algorithm...")
     hw_compute = HardwareGFPCompute(exp_bits=5, exp_bias=15, group_size=32)
-    print(f"   Computing {B}×{C} GEMM with V={V} accumulation...")
+    print(f"   Computing {B}x{C} GEMM with V={V} accumulation...")
     results_hardware = hw_compute.compute_gemm_with_bcv(left_mant, left_exp, right_mant, right_exp, B, C, V)
-    print(f"   ✓ Generated {len(results_hardware)} FP16 results ({B}×{C})")
+    print(f"   ✓ Generated {len(results_hardware)} FP16 results ({B}x{C})")
     print(f"   First 4 values: {' '.join(f'0x{v:04x}' for v in results_hardware[:4])}")
     
     # Compute using GFP emulator for comparison (new simplified implementation)
@@ -804,7 +592,7 @@ def main():
         exact_matches = np.sum(results_hardware == results_emulator)
         match_rate = 100.0 * exact_matches / total
 
-        print(f"Total results: {total} ({B}×{C})")
+        print(f"Total results: {total} ({B}x{C})")
         print(f"Exact FP16 matches: {exact_matches}/{total} ({match_rate:.1f}%)")
 
         # Compute error metrics
@@ -855,9 +643,8 @@ def main():
     if results_to_write is not None:
         output_path = os.path.join(script_dir, 'out.hex')
         golden_path = os.path.join(script_dir, f'golden_B{B}_C{C}_V{V}.hex')
-        
-        step_num = 5
-        print(f"\n{step_num}. Writing results...")
+
+        print(f"\n5. Writing results...")
         print(f"   Writing to {output_path}...")
         with open(output_path, 'w') as f:
             for val in results_to_write:
@@ -871,7 +658,7 @@ def main():
         print(f"   ✓ Wrote {len(results_to_write)} values")
 
         # Verify first results
-        print(f"\n{step_num+1}. Verification:")
+        print(f"\n6. Verification:")
         num_to_show = min(16, len(results_to_write))
         print(f"   First {num_to_show} results:")
         for i in range(num_to_show):

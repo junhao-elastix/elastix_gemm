@@ -201,6 +201,21 @@ def write_hex_file(filename, exponent_lines, mantissa_lines):
     print(f"  Written: {filename} (528 lines)")
 
 
+def write_float_matrix(filename, float_matrix, matrix_name="Matrix"):
+    """
+    Write dequantized float matrix to text file.
+
+    Args:
+        filename: Output filename
+        float_matrix: Float matrix to write
+        matrix_name: Name to display in file header
+    """
+    with open(filename, "w") as f:
+        f.write(f"Float {matrix_name} ({float_matrix.shape[0]}x{float_matrix.shape[1]}):\n")
+        for row in float_matrix:
+            f.write(' '.join(f"{val:12.6f}" for val in row) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate NV-format hex files for GFP matrices")
     parser.add_argument('--B', type=int, default=128, help='Batch size (Matrix A rows)')
@@ -225,17 +240,11 @@ def main():
     print(f"{'='*70}\n")
 
     # Generate Matrix A
-    def write_float_matrix(filename, float_matrix, matrix_name="Matrix"):
-        with open(filename, "w") as f:
-            f.write(f"Float {matrix_name} ({float_matrix.shape[0]}x{float_matrix.shape[1]}):\n")
-            for row in float_matrix:
-                f.write(' '.join(f"{val:12.6f}" for val in row) + "\n")
-
     print("Generating Matrix A (left.hex)...")
     exp_a, mant_a, gfp_a = generate_nv_block(B, V, is_matrix_a=True, seed=args.seed, std=args.std)
     write_hex_file(f"{args.output_dir}/left.hex", exp_a, mant_a)
 
-    # Also generate float for left from the original float
+    # Write dequantized float matrix
     float_a = gfp_a.dequantize()
     float_left_file = f"{args.output_dir}/left_float.txt"
     write_float_matrix(float_left_file, float_a, matrix_name="Matrix A")
@@ -246,7 +255,7 @@ def main():
     exp_b, mant_b, gfp_b = generate_nv_block(C, V, is_matrix_a=False, seed=args.seed+1, std=args.std)
     write_hex_file(f"{args.output_dir}/right.hex", exp_b, mant_b)
 
-    # Also generate float for right from the original float
+    # Write dequantized float matrix
     float_b = gfp_b.dequantize()
     float_right_file = f"{args.output_dir}/right_float.txt"
     write_float_matrix(float_right_file, float_b, matrix_name="Matrix B")
