@@ -1,8 +1,0 @@
-Golden Reference Result (B=2, C=2, V=2)
-Result shape: torch.Size([2, 2])
-Min: -0.071297, Max: 0.130196
-Mean: 0.005754
-
-Result matrix:
-   -0.071297     0.130196 
-   -0.048248     0.012367 

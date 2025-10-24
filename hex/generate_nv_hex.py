@@ -21,11 +21,11 @@ import sys
 import argparse
 
 # Add emulator path for GFP classes
-sys.path.append('/home/dev/Dev/emulator/src/emulator')
+sys.path.append('../emulator/src/emulator')
 from group_floating_point import GFPTensor, GFPDataType
 
 
-def generate_nv_block(B, V, is_matrix_a=True, seed=42):
+def generate_nv_block(B, V, is_matrix_a=True, seed=42, std=1.0):
     """
     Generate one 528-line block for either Matrix A or Matrix B
 
@@ -34,9 +34,13 @@ def generate_nv_block(B, V, is_matrix_a=True, seed=42):
         V: Number of Native Vectors in inner dimension
         is_matrix_a: True for Matrix A, False for Matrix B
         seed: Random seed
+        std: Standard deviation for random data generation
 
     Returns:
-        tuple: (exponent_lines, mantissa_lines) each as list of 32-byte arrays
+        tuple: (exponent_lines, mantissa_lines, gfp_tensor)
+            - exponent_lines: List of 16 arrays (32 bytes each)
+            - mantissa_lines: List of 512 arrays (32 bytes each)
+            - gfp_tensor: GFPTensor object for dequantization
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -69,8 +73,8 @@ def generate_nv_block(B, V, is_matrix_a=True, seed=42):
         cols = B
         print(f"Generating Matrix B: {rows} x {cols} ({NUM_NVS} NVs, stored transposed)")
 
-    # Generate random float data
-    float_data = torch.randn(rows, cols) * 0.1
+    # Generate random float data with specified standard deviation
+    float_data = torch.randn(rows, cols) * std
 
     # Create GFP tensor
     # For Matrix A: group along columns (axis=1)
@@ -198,17 +202,18 @@ def write_hex_file(filename, exponent_lines, mantissa_lines):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate NV-format hex files for GEMM")
-    parser.add_argument('-B', '--batch', type=int, default=128, help='Batch size (rows in result)')
-    parser.add_argument('-C', '--cols', type=int, default=128, help='Columns in result')
-    parser.add_argument('-V', '--vectors', type=int, default=1, help='Native Vectors in inner dim')
+    parser = argparse.ArgumentParser(description="Generate NV-format hex files for GFP matrices")
+    parser.add_argument('--B', type=int, default=128, help='Batch size (Matrix A rows)')
+    parser.add_argument('--C', type=int, default=128, help='Column count (Matrix B columns)')
+    parser.add_argument('--V', type=int, default=1, help='Native Vectors in inner dimension')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--std', type=float, default=1.0, help='Standard deviation for random data')
     parser.add_argument('--output-dir', default='.', help='Output directory')
     args = parser.parse_args()
 
-    B = args.batch
-    C = args.cols
-    V = args.vectors
+    B = args.B
+    C = args.C
+    V = args.V
 
     print(f"\n{'='*70}")
     print(f"NV-Format Hex File Generator")
@@ -227,7 +232,7 @@ def main():
                 f.write(' '.join(f"{val:12.6f}" for val in row) + "\n")
 
     print("Generating Matrix A (left.hex)...")
-    exp_a, mant_a, gfp_a = generate_nv_block(B, V, is_matrix_a=True, seed=args.seed)
+    exp_a, mant_a, gfp_a = generate_nv_block(B, V, is_matrix_a=True, seed=args.seed, std=args.std)
     write_hex_file(f"{args.output_dir}/left.hex", exp_a, mant_a)
 
     # Also generate float for left from the original float
@@ -238,7 +243,7 @@ def main():
 
     # Generate Matrix B
     print("\nGenerating Matrix B (right.hex)...")
-    exp_b, mant_b, gfp_b = generate_nv_block(C, V, is_matrix_a=False, seed=args.seed+1)
+    exp_b, mant_b, gfp_b = generate_nv_block(C, V, is_matrix_a=False, seed=args.seed+1, std=args.std)
     write_hex_file(f"{args.output_dir}/right.hex", exp_b, mant_b)
 
     # Also generate float for right from the original float
@@ -247,50 +252,20 @@ def main():
     write_float_matrix(float_right_file, float_b, matrix_name="Matrix B")
     print(f"  Written float matrix: {float_right_file}")
 
-    # Compute and save golden reference using GFP GEMM
-    print("\nComputing golden reference with GFP GEMM...")
-    from group_floating_point import GFPGemm
+    # ========================================================================
+    # NOTE: Golden reference generation has been moved to hardware_gfp_reference.py
+    #
+    # To generate golden references (hardware-accurate and emulator-based):
+    #   python hardware_gfp_reference.py --B {B} --C {C} --V {V}
+    # ========================================================================
 
-    # Debug: Check dequantized input values
-    deq_a = gfp_a.dequantize()
-    deq_b = gfp_b.dequantize()
-    print(f"  Dequantized Matrix A range: [{deq_a.min():.6f}, {deq_a.max():.6f}]")
-    print(f"  Dequantized Matrix B range: [{deq_b.min():.6f}, {deq_b.max():.6f}]")
-
-    # Define GEMM data types (matching hardware)
-    product_dtype = GFPDataType(
-        mantissa_bits=19,
-        exp_bits=8,
-        mantissa_signed=True
-    )
-    accum_dtype = GFPDataType(
-        mantissa_bits=20,
-        exp_bits=9,
-        mantissa_signed=True
-    )
-
-    gemm = GFPGemm(accum_dtype=accum_dtype, product_dtype=product_dtype)
-    gfp_result = gemm(gfp_a, gfp_b)
-    result = gfp_result.dequantize()
-
-    golden_file = f"{args.output_dir}/golden_result_b{B}_c{C}_v{V}.txt"
-    with open(golden_file, 'w') as f:
-        f.write(f"Golden Reference Result (B={B}, C={C}, V={V})\n")
-        f.write(f"Result shape: {result.shape}\n")
-        f.write(f"Min: {result.min():.6f}, Max: {result.max():.6f}\n")
-        f.write(f"Mean: {result.mean():.6f}\n\n")
-        f.write("Result matrix:\n")
-        for r in range(result.shape[0]):
-            for c in range(result.shape[1]):
-                f.write(f"{result[r, c]:12.6f} ")
-            f.write("\n")
-
-    print(f"  Written: {golden_file}")
     print(f"\n{'='*70}")
-    print(f"Generation Complete!")
+    print(f"Matrix Generation Complete!")
     print(f"  left.hex:  Matrix A ({B}x{128*V}, {B*V} NVs)")
     print(f"  right.hex: Matrix B ({128*V}x{C}, {C*V} NVs)")
-    print(f"  golden_result_b{B}_c{C}_v{V}.txt: Expected {B}x{C} result")
+    print(f"  left_float.txt, right_float.txt: Dequantized matrices")
+    print(f"\nTo generate golden references, run:")
+    print(f"  python hardware_gfp_reference.py --B {B} --C {C} --V {V}")
     print(f"{'='*70}\n")
 
 

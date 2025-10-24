@@ -12,14 +12,14 @@ Memory Layout Structure (Fixed):
 - Each line represents 256 bits (32 bytes or 32 8-bit numbers)
 - Group size: 32 elements per group
 - Vector size: 128 elements per vector
-- Block size: Always 128 NVs (128×128 elements)
+- Block size: Always 128 NVs (128x128 elements)
 
 Matrix Dimensions (Configurable):
-- Matrix A (left): B × (128 × V) - Activation matrix
-- Matrix B (right): (128 × V) × C - Weight matrix (stored transposed)
-- Result: B × C - Output matrix
-- Default: B=C=1, V=1 → 128×128 matrices
-- Constraint: B×V ≤ 128 and C×V ≤ 128
+- Matrix A (left): B x (128 x V) - Activation matrix
+- Matrix B (right): (128 x V) x C - Weight matrix (stored transposed)
+- Result: B x C - Output matrix
+- Default: B=C=1, V=1 → 128x128 matrices
+- Constraint: BxV ≤ 128 and CxV ≤ 128
 
 File Format Details:
 - Exponent bits: 5-bit, padded to 8-bit
@@ -36,7 +36,7 @@ import sys
 import os
 
 # Add the emulator path to import GFP classes
-sys.path.append('/home/dev/Dev/emulator/src/emulator')
+sys.path.append('../emulator/src/emulator')
 
 from group_floating_point import GFPTensor, GFPDataType, GFPGemm
 
@@ -110,7 +110,7 @@ def decode_exponents(exponent_data: torch.Tensor) -> torch.Tensor:
     The exponent layout is simple: mantissa line N uses exponent index N (1:1 mapping).
     Each mantissa line (group of 32 elements) has one shared exponent.
     - 512 mantissa lines → 512 exponents
-    - 512 exponents = 128 NVs × 4 groups per NV
+    - 512 exponents = 128 NVs x 4 groups per NV
     
     Args:
         exponent_data: [16, 32] tensor of raw exponent bytes (uint8)
@@ -224,9 +224,9 @@ class GFPMatrix:
     - Float matrix: Dequantized floating point representation
     
     Supports configurable matrix dimensions via B, C, V parameters:
-    - Matrix A (left): B × (128 × V) - Activation matrix
-    - Matrix B (right): (128 × V) × C - Weight matrix (stored transposed)
-    - Constraint: B×V ≤ 128 and C×V ≤ 128
+    - Matrix A (left): B x (128 x V) - Activation matrix
+    - Matrix B (right): (128 x V) x C - Weight matrix (stored transposed)
+    - Constraint: BxV ≤ 128 and CxV ≤ 128
     """
     
     def __init__(self, filename: str, is_left: bool = True, B: int = 1, C: int = 1, V: int = 1):
@@ -238,9 +238,9 @@ class GFPMatrix:
         
         # Validate parameters
         if self.is_left and self.B * self.V > 128:
-            raise ValueError(f"Matrix A constraint violated: B×V = {self.B}×{self.V} = {self.B*self.V} > 128")
+            raise ValueError(f"Matrix A constraint violated: BxV = {self.B}x{self.V} = {self.B*self.V} > 128")
         if not self.is_left and self.C * self.V > 128:
-            raise ValueError(f"Matrix B constraint violated: C×V = {self.C}×{self.V} = {self.C*self.V} > 128")
+            raise ValueError(f"Matrix B constraint violated: CxV = {self.C}x{self.V} = {self.C*self.V} > 128")
         
         # Always load full 128x128 from hex file
         self.rows = 128
@@ -254,11 +254,11 @@ class GFPMatrix:
         
         # Effective dimensions for computation
         if self.is_left:
-            # Matrix A: B × (128 × V)
+            # Matrix A: B x (128 x V)
             self.effective_rows = self.B
             self.effective_cols = 128 * self.V
         else:
-            # Matrix B: (128 × V) × C (stored transposed)
+            # Matrix B: (128 x V) x C (stored transposed)
             self.effective_rows = 128 * self.V
             self.effective_cols = self.C
         
@@ -309,8 +309,8 @@ class GFPMatrix:
         exp_reshaped = self.exp_data_torch[:, :]  # [128 NVs, 4 groups]
         
         # Extract the effective NVs
-        nvs_mant = mant_reshaped[:num_nvs, :, :]  # [B×V or C×V, 4, 32]
-        nvs_exp = exp_reshaped[:num_nvs, :]        # [B×V or C×V, 4]
+        nvs_mant = mant_reshaped[:num_nvs, :, :]  # [BxV or CxV, 4, 32]
+        nvs_exp = exp_reshaped[:num_nvs, :]        # [BxV or CxV, 4]
         
         if self.is_left:
             # Matrix A: B rows, each row is V consecutive NVs
@@ -323,9 +323,9 @@ class GFPMatrix:
                 reshaped_mant = nvs_mant.reshape(self.B, self.V, 4, 32)
                 reshaped_exp = nvs_exp.reshape(self.B, self.V, 4)
                 
-                # Concatenate V NVs: [B, V×4 groups, 32]
+                # Concatenate V NVs: [B, Vx4 groups, 32]
                 result_mant = reshaped_mant.reshape(self.B, self.V * 4, 32)
-                result_exp = reshaped_exp.reshape(self.B, self.V * 4).unsqueeze(-1)  # [B, V×4, 1]
+                result_exp = reshaped_exp.reshape(self.B, self.V * 4).unsqueeze(-1)  # [B, Vx4, 1]
         else:
             # Matrix B: stored transposed, so C columns become rows after transpose
             if self.V == 1:
@@ -337,7 +337,7 @@ class GFPMatrix:
                 # We need to create [128, C] which gets grouped as [4, 32, C]
                 # Wait, I think I'm overcomplicating this
                 
-                # Matrix B effective is [128×V, C], so with V=1 it's [128, C]
+                # Matrix B effective is [128xV, C], so with V=1 it's [128, C]
                 # Each of the C NVs has [4 groups, 32 elements]
                 # After transpose: rows become columns
                 # So we need [128, C] with groups along axis 0 (rows)
@@ -353,13 +353,13 @@ class GFPMatrix:
                 reshaped_mant = nvs_mant.reshape(self.C, self.V, 4, 32)
                 reshaped_exp = nvs_exp.reshape(self.C, self.V, 4)
                 
-                # [C, V, 4, 32] -> [C, V×4, 32] -> permute for transpose
+                # [C, V, 4, 32] -> [C, Vx4, 32] -> permute for transpose
                 merged_mant = reshaped_mant.reshape(self.C, self.V * 4, 32)
                 merged_exp = reshaped_exp.reshape(self.C, self.V * 4)
                 
-                # Transpose: [C, V×4, 32] -> [V×4, 32, C]
+                # Transpose: [C, Vx4, 32] -> [Vx4, 32, C]
                 result_mant = merged_mant.permute(1, 2, 0)
-                result_exp = merged_exp.permute(1, 0).unsqueeze(-1)  # [V×4, C, 1]
+                result_exp = merged_exp.permute(1, 0).unsqueeze(-1)  # [Vx4, C, 1]
         
         # Convert mantissa to int16 tensor (signed)
         result_mant = torch.from_numpy(result_mant).to(torch.int16)
@@ -371,54 +371,54 @@ class GFPMatrix:
         Return the effective submatrix for computation based on B, C, V parameters.
         
         The hex file contains 128 Native Vectors (NVs), each with 128 elements.
-        Physical storage: 128 rows × 128 columns
+        Physical storage: 128 rows x 128 columns
         
         Access pattern from memory:
-        - Matrix A[n][b][v][i]: file_line = 16 + b×V×4 + v×4 + floor(i/32)
-        - Matrix B[n][c][v][i]: file_line = 16 + c×V×4 + v×4 + floor(i/32)
+        - Matrix A[n][b][v][i]: file_line = 16 + bxVx4 + vx4 + floor(i/32)
+        - Matrix B[n][c][v][i]: file_line = 16 + cxVx4 + vx4 + floor(i/32)
         
         Matrix A (is_left=True):
-        - Logical dimensions: B × (128×V)
+        - Logical dimensions: B x (128xV)
         - Each row b concatenates V consecutive NVs
-        - NVs for row b: indices [b×V, b×V+1, ..., b×V+V-1]
-        - Total NVs used: B×V
+        - NVs for row b: indices [bxV, bxV+1, ..., bxV+V-1]
+        - Total NVs used: BxV
         
         Matrix B (is_left=False, stored transposed):
-        - Logical dimensions: (128×V) × C
-        - Physically stored as C×V NVs in hex file (transposed view)
+        - Logical dimensions: (128xV) x C
+        - Physically stored as CxV NVs in hex file (transposed view)
         - Each column c concatenates V consecutive NVs
-        - NVs for column c: indices [c×V, c×V+1, ..., c×V+V-1]
-        - Total NVs used: C×V
-        - Need to transpose from [C, 128×V] to [128×V, C]
+        - NVs for column c: indices [cxV, cxV+1, ..., cxV+V-1]
+        - Total NVs used: CxV
+        - Need to transpose from [C, 128xV] to [128xV, C]
         """
         if self.is_left:
-            # Matrix A: B × (128×V)
-            # Extract first B×V NVs (rows) from the 128×128 matrix
+            # Matrix A: B x (128xV)
+            # Extract first BxV NVs (rows) from the 128x128 matrix
             num_nvs = self.B * self.V
             if num_nvs > 128:
-                raise ValueError(f"B×V = {num_nvs} exceeds maximum 128 NVs")
+                raise ValueError(f"BxV = {num_nvs} exceeds maximum 128 NVs")
             
-            # Take first B×V rows
-            nvs = self.float_matrix[:num_nvs, :]  # [B×V, 128]
+            # Take first BxV rows
+            nvs = self.float_matrix[:num_nvs, :]  # [BxV, 128]
             
             if self.V == 1:
-                # Simple case: B rows × 128 columns
+                # Simple case: B rows x 128 columns
                 return nvs[:self.B, :]
             else:
                 # Reshape to [B, V, 128] then concatenate V dimension
                 nvs_reshaped = nvs.reshape(self.B, self.V, 128)  # [B, V, 128]
-                # Concatenate along V dimension to get [B, V×128]
+                # Concatenate along V dimension to get [B, Vx128]
                 result = nvs_reshaped.reshape(self.B, self.V * 128)
                 return result
         else:
-            # Matrix B: (128×V) × C
-            # Hex file stores B^T as C×V NVs
+            # Matrix B: (128xV) x C
+            # Hex file stores B^T as CxV NVs
             num_nvs = self.C * self.V
             if num_nvs > 128:
-                raise ValueError(f"C×V = {num_nvs} exceeds maximum 128 NVs")
+                raise ValueError(f"CxV = {num_nvs} exceeds maximum 128 NVs")
             
-            # Take first C×V rows (these represent transposed columns)
-            nvs = self.float_matrix[:num_nvs, :]  # [C×V, 128]
+            # Take first CxV rows (these represent transposed columns)
+            nvs = self.float_matrix[:num_nvs, :]  # [CxV, 128]
             
             if self.V == 1:
                 # Simple case: [C, 128] stored transposed
@@ -427,9 +427,9 @@ class GFPMatrix:
             else:
                 # Reshape to [C, V, 128] then concatenate V dimension
                 nvs_reshaped = nvs.reshape(self.C, self.V, 128)  # [C, V, 128]
-                # Concatenate along V dimension to get [C, V×128]
-                nvs_concat = nvs_reshaped.reshape(self.C, self.V * 128)  # [C, V×128]
-                # Transpose to get [V×128, C]
+                # Concatenate along V dimension to get [C, Vx128]
+                nvs_concat = nvs_reshaped.reshape(self.C, self.V * 128)  # [C, Vx128]
+                # Transpose to get [Vx128, C]
                 return nvs_concat.T
     
     def print_matrix(self, name="Matrix", max_rows=4, max_cols=8):
@@ -452,15 +452,15 @@ def test_gemm_decoding(B: int = 1, C: int = 1, V: int = 1):
     Args:
         B: Number of rows in Matrix A (activation matrix)
         C: Number of columns in Matrix B (weight matrix)  
-        V: Inner dimension multiplier (128×V)
+        V: Inner dimension multiplier (128xV)
     
     Matrix dimensions:
-        - Matrix A: B × (128 × V)
-        - Matrix B: (128 × V) × C (stored transposed)
-        - Result: B × C
+        - Matrix A: B x (128 x V)
+        - Matrix B: (128 x V) x C (stored transposed)
+        - Result: B x C
     """
-    left_file = "/home/dev/Dev/elastix_gemm/hex/left.hex"
-    right_file = "/home/dev/Dev/elastix_gemm/hex/right.hex"
+    left_file = "left.hex"
+    right_file = "right.hex"
     
     try:
         print("=" * 80)
@@ -478,11 +478,11 @@ def test_gemm_decoding(B: int = 1, C: int = 1, V: int = 1):
         
         # Step 2: Get effective matrices for computation
         print("\n2. Extracting effective matrices for computation...")
-        effective_a = matrix_a.get_effective_matrix()
-        effective_b = matrix_b.get_effective_matrix()
+        effective_a = matrix_a.get_float_matrix()
+        effective_b = matrix_b.get_float_matrix()
         
-        print(f"   Effective Matrix A shape: {effective_a.shape} (B={B} × 128×V={128*V})")
-        print(f"   Effective Matrix B shape: {effective_b.shape} (128×V={128*V} × C={C})")
+        print(f"   Effective Matrix A shape: {effective_a.shape} (B={B} x 128xV={128*V})")
+        print(f"   Effective Matrix B shape: {effective_b.shape} (128xV={128*V} x C={C})")
         
         # Convert to torch tensors
         float_a = torch.from_numpy(effective_a).float()
@@ -633,14 +633,14 @@ def test_gemm_decoding(B: int = 1, C: int = 1, V: int = 1):
             print(f"   Results are consistent between FP Matmul and GFP GEMM.")
         
         # Step 8: Save results to file
-        output_path = "/home/dev/Dev/elastix_gemm/hex/decoded_result.txt"
+        output_path = "decoded_result.txt"
         with open(output_path, 'w') as f:
             f.write("GFP GEMM vs FP Matmul Comparison - Decoded from Hex Files\n")
             f.write("=" * 80 + "\n")
             f.write(f"Parameters: B={B}, C={C}, V={V}\n")
-            f.write(f"Matrix A dimensions: {B} × {128*V}\n")
-            f.write(f"Matrix B dimensions: {128*V} × {C}\n")
-            f.write(f"Result dimensions: {B} × {C}\n")
+            f.write(f"Matrix A dimensions: {B} x {128*V}\n")
+            f.write(f"Matrix B dimensions: {128*V} x {C}\n")
+            f.write(f"Result dimensions: {B} x {C}\n")
             f.write(f"Left matrix: {left_file}\n")
             f.write(f"Right matrix: {right_file}\n")
             f.write(f"Result shape: {result.shape}\n")
@@ -707,7 +707,7 @@ if __name__ == "__main__":
     Usage:
         python mem_layout.py [--B B] [--C C] [--V V]
     
-    Default: B=C=V=1 (128×128 matrices)
+    Default: B=C=V=1 (128x128 matrices)
     """
     import argparse
     
@@ -717,14 +717,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python mem_layout.py                    # Default: B=C=V=1 (128×128)
-  python mem_layout.py --B 2 --C 4 --V 1  # Matrix A: 2×128, Matrix B: 128×4, Result: 2×4
-  python mem_layout.py --B 1 --C 1 --V 2  # Matrix A: 1×256, Matrix B: 256×1, Result: 1×1
+  python mem_layout.py                    # Default: B=C=V=1 (128x128)
+  python mem_layout.py --B 2 --C 4 --V 1  # Matrix A: 2x128, Matrix B: 128x4, Result: 2x4
+  python mem_layout.py --B 1 --C 1 --V 2  # Matrix A: 1x256, Matrix B: 256x1, Result: 1x1
 
 Constraints:
-  - B×V ≤ 128 (Matrix A constraint)
-  - C×V ≤ 128 (Matrix B constraint)
-  - Hex files always contain full 128×128 block (528 lines)
+  - BxV ≤ 128 (Matrix A constraint)
+  - CxV ≤ 128 (Matrix B constraint)
+  - Hex files always contain full 128x128 block (528 lines)
         """
     )
     
@@ -733,25 +733,25 @@ Constraints:
     parser.add_argument('--C', type=int, default=1, 
                        help='Number of columns in Matrix B (default: 1)')
     parser.add_argument('--V', type=int, default=1, 
-                       help='Inner dimension multiplier 128×V (default: 1)')
+                       help='Inner dimension multiplier 128xV (default: 1)')
     
     args = parser.parse_args()
     
     # Validate constraints
     if args.B * args.V > 128:
-        print(f"Error: B×V = {args.B}×{args.V} = {args.B*args.V} > 128")
+        print(f"Error: BxV = {args.B}x{args.V} = {args.B*args.V} > 128")
         print("Matrix A constraint violated. Please reduce B or V.")
         sys.exit(1)
     
     if args.C * args.V > 128:
-        print(f"Error: C×V = {args.C}×{args.V} = {args.C*args.V} > 128")
+        print(f"Error: CxV = {args.C}x{args.V} = {args.C*args.V} > 128")
         print("Matrix B constraint violated. Please reduce C or V.")
         sys.exit(1)
     
     print(f"Running GFP GEMM with parameters: B={args.B}, C={args.C}, V={args.V}")
-    print(f"Matrix A: {args.B} × {128*args.V}")
-    print(f"Matrix B: {128*args.V} × {args.C}")
-    print(f"Result: {args.B} × {args.C}")
+    print(f"Matrix A: {args.B} x {128*args.V}")
+    print(f"Matrix B: {128*args.V} x {args.C}")
+    print(f"Result: {args.B} x {args.C}")
     print()
     
     # Run the GEMM decoding test with specified parameters
