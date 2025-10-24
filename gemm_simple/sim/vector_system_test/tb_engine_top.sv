@@ -6,7 +6,7 @@
 //  - Instantiates engine_top (DUT)
 //  - Instantiates tb_memory_model (GDDR6 emulation)
 //  - Uses tb_ucode_gen_pkg for command generation
-//  - Test sequence: FETCH -> FETCH -> DISP -> TILE -> WAIT
+//  - Test sequence: FETCH -> FETCH -> DISPATCH -> WAIT_DISPATCH -> TILE -> WAIT_TILE
 //  - Result verification with FP16 output checking
 //
 // Test Flow:
@@ -37,24 +37,6 @@ module tb_engine_top;
     localparam AXI_ADDR_WIDTH = 42;  // 42-bit for GDDR6 NoC addressing
     localparam GDDR6_PAGE_ID = 9'd2;  // Channel 1 page ID
 
-    // Test configuration parameters (can be overridden via +define)
-    `ifdef TEST_B
-        localparam int TEST_B = `TEST_B;
-    `else
-        localparam int TEST_B = 4;
-    `endif
-
-    `ifdef TEST_C
-        localparam int TEST_C = `TEST_C;
-    `else
-        localparam int TEST_C = 4;
-    `endif
-
-    `ifdef TEST_V
-        localparam int TEST_V = `TEST_V;
-    `else
-        localparam int TEST_V = 32;
-    `endif
 
     // ===================================================================
     // Clock and Reset
@@ -209,6 +191,7 @@ module tb_engine_top;
         '{B: 2, C: 2, V: 64,   name: "B2_C2_V64"},
         '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},
         '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8, name: "B16_C16_V8"},
         '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
         '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
         '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
@@ -437,7 +420,7 @@ module tb_engine_top;
         cmd_seq[idx++] = wait_disp_cmd[3];
 
         // TILE (matrix multiply)
-        // NEW: With two-BRAM organization, both left and right address spaces start at 0
+        // Two-BRAM organization: both left and right address spaces start at 0
         generate_tile_command(4, 0, 0, B, C, V, tile_cmd);
         cmd_seq[idx++] = tile_cmd[0];
         cmd_seq[idx++] = tile_cmd[1];
@@ -461,15 +444,15 @@ module tb_engine_top;
         input logic [7:0] id,
         input logic [link_addr_width_gp-1:0] start_addr,
         input logic [link_len_width_gp-1:0] num_lines,
-        input logic fetch_right,  // NEW: 0=left, 1=right
+        input logic fetch_right,  // 0=left, 1=right
         output logic [31:0] cmd [0:3]
     );
         cmd_fetch_s payload;
-        
+
         // Pack using structure for correct bit alignment
         payload.start_addr = start_addr;
         payload.len = num_lines;
-        payload.fetch_right = fetch_right;  // NEW: Set target
+        payload.fetch_right = fetch_right;
         payload.reserved = '0;
         
         // All commands are 4 words: header + 3 payload words (unused words are 0)
@@ -498,12 +481,12 @@ module tb_engine_top;
         input logic [7:0] wait_id,
         output logic [31:0] cmd [0:3]
     );
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        // Command format matches software: {reserved[31:24], len[23:16], wait_id[15:8], opcode[7:0]}
-        cmd[0] = {8'd0, 8'd2, wait_id, e_cmd_op_wait_disp};
-        cmd[1] = 32'h00000000;     // Unused payload word 1
-        cmd[2] = 32'h00000000;     // Unused payload word 2
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // All commands are 4 words: header + 3 payload words
+        // wait_id is in Word1[7:0]
+        cmd[0] = {8'd0, 8'd4, id, e_cmd_op_wait_disp};  // len=4 for WAIT commands
+        cmd[1] = {24'd0, wait_id};  // wait_id in bits [7:0] of Word1
+        cmd[2] = 32'h00000000;      // Unused payload word 2
+        cmd[3] = 32'h00000000;      // Unused payload word 3
     endtask
 
     task automatic generate_tile_command(
@@ -550,12 +533,12 @@ module tb_engine_top;
         input logic [7:0] wait_id,
         output logic [31:0] cmd [0:3]
     );
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        // Command format matches software: {reserved[31:24], len[23:16], wait_id[15:8], opcode[7:0]}
-        cmd[0] = {8'd0, 8'd2, wait_id, e_cmd_op_wait_tile};
-        cmd[1] = 32'h00000000;     // Unused payload word 1
-        cmd[2] = 32'h00000000;     // Unused payload word 2
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // All commands are 4 words: header + 3 payload words
+        // wait_id is in Word1[7:0]
+        cmd[0] = {8'd0, 8'd4, id, e_cmd_op_wait_tile};  // len=4 for WAIT commands
+        cmd[1] = {24'd0, wait_id};  // wait_id in bits [7:0] of Word1
+        cmd[2] = 32'h00000000;      // Unused payload word 2
+        cmd[3] = 32'h00000000;      // Unused payload word 3
     endtask
 
     // ===================================================================
