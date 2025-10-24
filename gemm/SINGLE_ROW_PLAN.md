@@ -294,7 +294,7 @@ This fixed format simplifies command processing in hardware, even though individ
 |-------|------|-------------|
 | **Start Address** | 32 | External memory relative address (divided by 8 for byte alignment) |
 | **Length** | 16 | Number of 128-byte chunks of data to read (exp+mantissas) |
-| **Reserved** | 24 | Padding (unused) |
+| **Fetch Right** | 1 | Fetch to right buffer if asserted. Otherwise, fetch to left. |
 
 #### Hardware Packing (4-Word Format)
 
@@ -305,19 +305,20 @@ typedef struct packed {
     logic        fetch_right;       // 1 bit: 0=left, 1=right
     logic [15:0] len;               // 16 bits: number of lines
     logic [31:0] start_addr;        // 32 bits: byte address
-} cmd_fetch_s;  // Total: 64 bits
+} cmd_fetch_s;                      // Total: 64 bits
 
 // 4-Word Packing:
-cmd[0] = {16'd12,     id[7:0],  e_cmd_op_fetch};  // Header
-cmd[1] = start_addr[31:0];                         // Word 1: Address
-cmd[2] = {reserved[14:0], fetch_right, len[15:0]}; // Word 2: Length + target
-cmd[3] = 32'h00000000;                             // Word 3: Unused
+cmd[0] = {16'd12, cmd_id[7:0], e_cmd_op_fetch};   // Header
+cmd[1] = start_addr[31:0];                        // Word 1: Address
+cmd[2] = {reserved[15:0], len[15:0]};             // Word 2: Length
+cmd[3] = {reserved[30:0], fetch_right}            // Word 3: Target
 ```
 
 #### Field Details
 
 - **Start Address (32 bits)**: Byte address in GDDR6 memory, divided by 8 for natural alignment
   - Hardware converts to AXI address: `{GDDR6_PAGE_ID[8:0], addr[31:5], 5'b0}`
+  - The 5 LSB are for 32-byte (256-bit) alignment
   - Example: 0x00000000 → starts at beginning of GDDR6 page
 
 - **Length (16 bits)**: Number of 256-bit lines to fetch
