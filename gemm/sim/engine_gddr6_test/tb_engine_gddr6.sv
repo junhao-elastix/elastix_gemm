@@ -49,19 +49,6 @@ module tb_engine_gddr6;
     integer passed_tests = 0;
     integer failed_tests = 0;
     
-    // Log file handle
-    integer test_log_file;
-    
-    // ========================================================================
-    // Logging Functions
-    // ========================================================================
-    function void log_message(string message);
-        $display("%s", message);
-        if (test_log_file != 0) begin
-            $fdisplay(test_log_file, "%s", message);
-        end
-    endfunction
-    
     // Test result comparison variables
     integer expected_count;
     integer match_count;
@@ -400,12 +387,6 @@ module tb_engine_gddr6;
     
     // Periodic monitor of register outputs (less verbose)
     integer monitor_counter = 0;
-    // ========================================================================
-    // Register Monitoring (Disabled for cleaner output)
-    // ========================================================================
-    // Note: Register monitoring disabled to reduce log spam
-    // Uncomment the always block below if detailed monitoring is needed
-    /*
     always @(posedge i_nap_clk) begin
         monitor_counter <= monitor_counter + 1;
         if (monitor_counter % 1000 == 0) begin
@@ -415,7 +396,6 @@ module tb_engine_gddr6;
             end
         end
     end
-    */
 
     // ========================================================================
     // Behavioral Memory Model (Simplified for testing)
@@ -447,7 +427,7 @@ module tb_engine_gddr6;
         $display("[TB]   right.hex -> Block 1 (lines 528-1055)");
         $display("[TB] Memory preload complete\n");
         // Memory model loads data in its initial block
-        // Note: The tb_memory_model automatically loads from /home/dev/Dev/elastix_gemm/hex/left.hex and right.hex
+        // Note: The tb_memory_model automatically loads from /home/workstation/elastix_gemm/hex/left.hex and right.hex
         // This provides consistent test data for all configurations
     endtask
 
@@ -617,8 +597,8 @@ module tb_engine_gddr6;
         total_tests++;
         
         $display("\n[TB] ====================================================================");
-        log_message($sformatf("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
-                total_tests, test_name, config_B, config_C, config_V));
+        $display("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
+                 total_tests, test_name, config_B, config_C, config_V);
         $display("[TB] ====================================================================");
 
         // Load golden reference for this test
@@ -644,11 +624,11 @@ module tb_engine_gddr6;
         repeat(100000) @(posedge i_nap_clk);  // Wait for completion
         
         // Sample final register outputs
-        log_message($sformatf("\n[TB] Final Register Outputs for %s:", test_name));
-        log_message($sformatf("[TB]   result_0 = 0x%04x (expected 0x%04x)", result_0, golden_results[0]));
-        log_message($sformatf("[TB]   result_1 = 0x%04x (expected 0x%04x)", result_1, golden_results[1]));
-        log_message($sformatf("[TB]   result_2 = 0x%04x (expected 0x%04x)", result_2, golden_results[2]));
-        log_message($sformatf("[TB]   result_3 = 0x%04x (expected 0x%04x)", result_3, golden_results[3]));
+        $display("\n[TB] Final Register Outputs for %s:", test_name);
+        $display("[TB]   result_0 = 0x%04x (expected 0x%04x)", result_0, golden_results[0]);
+        $display("[TB]   result_1 = 0x%04x (expected 0x%04x)", result_1, golden_results[1]);
+        $display("[TB]   result_2 = 0x%04x (expected 0x%04x)", result_2, golden_results[2]);
+        $display("[TB]   result_3 = 0x%04x (expected 0x%04x)", result_3, golden_results[3]);
         
         // Final comparison (allowing 1 LSB tolerance for FP16 rounding)
         // Only check the expected number of results (config_B * config_C)
@@ -661,10 +641,10 @@ module tb_engine_gddr6;
         if (expected_count >= 4 && (result_3 == golden_results[3] || result_3 == (golden_results[3] + 1) || result_3 == (golden_results[3] - 1))) match_count++;
         
         if (match_count == expected_count) begin
-            log_message($sformatf("[TB] PASS: %s - All %0d results matched within tolerance!", test_name, expected_count));
+            $display("[TB] PASS: %s - All %0d results matched within tolerance!", test_name, expected_count);
             passed_tests++;
         end else begin
-            log_message($sformatf("[TB] FAIL: %s - %0d/%0d results matched golden reference", test_name, match_count, expected_count));
+            $display("[TB] FAIL: %s - %0d/%0d results matched golden reference", test_name, match_count, expected_count);
             failed_tests++;
         end
         
@@ -680,7 +660,7 @@ module tb_engine_gddr6;
         integer scan_result;
         integer idx;
         
-        golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
+        golden_filename = $sformatf("/home/workstation/elastix_gemm/hex/golden_%s.hex", test_name);
         golden_file = $fopen(golden_filename, "r");
         if (golden_file == 0) begin
             $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);
@@ -777,16 +757,6 @@ module tb_engine_gddr6;
     // Test Sequence
     // ========================================================================
     initial begin
-        // Initialize log file
-        test_log_file = $fopen("/home/dev/Dev/elastix_gemm/gemm/sim/engine_gddr6_test/test_results.log", "w");
-        if (test_log_file == 0) begin
-            $display("[TB] WARNING: Could not open test log file");
-        end else begin
-            $fdisplay(test_log_file, "GEMM Engine GDDR6 Test Results Log");
-            $fdisplay(test_log_file, "Generated: %t", $time);
-            $fdisplay(test_log_file, "================================================================================\n");
-        end
-        
         reset_n = 1'b0;
         test_start = 1'b0;
         test_complete = 1'b0;
@@ -830,24 +800,6 @@ module tb_engine_gddr6;
             $display("STATUS: %0d TESTS FAILED", failed_tests);
         end
         $display("================================================================================");
-        
-        // Close log file
-        if (test_log_file != 0) begin
-            $fdisplay(test_log_file, "\n================================================================================");
-            $fdisplay(test_log_file, "TEST SUMMARY");
-            $fdisplay(test_log_file, "================================================================================");
-            $fdisplay(test_log_file, "Total Tests: %0d", total_tests);
-            $fdisplay(test_log_file, "Passed:      %0d", passed_tests);
-            $fdisplay(test_log_file, "Failed:      %0d", failed_tests);
-            if (failed_tests == 0) begin
-                $fdisplay(test_log_file, "STATUS: ALL TESTS PASSED");
-            end else begin
-                $fdisplay(test_log_file, "STATUS: %0d TESTS FAILED", failed_tests);
-            end
-            $fdisplay(test_log_file, "================================================================================");
-            $fclose(test_log_file);
-            $display("[TB] Test results logged to: test_results.log");
-        end
 
         $finish;
     end

@@ -122,7 +122,7 @@ From `vector_system_test/README.md` and `tb_engine_top.sv`:
 
 **Address Space Layout**:
 ```
-dispatcher_bram_dual_read.sv (2048 entries × 256-bit):
+dispatcher_bram.sv (2048 entries × 256-bit):
 - Left matrix:  Lines 0-527    (Port B dual-read: left data)
 - Right matrix: Lines 0-527    (Port B dual-read: right data simultaneously)
 ```
@@ -135,7 +135,7 @@ generate_tile_command(4, 0, 0, B, C, V, tile_cmd);
 ```
 
 **Why This Works**:
-- `dispatcher_bram_dual_read.sv` has **dual read ports** on Port B
+- `dispatcher_bram.sv` has **dual read ports** on Port B
 - Reads from left and right happen **simultaneously** from separate regions
 - Both address spaces start at 0
 

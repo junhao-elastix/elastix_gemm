@@ -37,7 +37,7 @@ Testbench
 │   ├── dispatcher_control ──────┐
 │   │   ├── Reads from GDDR6     │
 │   │   └── Writes to BRAM       │
-│   ├── dispatcher_bram_dual_read│
+│   ├── dispatcher_bram│
 │   └── compute_engine_modular   │
 │       ├── BCV controller        │
 │       ├── GFP8 dot products     │

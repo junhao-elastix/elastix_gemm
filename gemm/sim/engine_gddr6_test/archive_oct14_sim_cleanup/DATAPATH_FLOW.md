@@ -232,7 +232,7 @@ end
 
 ### Step 7: Dispatcher BRAM
 
-**File**: `dispatcher_bram_dual_read.sv`
+**File**: `dispatcher_bram.sv`
 
 ```systemverilog
 // Dual-port BRAM for simultaneous left/right reads

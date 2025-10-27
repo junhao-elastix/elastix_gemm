@@ -103,7 +103,7 @@ GEMM_FILES := \
     $(GEMM_RTL_DIR)/result_fifo_to_simple_bram.sv \
     $(GEMM_RTL_DIR)/master_control.sv \
     $(GEMM_RTL_DIR)/dispatcher_control.sv \
-    $(GEMM_RTL_DIR)/dispatcher_bram_dual_read.sv \
+    $(GEMM_RTL_DIR)/dispatcher_bram.sv \
     $(GEMM_RTL_DIR)/gfp8_nv_dot.sv \
     $(GEMM_RTL_DIR)/gfp8_group_dot_mlp.sv \
     $(GEMM_RTL_DIR)/gfp8_to_fp16.sv \
@@ -197,7 +197,7 @@ help:
 	@echo ""
 	@echo "Test Configuration:"
 	@echo "  B=2, C=2, V=2"
-	@echo "  Test data: /home/dev/Dev/elastix_gemm/hex/left.hex, right.hex"
+	@echo "  Test data: /home/workstation/elastix_gemm/hex/left.hex, right.hex"
 	@echo "  Golden: golden_B2_C2_V2.hex"
 	@echo ""
 	@echo "Requirements:"
