@@ -96,7 +96,7 @@ The Elastix GEMM project is a **hardware-software co-design** system implementin
 │  │  │        │                      │                    │  │  │
 │  │  │        ▼                      ▼                    │  │  │
 │  │  │   ┌──────────────────────────────────────────┐    │  │  │
-│  │  │   │ dispatcher_bram_dual_read                │    │  │  │
+│  │  │   │ dispatcher_bram                │    │  │  │
 │  │  │   │ (3-buffer-per-side architecture)         │    │  │  │
 │  │  │   │                                          │    │  │  │
 │  │  │   │ Left Side:                               │    │  │  │

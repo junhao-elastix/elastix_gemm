@@ -3,15 +3,15 @@
 //
 // Purpose: DDR fetch and BRAM buffering for MS2.0 architecture
 // Features:
-//  - FETCH command: Read GFP8 block (528 lines × 256-bit) from DDR to BRAM
+//  - FETCH command: Read GFP8 block (528 lines x 256-bit) from DDR to BRAM
 //  - DISP command: Acknowledge vector dispatch configuration
 //  - Dual-port BRAM: Port A (write from DDR), Port B (read by CE)
 //  - AXI4 burst read interface for DDR access
-//  - Sequential buffer access: Fetch complete → done → CE reads
+//  - Sequential buffer access: Fetch complete -> done -> CE reads
 //
 // Memory Layout (GFP8 Block):
 //  Lines 0-15:   Exponents (512 total, 32 per line)
-//  Lines 16-527: Mantissas (128 rows × 4 groups/row = 512 lines)
+//  Lines 16-527: Mantissas (128 rows x 4 groups/row = 512 lines)
 //
 // Author: MS2.0 Migration
 // Date: Thu Oct 2 00:14:43 AM PDT 2025
@@ -25,8 +25,7 @@ import gemm_pkg::*;
     parameter TGT_DATA_WIDTH = 256,    // Target data width (256-bit AXI)
     parameter AXI_ADDR_WIDTH = 42,     // AXI address width (42-bit for GDDR6 NoC: {Page[9], Line[26], Pad[2], Byte[5]})
     parameter BRAM_DEPTH = 2048,       // Increased from 528 to support both left+right matrices (1056 total, rounded to power of 2)
-    parameter [8:0] GDDR6_PAGE_ID = 9'd2,  // GDDR6 Page ID for NoC routing (Channel 1 default)
-    parameter NUM_TILES = 16           // Number of parallel compute tiles
+    parameter [8:0] GDDR6_PAGE_ID = 9'd2  // GDDR6 Page ID for NoC routing (Channel 1 default)
 )
 (
     // Clock and Reset
@@ -43,9 +42,13 @@ import gemm_pkg::*;
     output logic                         o_fetch_done,
 
     input  logic                         i_disp_en,
-    input  logic [tile_mem_addr_width_gp-1:0] i_disp_addr,
-    input  logic [tile_mem_addr_width_gp-1:0] i_disp_len,
-    input  logic                         i_man_4b_8b_n,
+    input  logic [15:0]                  i_disp_tile_addr,    // Expanded to 16-bit per spec
+    input  logic [7:0]                   i_disp_man_nv_cnt,   // NEW: Total NVs to dispatch
+    input  logic [7:0]                   i_disp_ugd_vec_size, // NEW: NVs per UGD vector
+    input  logic                         i_disp_man_4b,       // Renamed from i_man_4b_8b_n
+    input  logic [15:0]                  i_disp_col_en,       // NEW: Column enable mask
+    input  logic [5:0]                   i_disp_col_start,    // NEW: Distribution start column
+    input  logic                         i_disp_broadcast,    // NEW: Broadcast mode (reserved)
     output logic                         o_disp_done,
 
     // ====================================================================
@@ -62,7 +65,7 @@ import gemm_pkg::*;
     input  logic                         i_bram_rd_en_right,
     
     // ====================================================================
-    // NEW: Exponent BRAM Write Ports (for post-fetch unpacking)
+    // Exponent BRAM Write Ports (for post-fetch unpacking)
     // ====================================================================
     output logic [8:0]                   o_left_exp_wr_addr,
     output logic [7:0]                   o_left_exp_wr_data,
@@ -73,36 +76,37 @@ import gemm_pkg::*;
     output logic                         o_right_exp_wr_en,
 
     // ====================================================================
-    // NEW: Exponent BRAM Read Ports (from Compute Engine)
+    // Exponent BRAM Read Ports (from Compute Engine)
     // ====================================================================
     input  logic [8:0]                   i_left_exp_rd_addr,
     output logic [7:0]                   o_left_exp_rd_data,
-
+    
     input  logic [8:0]                   i_right_exp_rd_addr,
     output logic [7:0]                   o_right_exp_rd_data,
 
     // ====================================================================
-    // NEW Phase 2: Tile BRAM Write Interface (DISPATCH phase)
+    // Tile BRAM Write Ports (for DISPATCH copy operation)
+    // FOUR PARALLEL OUTPUTS - All driven by same counter [0-511]
     // ====================================================================
-    // Left mantissa writes (broadcast)
-    output logic [NUM_TILES-1:0]         o_tile_man_wr_en_left,
-    output logic [8:0]                   o_tile_man_wr_addr_left,
-    output logic [255:0]                 o_tile_man_wr_data_left,
+    // Left mantissa write
+    output logic [8:0]                   o_tile_man_left_wr_addr,    // 9-bit: [0:511]
+    output logic [TGT_DATA_WIDTH-1:0]    o_tile_man_left_wr_data,
+    output logic                         o_tile_man_left_wr_en,
 
-    // Right mantissa writes (distribute)
-    output logic [NUM_TILES-1:0]         o_tile_man_wr_en_right,
-    output logic [8:0]                   o_tile_man_wr_addr_right,
-    output logic [255:0]                 o_tile_man_wr_data_right,
+    // Right mantissa write
+    output logic [8:0]                   o_tile_man_right_wr_addr,   // 9-bit: [0:511]
+    output logic [TGT_DATA_WIDTH-1:0]    o_tile_man_right_wr_data,
+    output logic                         o_tile_man_right_wr_en,
 
-    // Left exponent writes (broadcast)
-    output logic [NUM_TILES-1:0]         o_tile_exp_wr_en_left,
-    output logic [8:0]                   o_tile_exp_wr_addr_left,
-    output logic [7:0]                   o_tile_exp_wr_data_left,
+    // Left exponent write
+    output logic [8:0]                   o_tile_left_exp_wr_addr,
+    output logic [7:0]                   o_tile_left_exp_wr_data,
+    output logic                         o_tile_left_exp_wr_en,
 
-    // Right exponent writes (distribute)
-    output logic [NUM_TILES-1:0]         o_tile_exp_wr_en_right,
-    output logic [8:0]                   o_tile_exp_wr_addr_right,
-    output logic [7:0]                   o_tile_exp_wr_data_right,
+    // Right exponent write
+    output logic [8:0]                   o_tile_right_exp_wr_addr,
+    output logic [7:0]                   o_tile_right_exp_wr_data,
+    output logic                         o_tile_right_exp_wr_en,
 
     // ====================================================================
     // AXI-4 Initiator Interface for DDR access
@@ -115,7 +119,11 @@ import gemm_pkg::*;
     output logic [3:0]                   o_dc_state,
     output logic [9:0]                   o_bram_wr_count,
     output logic [10:0]                  o_bram_wr_addr,    // Debug: BRAM write address (for gemm)
-    output logic                         o_bram_wr_en       // Debug: BRAM write enable (for gemm)
+    output logic                         o_bram_wr_en,      // Debug: BRAM write enable (for gemm)
+
+    // DISPATCH operation read address (for engine_top to mux to BRAM read port)
+    output logic [10:0]                  o_disp_rd_addr,
+    output logic                         o_disp_rd_en       // Active during ST_DISP_BUSY
 );
 
     // ===================================================================
@@ -128,8 +136,8 @@ import gemm_pkg::*;
         ST_FETCH_READ_EXP  = 4'd3,  // Read exponent lines (0-15) into exp_packed
         ST_FETCH_READ_MAN  = 4'd4,  // Read mantissa lines (16-527) + parallel unpack
         ST_FETCH_DONE      = 4'd5,
-        ST_DISP_ACK        = 4'd6,  // Legacy acknowledge (kept for compatibility)
-        ST_DISPATCH        = 4'd7   // NEW Phase 2: Copy dispatcher_bram → tile_bram
+        ST_DISP_BUSY       = 4'd6,  // Copy from dispatcher_bram to tile_bram (working state)
+        ST_DISP_DONE       = 4'd7   // DISPATCH operation complete
     } state_t;
 
     state_t state_reg, state_next;
@@ -150,14 +158,13 @@ import gemm_pkg::*;
     logic [TGT_DATA_WIDTH-1:0] bram_wr_data_reg;
     logic        bram_wr_en_reg;
     logic        bram_wr_target_reg;  // 0=left, 1=right
-    logic [TGT_DATA_WIDTH-1:0] bram_rd_data_wire;
 
     // FETCH command tracking
     logic [link_addr_width_gp-1:0] fetch_addr_reg;
     logic        fetch_target_reg;  // 0=left, 1=right (captured from i_fetch_target)
     logic [10:0] current_line_reg;  // Increased from 10 to 11 bits for 2048-entry BRAM
-    
-    // NEW: Counters for tracking exp and mantissa lines during fetch
+
+    // Counters for tracking exp and mantissa lines during fetch
     logic [4:0]  exp_lines_fetched_reg;   // 0-15: exponent lines fetched
     logic [9:0]  man_lines_fetched_reg;   // 0-511: mantissa lines fetched
 
@@ -166,12 +173,6 @@ import gemm_pkg::*;
     logic axi_r_ready_reg;
     logic [7:0] beat_count_reg;
 
-    // DISP command tracking
-    logic [tile_mem_addr_width_gp-1:0] disp_addr_reg;
-    logic [tile_mem_addr_width_gp-1:0] disp_len_reg;
-    logic disp_man_4b_reg;
-    logic [tile_mem_addr_width_gp-1:0] disp_cnt_reg;   // DISPATCH progress counter
-
     // Status flags
     logic fetch_done_reg;
     logic disp_done_reg;
@@ -179,8 +180,16 @@ import gemm_pkg::*;
     // Edge detection for command enables (prevent double-triggering)
     logic fetch_en_prev;
     logic disp_en_prev;
-    
-    // NEW: Parallel unpacking signals (for 3-buffer architecture)
+
+    // DISPATCH operation control
+    logic [7:0] disp_man_nv_cnt_reg;     // Stored man_nv_cnt parameter
+    logic [9:0] disp_lines_to_copy_reg;  // man_nv_cnt × 4 (total lines to copy)
+    logic [9:0] disp_man_cnt_reg;        // Mantissa lines dispatched counter (0-511) - parallel 4-path
+    logic [9:0] disp_exp_cnt_reg;        // Exponent entries dispatched counter (0-511)
+    logic       disp_man_done_reg;       // Mantissa dispatch complete flag
+    logic       disp_exp_done_reg;       // Exponent dispatch complete flag
+
+    // Parallel unpacking signals (for 3-buffer architecture)
     logic [3:0]  unpack_exp_packed_rd_addr_reg; // 0-15: which exp_packed line to read
     logic [TGT_DATA_WIDTH-1:0] exp_packed_rd_data_wire; // Data from exp_packed BRAM
 
@@ -210,7 +219,7 @@ import gemm_pkg::*;
                     $display("[DC_DEBUG] @%0t ST_IDLE: i_fetch_en RISING EDGE, transitioning to FETCH_INIT", $time);
                     state_next = ST_FETCH_INIT;
                 end else if (i_disp_en && !disp_en_prev) begin
-                    state_next = ST_DISPATCH;  // NEW Phase 2: Go to DISPATCH to copy data to tile_bram
+                    state_next = ST_DISP_BUSY;
                 end
             end
 
@@ -245,7 +254,7 @@ import gemm_pkg::*;
             end
 
             ST_FETCH_READ_MAN: begin
-                // Read mantissa bursts (32 bursts × 16 beats = 512 lines) + parallel unpack
+                // Read mantissa bursts (32 bursts x 16 beats = 512 lines) + parallel unpack
                 if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
                     if (man_lines_fetched_reg >= 511) begin
                         $display("[DC_DEBUG] @%0t FETCH_READ_MAN complete (%0d lines), moving to FETCH_DONE", $time, man_lines_fetched_reg + 1);
@@ -262,19 +271,19 @@ import gemm_pkg::*;
                 state_next = ST_IDLE;
             end
 
-            ST_DISP_ACK: begin
-                // Legacy acknowledge DISP command (1 cycle) - kept for compatibility
-                state_next = ST_IDLE;
+            ST_DISP_BUSY: begin
+                // Copy dispatcher_bram → tile_bram (both mantissas and exponents)
+                // Copy man_nv_cnt × 4 lines (variable based on command parameter)
+                if (disp_man_done_reg && disp_exp_done_reg) begin
+                    state_next = ST_DISP_DONE;
+                end else begin
+                    state_next = ST_DISP_BUSY;
+                end
             end
 
-            ST_DISPATCH: begin
-                // NEW Phase 2: Copy dispatcher_bram → tile_bram
-                // For Phase 1: Write to tile[0] only
-                if (disp_cnt_reg >= disp_len_reg) begin
-                    state_next = ST_IDLE;  // Done dispatching
-                end else begin
-                    state_next = ST_DISPATCH;  // Continue copying
-                end
+            ST_DISP_DONE: begin
+                // DISPATCH operation complete, return to IDLE
+                state_next = ST_IDLE;
             end
 
             default: begin
@@ -295,11 +304,6 @@ import gemm_pkg::*;
             exp_lines_fetched_reg <= '0;
             man_lines_fetched_reg <= '0;
             fetch_done_reg <= 1'b0;
-
-            disp_addr_reg <= '0;
-            disp_len_reg <= '0;
-            disp_man_4b_reg <= 1'b0;
-            disp_cnt_reg <= '0;          // NEW: DISPATCH counter
             disp_done_reg <= 1'b0;
         end else begin
             fetch_done_reg <= 1'b0;  // Default
@@ -316,21 +320,25 @@ import gemm_pkg::*;
                                  $time, i_fetch_addr, i_fetch_len, i_fetch_target, i_fetch_target ? "RIGHT" : "LEFT");
                         `endif
                         current_line_reg <= '0;
-                        
+
                         // Reset phase counters for new fetch
                         exp_lines_fetched_reg <= '0;
                         man_lines_fetched_reg <= '0;
-                        
+
                         $display("[DC_DEBUG] @%0t FETCH_START: DDR_addr=%0d, len=%0d, current_line=%0d, target=%s",
                                  $time, i_fetch_addr, i_fetch_len, current_line_reg,
                                  i_fetch_target ? "RIGHT" : "LEFT");
-                    end
-
-                    if (i_disp_en) begin
-                        disp_addr_reg <= i_disp_addr;
-                        disp_len_reg <= i_disp_len;
-                        disp_man_4b_reg <= i_man_4b_8b_n;
-                        
+                    end else if (i_disp_en && !disp_en_prev) begin
+                        // Initialize DISPATCH operation and capture parameters
+                        disp_man_nv_cnt_reg <= i_disp_man_nv_cnt;
+                        disp_lines_to_copy_reg <= {2'b00, i_disp_man_nv_cnt} << 2;  // man_nv_cnt × 4
+                        disp_man_cnt_reg <= '0;
+                        disp_exp_cnt_reg <= '0;
+                        disp_man_done_reg <= 1'b0;
+                        disp_exp_done_reg <= 1'b0;
+                        disp_done_reg <= 1'b0;
+                        $display("[DC] @%0t DISP triggered: man_nv_cnt=%0d, lines_to_copy=%0d",
+                                 $time, i_disp_man_nv_cnt, {2'b00, i_disp_man_nv_cnt} << 2);
                     end
                 end
 
@@ -359,34 +367,37 @@ import gemm_pkg::*;
                     fetch_done_reg <= 1'b1;
                 end
 
-                ST_DISP_ACK: begin
-                    // Legacy acknowledge DISP command (configuration stored)
-                    disp_done_reg <= 1'b1;
-                    current_line_reg <= '0;
-
-                    // Reset phase counters for new fetch
-                    exp_lines_fetched_reg <= '0;
-                    man_lines_fetched_reg <= '0;
-                end
-
-                ST_DISPATCH: begin
-                    // NEW Phase 2: Copy dispatcher_bram → tile_bram
-                    // Parameters already captured in ST_IDLE case (lines 329-334)
-
-                    // Initialize counter on entry (when transitioning from IDLE)
-                    if (state_next == ST_DISPATCH && state_reg == ST_IDLE) begin
-                        disp_cnt_reg <= '0;
-                    end else if (state_reg == ST_DISPATCH) begin
-                        // In DISPATCH: Increment counter each cycle
-                        if (disp_cnt_reg < disp_len_reg) begin
-                            disp_cnt_reg <= disp_cnt_reg + 1;
-                        end
-
-                        // Assert done when complete
-                        if (disp_cnt_reg + 1 >= disp_len_reg) begin
-                            disp_done_reg <= 1'b1;
+                ST_DISP_BUSY: begin
+                    // Copy mantissas: dispatcher_bram → tile_bram
+                    // PARALLEL 4-PATH COPY: All four BRAMs write in same cycle
+                    // Single counter drives all four paths simultaneously
+                    // Copy only man_nv_cnt × 4 lines (not all 512)
+                    if (!disp_man_done_reg && disp_man_cnt_reg < disp_lines_to_copy_reg) begin
+                        disp_man_cnt_reg <= disp_man_cnt_reg + 1;
+                        if (disp_man_cnt_reg == (disp_lines_to_copy_reg - 1)) begin
+                            disp_man_done_reg <= 1'b1;
+                            $display("[DC] @%0t DISP_BUSY: Mantissa copy complete (%0d lines, 4-path parallel)",
+                                     $time, disp_lines_to_copy_reg);
                         end
                     end
+
+                    // Copy exponents: exp_bram → tile_exp_bram (parallel copy, both left+right same cycle)
+                    // Single counter drives both left and right exponent writes simultaneously
+                    // Copy only man_nv_cnt × 4 entries (not all 512)
+                    if (!disp_exp_done_reg && disp_exp_cnt_reg < disp_lines_to_copy_reg) begin
+                        disp_exp_cnt_reg <= disp_exp_cnt_reg + 1;
+                        if (disp_exp_cnt_reg == (disp_lines_to_copy_reg - 1)) begin
+                            disp_exp_done_reg <= 1'b1;
+                            $display("[DC] @%0t DISP_BUSY: Exponent copy complete (%0d addresses, dual writes)",
+                                     $time, disp_lines_to_copy_reg);
+                        end
+                    end
+                end
+
+                ST_DISP_DONE: begin
+                    // Signal DISPATCH operation complete
+                    disp_done_reg <= 1'b1;
+                    $display("[DC] @%0t DISP_DONE: All copies complete, signaling done", $time);
                 end
             endcase
         end
@@ -394,126 +405,67 @@ import gemm_pkg::*;
 
     assign o_fetch_done = fetch_done_reg;
 
-    // // ===================================================================
-    // // DISP Command Processing
-    // // ===================================================================
-    // always_ff @(posedge i_clk) begin
-    //     if (~i_reset_n) begin
-    //         disp_addr_reg <= '0;
-    //         disp_len_reg <= '0;
-    //         disp_man_4b_reg <= 1'b0;
-    //         disp_done_reg <= 1'b0;
-    //     end else begin
-    //         disp_done_reg <= 1'b0;  // Default
-
-    //         case (state_reg)
-    //             ST_IDLE: begin
-    //                 if (i_disp_en) begin
-    //                     disp_addr_reg <= i_disp_addr;
-    //                     disp_len_reg <= i_disp_len;
-    //                     disp_man_4b_reg <= i_man_4b_8b_n;
-                        
-    //                 end
-
-    //             end
-
-    //             ST_DISP_ACK: begin
-    //                 // Acknowledge DISP command (configuration stored)
-    //                 disp_done_reg <= 1'b1;
-    //                 current_line_reg <= '0;
-                    
-    //                 // Reset phase counters for new fetch
-    //                 exp_lines_fetched_reg <= '0;
-    //                 man_lines_fetched_reg <= '0;
-    //             end
-    //         endcase
-    //     end
-    // end
-
     assign o_disp_done = disp_done_reg;
 
     // ===================================================================
-    // NEW Phase 2: DISPATCH - Tile BRAM Write Ports
+    // DISPATCH Copy - Tile BRAM Write Logic
     // ===================================================================
-    // During ST_DISPATCH: Copy data from dispatcher_bram → tile_bram[0] (Phase 1)
+    // During ST_DISP_BUSY, read from dispatcher_bram/exp_bram and write to tile_bram
+    // The BRAM read has 1-cycle latency, so we pipeline: read cycle N, write cycle N+1
 
-    // Calculate read address for dispatcher_bram during DISPATCH
-    // CRITICAL: Source ALWAYS starts at address 0 (aligned buffers)
-    // disp_addr_reg is the DESTINATION address in tile_bram (from command)
-    logic [10:0] disp_bram_rd_addr_left;
-    logic [10:0] disp_bram_rd_addr_right;
-    assign disp_bram_rd_addr_left = disp_cnt_reg[10:0];   // Always [0 : disp_len-1]
-    assign disp_bram_rd_addr_right = disp_cnt_reg[10:0];  // Always [0 : disp_len-1]
+    logic [9:0] man_rd_addr_pipe;    // Pipeline for counter [0-511]
+    logic [9:0]  exp_rd_addr_pipe;
+    logic        copy_active_pipe;
+    logic        man_wr_valid_pipe;  // Valid signal for mantissa write
+    logic        exp_wr_valid_pipe;  // Valid signal for exponent write
 
-    // MUX between compute engine read and DISPATCH internal read
-    // During DISPATCH: dispatcher_control drives BRAM read for copying
-    // During normal: compute_engine drives BRAM read for computation
-    logic [10:0] bram_rd_addr_left_muxed;
-    logic [10:0] bram_rd_addr_right_muxed;
-    logic bram_rd_en_left_muxed;
-    logic bram_rd_en_right_muxed;
-
-    assign bram_rd_addr_left_muxed = (state_reg == ST_DISPATCH) ? disp_bram_rd_addr_left : i_bram_rd_addr_left;
-    assign bram_rd_addr_right_muxed = (state_reg == ST_DISPATCH) ? disp_bram_rd_addr_right : i_bram_rd_addr_right;
-    // Only read while counter < disp_len_reg (stop reading for the extra cycle to flush writes)
-    assign bram_rd_en_left_muxed = (state_reg == ST_DISPATCH && disp_cnt_reg < disp_len_reg) ? 1'b1 : i_bram_rd_en_left;
-    assign bram_rd_en_right_muxed = (state_reg == ST_DISPATCH && disp_cnt_reg < disp_len_reg) ? 1'b1 : i_bram_rd_en_right;
-
-    // Exponent read address MUX (for DISPATCH data copy)
-    // Gate on valid range to prevent spurious reads/writes
-    logic [8:0] left_exp_rd_addr_muxed;
-    logic [8:0] right_exp_rd_addr_muxed;
-    assign left_exp_rd_addr_muxed = (state_reg == ST_DISPATCH && disp_cnt_reg < disp_len_reg) ? disp_cnt_reg[8:0] : i_left_exp_rd_addr;
-    assign right_exp_rd_addr_muxed = (state_reg == ST_DISPATCH && disp_cnt_reg < disp_len_reg) ? disp_cnt_reg[8:0] : i_right_exp_rd_addr;
-
-    // For Phase 1: Only write to tile[0], broadcast pattern
-    // Future Phase 2 will implement full broadcast/distribute logic
-    logic [NUM_TILES-1:0] tile_wr_en_mask;
-    logic [NUM_TILES-1:0] tile_wr_en_mask_delayed;
-    logic [8:0] disp_cnt_delayed;
-    logic dispatch_active_prev;  // Track previous DISPATCH state
-
-    // Delay write controls by 1 cycle to match dispatcher_bram read latency
-    // CRITICAL: Gate on valid data range to prevent spurious writes
     always_ff @(posedge i_clk) begin
-        if (!i_reset_n) begin
-            tile_wr_en_mask_delayed <= '0;
-            disp_cnt_delayed <= '0;
-            dispatch_active_prev <= 1'b0;
+        if (~i_reset_n) begin
+            man_rd_addr_pipe <= '0;
+            exp_rd_addr_pipe <= '0;
+            copy_active_pipe <= 1'b0;
+            man_wr_valid_pipe <= 1'b0;
+            exp_wr_valid_pipe <= 1'b0;
         end else begin
-            dispatch_active_prev <= (state_reg == ST_DISPATCH);
-            // ONLY update while reading valid data range
-            if (state_reg == ST_DISPATCH && disp_cnt_reg < disp_len_reg) begin
-                tile_wr_en_mask_delayed <= tile_wr_en_mask;
-                disp_cnt_delayed <= disp_cnt_reg[8:0];
-            end else begin
-                // Clear write enable when done reading
-                tile_wr_en_mask_delayed <= '0;
-            end
+            // Pipeline the addresses for 1-cycle BRAM read latency
+            man_rd_addr_pipe <= disp_man_cnt_reg;
+            exp_rd_addr_pipe <= disp_exp_cnt_reg;
+            copy_active_pipe <= (state_reg == ST_DISP_BUSY);
+
+            // Valid signals: HIGH when counter is incrementing (before done flag)
+            man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_man_done_reg && (disp_man_cnt_reg < disp_lines_to_copy_reg);
+            exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_exp_done_reg && (disp_exp_cnt_reg < disp_lines_to_copy_reg);
         end
     end
 
-    assign tile_wr_en_mask = (state_reg == ST_DISPATCH) ? 16'h0001 : 16'h0000;
+    // Tile BRAM mantissa write with PARALLEL 4-PATH (per SINGLE_ROW_REFERENCE.md)
+    // Single counter [0-511] drives ALL FOUR outputs simultaneously
+    // All four BRAMs write in SAME CYCLE with same address
 
-    // Tile writes (DELAYED to match dispatcher_bram read latency)
-    // Write address = destination base + source offset
-    // disp_addr_reg = tile_bram destination address (from command)
-    // disp_cnt_delayed = source offset [0 : disp_len-1]
-    assign o_tile_man_wr_en_left = tile_wr_en_mask_delayed;
-    assign o_tile_man_wr_addr_left = disp_addr_reg[8:0] + disp_cnt_delayed;
-    assign o_tile_man_wr_data_left = o_bram_rd_data_left;
+    // Left mantissa write
+    assign o_tile_man_left_wr_addr = man_rd_addr_pipe[8:0];         // Address [0-511]
+    assign o_tile_man_left_wr_data = o_bram_rd_data_left;           // From left BRAM read port
+    assign o_tile_man_left_wr_en   = man_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
-    assign o_tile_man_wr_en_right = tile_wr_en_mask_delayed;
-    assign o_tile_man_wr_addr_right = disp_addr_reg[8:0] + disp_cnt_delayed;
-    assign o_tile_man_wr_data_right = o_bram_rd_data_right;
+    // Right mantissa write (SAME address, SAME cycle as left)
+    assign o_tile_man_right_wr_addr = man_rd_addr_pipe[8:0];        // SAME address as left
+    assign o_tile_man_right_wr_data = o_bram_rd_data_right;         // From right BRAM read port
+    assign o_tile_man_right_wr_en   = man_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
-    assign o_tile_exp_wr_en_left = tile_wr_en_mask_delayed;
-    assign o_tile_exp_wr_addr_left = disp_addr_reg[8:0] + disp_cnt_delayed;
-    assign o_tile_exp_wr_data_left = o_left_exp_rd_data;
+    // Tile BRAM exponent writes (read from both left/right exp_bram)
+    assign o_tile_left_exp_wr_addr  = exp_rd_addr_pipe[8:0];
+    assign o_tile_left_exp_wr_data  = o_left_exp_rd_data;   // From left_exp_bram
+    assign o_tile_left_exp_wr_en    = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
-    assign o_tile_exp_wr_en_right = tile_wr_en_mask_delayed;
-    assign o_tile_exp_wr_addr_right = disp_addr_reg[8:0] + disp_cnt_delayed;
-    assign o_tile_exp_wr_data_right = o_right_exp_rd_data;
+    assign o_tile_right_exp_wr_addr = exp_rd_addr_pipe[8:0];
+    assign o_tile_right_exp_wr_data = o_right_exp_rd_data;  // From right_exp_bram
+    assign o_tile_right_exp_wr_en   = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
+
+    // DISPATCH read address outputs (for engine_top muxing to internal dispatcher_bram)
+    // With parallel addressing: counter [0-511] drives BOTH left and right BRAM read ports
+    // Both ports read from SAME address simultaneously
+    assign o_disp_rd_addr = {1'b0, disp_man_cnt_reg[9:0]};  // 11-bit with address [0-511]
+    assign o_disp_rd_en   = (state_reg == ST_DISP_BUSY) && !disp_man_done_reg;
 
     // ===================================================================
     // Parallel Exponent Unpacking - CONTINUOUS (independent of AXI)
@@ -628,7 +580,7 @@ import gemm_pkg::*;
     // ===================================================================
     // BRAM Module Instantiation (Dual Read Ports)
     // ===================================================================
-    dispatcher_bram_dual_read #(
+    dispatcher_bram #(
         .DATA_WIDTH          (TGT_DATA_WIDTH),
         .EXP_PACKED_DEPTH    (16),
         .EXP_ALIGNED_DEPTH   (512),
@@ -642,7 +594,7 @@ import gemm_pkg::*;
         .i_wr_data          (bram_wr_data_reg),
         .i_wr_addr          (bram_wr_addr_reg),
         .i_wr_en            (bram_wr_en_reg),
-        .i_wr_target        (bram_wr_target_reg),  // NEW: 0=left, 1=right
+        .i_wr_target        (bram_wr_target_reg),  // 0=left, 1=right
         
         // Exponent aligned write ports (from unpacking logic)
         .i_left_exp_aligned_wr_addr  (o_left_exp_wr_addr),
@@ -653,20 +605,20 @@ import gemm_pkg::*;
         .i_right_exp_aligned_wr_data (o_right_exp_wr_data),
         .i_right_exp_aligned_wr_en   (o_right_exp_wr_en),
     
-        // Read ports (to CE) - mantissas (MUXed for DISPATCH)
-        .i_rd_addr_left     (bram_rd_addr_left_muxed),   // MUXed: DISPATCH or CE
-        .i_rd_en_left       (bram_rd_en_left_muxed),
+        // Read ports (to CE) - mantissas
+        .i_rd_addr_left     (i_bram_rd_addr_left),  // Use full 11-bit address
+        .i_rd_en_left       (i_bram_rd_en_left),
         .o_rd_data_left     (o_bram_rd_data_left),
-
-        .i_rd_addr_right    (bram_rd_addr_right_muxed),  // MUXed: DISPATCH or CE
-        .i_rd_en_right      (bram_rd_en_right_muxed),
+        
+        .i_rd_addr_right    (i_bram_rd_addr_right), // Use full 11-bit address
+        .i_rd_en_right      (i_bram_rd_en_right),
         .o_rd_data_right    (o_bram_rd_data_right),
         
-        // Read ports (to CE) - exponents (MUXed for DISPATCH)
-        .i_left_exp_rd_addr  (left_exp_rd_addr_muxed),   // MUXed: DISPATCH or CE
+        // Read ports (to CE) - exponents
+        .i_left_exp_rd_addr  (i_left_exp_rd_addr),
         .o_left_exp_rd_data  (o_left_exp_rd_data),
-
-        .i_right_exp_rd_addr (right_exp_rd_addr_muxed),  // MUXed: DISPATCH or CE
+        
+        .i_right_exp_rd_addr (i_right_exp_rd_addr),
         .o_right_exp_rd_data (o_right_exp_rd_data),
         
         // Exp packed read interface (for unpacking logic)
@@ -827,9 +779,8 @@ import gemm_pkg::*;
                 $display("[DISPATCHER_CONTROL] FETCH Complete: %0d lines written", current_line_reg);
             end
 
-            if (state_reg == ST_DISP_ACK) begin
-                $display("[DISPATCHER_CONTROL] DISP: addr=%0d, len=%0d, man_4b=%0b",
-                         disp_addr_reg, disp_len_reg, disp_man_4b_reg);
+            if (state_reg == ST_DISP_DONE) begin
+                $display("[DISPATCHER_CONTROL] DISPATCH Complete");
             end
         end
     `endif

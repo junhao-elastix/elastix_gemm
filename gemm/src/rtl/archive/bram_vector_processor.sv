@@ -2,12 +2,12 @@
 // BRAM Vector Processor - FSM-based Vector Addition
 //
 // This module implements host-controlled vector addition across 3 BRAM instances:
-//   BRAM0[i] + BRAM1[i] → BRAM2[i] for i ∈ [0, 127]
+//   BRAM0[i] + BRAM1[i] -> BRAM2[i] for i ∈ [0, 127]
 //
 // Data Format:
 //   - Each BRAM stores ONE int16 per 256-bit line at bits [15:0]
 //   - 128 values total (addresses 0-127)
-//   - Byte offset for value i = i × 32 bytes
+//   - Byte offset for value i = i x 32 bytes
 //
 // Operation:
 //   1. Host DMAs data to BRAM0 and BRAM1
@@ -28,13 +28,13 @@
 //   COMPLETE     - Processing complete, wait for disable
 //
 // CRITICAL TIMING NOTES:
-//   - BRAMs configured with outreg_enable=1 → 2-cycle read latency
+//   - BRAMs configured with outreg_enable=1 -> 2-cycle read latency
 //   - Data capture timing MUST align with BRAM output register delay:
 //     * data_a captured in WAIT_DATA_2 (2 cycles after READ_A)
 //     * data_b captured in ADD_COMPUTE (2 cycles after READ_B)
 //   - Separate write_addr register prevents hazards when addr_counter increments
 //   - Per-iteration latency: 7 cycles @ 200 MHz = 35 ns
-//   - Total processing time: 128 iterations × 35 ns = 4.48 µs
+//   - Total processing time: 128 iterations x 35 ns = 4.48 µs
 //
 // Development History:
 //   - Oct 3, 2025: Fixed BRAM read timing and address increment logic

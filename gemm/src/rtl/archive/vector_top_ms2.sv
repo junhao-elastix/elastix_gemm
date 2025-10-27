@@ -8,8 +8,8 @@
 // - Compute Engine (CE): Matrix computation with FP24 output
 // - Result FIFO: Buffers FP24 computation results
 //
-// Datapath: Host → cmd_fifo → MC → {DC, CE} → result_fifo → Host
-//           DDR ← DC(AXI) → BRAM → CE
+// Datapath: Host -> cmd_fifo -> MC -> {DC, CE} -> result_fifo -> Host
+//           DDR ← DC(AXI) -> BRAM -> CE
 //
 // Author: MS2.0 Migration
 // Date: Thu Oct 2 00:14:43 AM PDT 2025
@@ -64,13 +64,13 @@ import gemm_pkg::*;
     // Internal Connection Signals
     // ===================================================================
 
-    // Command FIFO → Master Control
+    // Command FIFO -> Master Control
     logic [cmd_buf_width_gp-1:0] cmd_fifo_rdata;
     logic                        cmd_fifo_empty;
     logic [12:0]                 cmd_fifo_count;
     logic                        cmd_fifo_ren;
 
-    // Master Control → Dispatcher Control
+    // Master Control -> Dispatcher Control
     logic                         mc_dc_fetch_en;
     logic [link_addr_width_gp-1:0] mc_dc_fetch_addr;
     logic [link_len_width_gp-1:0]  mc_dc_fetch_len;
@@ -82,7 +82,7 @@ import gemm_pkg::*;
     logic                          mc_dc_man_4b_8b_n;
     logic                          dc_mc_disp_done;
 
-    // Master Control → Compute Engine
+    // Master Control -> Compute Engine
     logic                          mc_ce_tile_en;
     logic [tile_mem_addr_width_gp-1:0] mc_ce_left_addr;
     logic [tile_mem_addr_width_gp-1:0] mc_ce_right_addr;
@@ -97,7 +97,7 @@ import gemm_pkg::*;
     logic                          mc_ce_main_loop_over_left;
     logic                          ce_mc_tile_done;
 
-    // Dispatcher Control BRAM → Compute Engine (Dual Read Ports)
+    // Dispatcher Control BRAM -> Compute Engine (Dual Read Ports)
     // Left matrix port
     logic [10:0]   ce_dc_bram_rd_addr_left;
     logic [255:0]  dc_ce_bram_rd_data_left;
@@ -108,7 +108,7 @@ import gemm_pkg::*;
     logic [255:0]  dc_ce_bram_rd_data_right;
     logic          ce_dc_bram_rd_en_right;
 
-    // Compute Engine → Result FIFO
+    // Compute Engine -> Result FIFO
     logic [23:0]   ce_result_data;
     logic          ce_result_valid;
     logic          result_fifo_full;
@@ -195,7 +195,7 @@ import gemm_pkg::*;
     dispatcher_control #(
         .TGT_DATA_WIDTH     (TGT_DATA_WIDTH),
         .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
-        .BRAM_DEPTH         (2048)  // Increased from 528 to support dual 128×128 matrices (2×528=1056, rounded to 2048)
+        .BRAM_DEPTH         (2048)  // Increased from 528 to support dual 128x128 matrices (2x528=1056, rounded to 2048)
     ) u_dispatcher_control (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
@@ -269,7 +269,7 @@ import gemm_pkg::*;
         .o_result_count     (result_count)
     );
 
-    // Result BRAM - Buffers FP24 computation results (16,384 entries for 128×128)
+    // Result BRAM - Buffers FP24 computation results (16,384 entries for 128x128)
     result_bram u_result_bram (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),

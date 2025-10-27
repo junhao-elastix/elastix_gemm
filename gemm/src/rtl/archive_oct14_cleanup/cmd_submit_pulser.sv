@@ -23,7 +23,7 @@ module cmd_submit_pulser (
     output logic        o_cmd_submit_pulse   // Single pulse per write
 );
 
-    // SIMPLE APPROACH: Detect ANY change (0→1 or 1→0) and generate 1-cycle pulse
+    // SIMPLE APPROACH: Detect ANY change (0->1 or 1->0) and generate 1-cycle pulse
     // This works with sticky registers because BOTH the write and the clear generate pulses
     // The FIFO push logic will only trigger once per rising edge
 
@@ -42,7 +42,7 @@ module cmd_submit_pulser (
     assign changed = i_cmd_submit_raw ^ prev_val;
 
     // Generate 1-cycle pulse on change
-    // Only generate pulse on 0→1 transition (rising edge only)
+    // Only generate pulse on 0->1 transition (rising edge only)
     assign o_cmd_submit_pulse = i_cmd_submit_raw & ~prev_val;
 
     // Assertions for simulation

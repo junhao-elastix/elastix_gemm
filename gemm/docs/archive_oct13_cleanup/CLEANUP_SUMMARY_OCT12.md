@@ -27,7 +27,7 @@ All files are actively used in `src/filelist.tcl`:
   - `master_control.sv`, `dispatcher_control.sv` - Control FSMs
   - `compute_engine_modular.sv` - Compute core
   - `gfp8_bcv_controller.sv`, `gfp8_nv_dot.sv`, `gfp8_group_dot.sv`, `gfp8_to_fp16.sv` - GFP8 math
-  - `dispatcher_bram_dual_read.sv` - Dual-read BRAM (~42% faster)
+  - `dispatcher_bram.sv` - Dual-read BRAM (~42% faster)
 - Support modules (3 files): BRAM bridge, NAP wrappers, etc.
 
 ### Archived RTL Files: 35 total

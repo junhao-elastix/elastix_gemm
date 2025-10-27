@@ -31,8 +31,9 @@ nap_responder_wrapper.sv
 cmd_fifo.sv
 # cmd_submit_pulser.sv - ARCHIVED (Oct 14, 2025 - replaced by reg_control_block write_strobes mechanism)
 master_control.sv
-# dispatcher_bram.sv - ARCHIVED (Oct 12, 2025 - single-read version, replaced by dispatcher_bram_dual_read.sv)
-dispatcher_bram_dual_read.sv
+# dispatcher_bram.sv - ARCHIVED (Oct 12, 2025 - single-read version, replaced by dispatcher_bram.sv)
+dispatcher_bram.sv
+tile_bram.sv
 dispatcher_control.sv
 # GFP8 hierarchical compute modules
 gfp8_bcv_controller.sv
@@ -42,7 +43,7 @@ gfp8_to_fp16.sv
 # Compute engine (MS2.0 modular design with dual BRAM interface)
 # compute_engine.sv - ARCHIVED (Oct 10, 2025 - replaced by compute_engine_modular.sv)
 compute_engine_modular.sv
-# csr_cmd_bridge.sv - ARCHIVED (Oct 6 23:20, replaced with direct CSR→FIFO in engine_wrapper.sv)
+# csr_cmd_bridge.sv - ARCHIVED (Oct 6 23:20, replaced with direct CSR->FIFO in engine_wrapper.sv)
 # result_bram_writer.sv - ARCHIVED (Oct 12, 2025 - functionality integrated into result_bram.sv)
 result_bram.sv
 csr_to_fifo_bridge.sv

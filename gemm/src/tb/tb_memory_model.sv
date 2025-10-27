@@ -3,9 +3,9 @@
 //
 // Purpose: Emulates DDR memory with GFP8 block structure for testing
 // Features:
-//  - Two 128×128 GFP8 blocks (left/activation and right/weight)
+//  - Two 128x128 GFP8 blocks (left/activation and right/weight)
 //  - GFP8 format: 8-bit mantissa + shared 8-bit exponent per 32-element group
-//  - Memory layout: 528 lines × 256-bit per block
+//  - Memory layout: 528 lines x 256-bit per block
 //    * Lines 0-15:   Exponents (512 total, 32 per line)
 //    * Lines 16-527: Mantissas (512 lines, 32 mantissas per line)
 //  - AXI4 slave interface with burst read support
@@ -40,7 +40,7 @@ module tb_memory_model
     // ===================================================================
     // Memory Array
     // ===================================================================
-    // Total memory: NUM_BLOCKS × LINES_PER_BLOCK × 256-bit
+    // Total memory: NUM_BLOCKS x LINES_PER_BLOCK x 256-bit
     logic [DATA_WIDTH-1:0] mem_array [0:NUM_BLOCKS*LINES_PER_BLOCK-1];
 
     // ===================================================================
@@ -166,7 +166,7 @@ module tb_memory_model
         end
 
         $display("[TB_MEM_MODEL] Memory initialization complete");
-        $display("[TB_MEM_MODEL]   Total: %0d blocks × %0d lines = %0d lines",
+        $display("[TB_MEM_MODEL]   Total: %0d blocks x %0d lines = %0d lines",
                  NUM_BLOCKS, LINES_PER_BLOCK, NUM_BLOCKS*LINES_PER_BLOCK);
         $display("[TB_MEM_MODEL]   Block 0 (Left matrix):  Lines 0-%0d", LINES_PER_BLOCK-1);
         $display("[TB_MEM_MODEL]   Block 1 (Right matrix): Lines %0d-%0d", LINES_PER_BLOCK, 2*LINES_PER_BLOCK-1);
@@ -284,7 +284,7 @@ module tb_memory_model
 
                 AXI_RDATA: begin
                     if (!read_valid_reg || (read_valid_reg && axi_mem_if.rready)) begin
-                        // Calculate memory address (byte address → line address)
+                        // Calculate memory address (byte address -> line address)
                         logic [ADDR_WIDTH-1:0] byte_addr;
                         logic [25:0] line_addr_26bit;  // 26-bit line address
                         logic [15:0] line_addr_16bit;  // Final 16-bit for indexing (max 65536 lines)
@@ -361,7 +361,7 @@ module tb_memory_model
         always @(posedge i_clk) begin
             // Debug state transitions
             if (axi_state_reg != axi_state_next) begin
-                $display("[TB_MEM_MODEL] @%0t State: %0d → %0d", $time, axi_state_reg, axi_state_next);
+                $display("[TB_MEM_MODEL] @%0t State: %0d -> %0d", $time, axi_state_reg, axi_state_next);
             end
 
             if (axi_state_reg == AXI_ARREADY) begin

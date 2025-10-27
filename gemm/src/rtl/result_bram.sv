@@ -3,7 +3,7 @@
 //
 // Purpose: BRAM-based buffer for FP16 computation results
 // Features:
-//  - 16,384 entries × 16-bit width (FP16 format: 1 sign + 5 exp + 10 mantissa)
+//  - 16,384 entries x 16-bit width (FP16 format: 1 sign + 5 exp + 10 mantissa)
 //  - Drop-in replacement for result_fifo with identical interface
 //  - Dual-port BRAM for independent read/write access
 //  - FIFO-compatible read/write semantics

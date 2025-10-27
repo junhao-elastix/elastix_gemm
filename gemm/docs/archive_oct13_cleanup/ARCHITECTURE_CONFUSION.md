@@ -11,7 +11,7 @@ I've been implementing changes without a clear documented plan, and now there ar
 
 ### Current State (BROKEN)
 
-**Dispatcher BRAM (`dispatcher_bram_dual_read.sv`):**
+**Dispatcher BRAM (`dispatcher_bram.sv`):**
 ```systemverilog
 // I just changed to:
 left_mantissa_mem[512]   // 256-bit x 512

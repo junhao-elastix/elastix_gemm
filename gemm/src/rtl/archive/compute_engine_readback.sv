@@ -1,7 +1,7 @@
 // ------------------------------------------------------------------
 // Compute Engine - BRAM Readback Test Mode
 //
-// Purpose: Temporary stub for verifying FETCH → dispatcher_bram path
+// Purpose: Temporary stub for verifying FETCH -> dispatcher_bram path
 //
 // Test Mode Operation:
 //   - Reads sequential BRAM addresses from i_left_addr to i_left_addr + i_dim_b - 1
@@ -10,7 +10,7 @@
 //
 // Usage:
 //   1. DMA test pattern to GDDR6
-//   2. Issue FETCH command (loads GDDR6 → dispatcher BRAM)
+//   2. Issue FETCH command (loads GDDR6 -> dispatcher BRAM)
 //   3. Issue MATMUL with:
 //      - i_left_addr = BRAM start address to read
 //      - i_dim_b = number of BRAM lines to read
@@ -212,7 +212,7 @@ import gemm_pkg::*;
             if (state_reg == ST_OUTPUT && !i_result_afull) begin
                 // Extract 24 bits from 256-bit BRAM data based on output_count
                 // Each FP24 value uses 24 bits, we can fit 10.66 values per 256-bit line
-                // For simplicity, output first 11×24 = 264 bits (some overlap acceptable)
+                // For simplicity, output first 11x24 = 264 bits (some overlap acceptable)
                 case (output_count_reg)
                     4'd0:  result_data_reg <= bram_data_reg[23:0];
                     4'd1:  result_data_reg <= bram_data_reg[47:24];

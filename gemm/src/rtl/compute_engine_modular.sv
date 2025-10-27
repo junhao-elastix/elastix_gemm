@@ -16,7 +16,7 @@
 //
 // Performance:
 //  - Per V iteration: 15 cycles (11 fill + 3 compute + 1 accum)
-//  - Total per output: 15×V + 1 cycles
+//  - Total per output: 15xV + 1 cycles
 //  - ~42% faster than single BRAM due to parallel reads
 //
 // Author: Modular refactoring
@@ -32,34 +32,32 @@ import gemm_pkg::*;
 
     // ====================================================================
     // Master Control Interface (TILE command)
+    // Per SINGLE_ROW_REFERENCE.md specification
     // ====================================================================
-    input  logic                          i_tile_en,
-    input  logic [tile_mem_addr_width_gp-1:0] i_left_addr,
-    input  logic [tile_mem_addr_width_gp-1:0] i_right_addr,
-    input  logic [tile_mem_addr_width_gp-1:0] i_left_ugd_len,
-    input  logic [tile_mem_addr_width_gp-1:0] i_right_ugd_len,
-    input  logic [tile_mem_addr_width_gp-1:0] i_vec_len,
-    input  logic [7:0]                    i_dim_b,
-    input  logic [7:0]                    i_dim_c,
-    input  logic [7:0]                    i_dim_v,
-    input  logic                          i_left_man_4b,
-    input  logic                          i_right_man_4b,
-    input  logic                          i_main_loop_over_left,
-    output logic                          o_tile_done,
+    input  logic        i_tile_en,
+    input  logic [15:0] i_left_addr,      // 16 bits: Left matrix start address
+    input  logic [15:0] i_right_addr,     // 16 bits: Right matrix start address
+    input  logic [7:0]  i_left_ugd_len,   // 8 bits: Left UGD vectors (Batch dimension)
+    input  logic [7:0]  i_right_ugd_len,  // 8 bits: Right UGD vectors (Column dimension)
+    input  logic [7:0]  i_vec_len,        // 8 bits: UGD vector size (Vector count)
+    input  logic        i_left_man_4b,
+    input  logic        i_right_man_4b,
+    input  logic        i_main_loop_over_left,
+    output logic        o_tile_done,
 
     // ====================================================================
-    // Dual BRAM Mantissa Read Interface (from tile_bram - 512 entries, 9-bit addr)
+    // Dual BRAM Mantissa Read Interface (from tile_bram)
     // ====================================================================
-    output logic [8:0]                    o_bram_left_rd_addr,
+    output logic [10:0]                   o_bram_left_rd_addr,
     input  logic [255:0]                  i_bram_left_rd_data,
     output logic                          o_bram_left_rd_en,
-
-    output logic [8:0]                    o_bram_right_rd_addr,
+    
+    output logic [10:0]                   o_bram_right_rd_addr,
     input  logic [255:0]                  i_bram_right_rd_data,
     output logic                          o_bram_right_rd_en,
     
     // ====================================================================
-    // NEW: Exponent Read Interface (from dispatcher_bram exp ports)
+    // Exponent Read Interface (from tile_bram exp ports)
     // ====================================================================
     output logic [8:0]                    o_left_exp_rd_addr,
     input  logic [7:0]                    i_left_exp_rd_data,
@@ -114,16 +112,16 @@ import gemm_pkg::*;
     assign o_result_count = result_count;
     
     // ===================================================================
-    // State Machine for Debug
+    // State Machine
     // ===================================================================
     typedef enum logic [3:0] {
-        ST_IDLE    = 4'd0,
-        ST_RUNNING = 4'd1,
-        ST_DONE    = 4'd2
+        ST_IDLE      = 4'd0,
+        ST_COMP_BUSY = 4'd1,  // Compute engine busy (working state)
+        ST_COMP_DONE = 4'd2   // Computation complete
     } state_t;
-    
+
     state_t state_reg;
-    
+
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             state_reg <= ST_IDLE;
@@ -131,15 +129,15 @@ import gemm_pkg::*;
             case (state_reg)
                 ST_IDLE: begin
                     if (i_tile_en) begin
-                        state_reg <= ST_RUNNING;
+                        state_reg <= ST_COMP_BUSY;
                         $display("[CE_DEBUG] @%t Tile command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
-                                 $time, i_left_addr, i_right_addr, i_dim_b, i_dim_c, i_dim_v);
+                                 $time, i_left_addr, i_right_addr, i_left_ugd_len, i_right_ugd_len, i_vec_len);
                     end
                 end
-                ST_RUNNING: begin
-                    if (bcv_tile_done) state_reg <= ST_DONE;
+                ST_COMP_BUSY: begin
+                    if (bcv_tile_done) state_reg <= ST_COMP_DONE;
                 end
-                ST_DONE: begin
+                ST_COMP_DONE: begin
                     state_reg <= ST_IDLE;
                 end
             endcase
@@ -155,12 +153,12 @@ import gemm_pkg::*;
     gfp8_bcv_controller u_bcv_controller (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
-        
-        // TILE command
+
+        // TILE command parameters
         .i_tile_en          (i_tile_en),
-        .i_dim_b            (i_dim_b),
-        .i_dim_c            (i_dim_c),
-        .i_dim_v            (i_dim_v),
+        .i_dim_b            (i_left_ugd_len),   // Batch dimension (left UGD vectors)
+        .i_dim_c            (i_right_ugd_len),  // Column dimension (right UGD vectors)
+        .i_dim_v            (i_vec_len),        // Vector count (UGD vector size)
         .i_left_base_addr   (i_left_addr),
         .i_right_base_addr  (i_right_addr),
         .o_tile_done        (bcv_tile_done),
@@ -174,7 +172,7 @@ import gemm_pkg::*;
         .o_mem_right_rd_en  (o_bram_right_rd_en),
         .i_mem_right_rd_data(i_bram_right_rd_data),
         
-        // NEW: Exponent interface - separate read ports
+        // Exponent interface - separate read ports
         .o_left_exp_rd_addr (o_left_exp_rd_addr),
         .i_left_exp_rd_data (i_left_exp_rd_data),
         

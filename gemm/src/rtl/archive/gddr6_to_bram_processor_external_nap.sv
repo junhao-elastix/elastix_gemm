@@ -89,7 +89,7 @@ module gddr6_to_bram_processor_external_nap
     t_state state_reg, state_next;
 
     // ----------------------------------------------------------------
-    // Clock Domain Crossing: Control Signals (reg_clk → nap_clk)
+    // Clock Domain Crossing: Control Signals (reg_clk -> nap_clk)
     // ----------------------------------------------------------------
     logic enable_sync;
     logic trigger_sync, trigger_sync_d, trigger_posedge;
@@ -140,7 +140,7 @@ module gddr6_to_bram_processor_external_nap
     end
 
     // ----------------------------------------------------------------
-    // Clock Domain Crossing: Status Signals (nap_clk → reg_clk)
+    // Clock Domain Crossing: Status Signals (nap_clk -> reg_clk)
     // ----------------------------------------------------------------
     logic busy_nap, done_nap, error_nap;
     logic busy_sync, done_sync, error_sync;

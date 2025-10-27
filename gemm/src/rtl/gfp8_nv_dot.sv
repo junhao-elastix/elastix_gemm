@@ -2,11 +2,11 @@
 // GFP8 Native Vector Dot Product Module (Registered)
 //
 // Purpose: Compute dot product of 128-pair GFP8 vectors (one Native Vector)
-// Architecture: Instantiates 4× gfp8_group_dot modules and sums results
+// Architecture: Instantiates 4x gfp8_group_dot modules and sums results
 //
 // Input Format:
 //  - 32-bit packed exponents per side (4 bytes, one per group, byte-aligned)
-//  - Four 256-bit mantissa vectors per side (4 groups × 32 elements = 128 elements)
+//  - Four 256-bit mantissa vectors per side (4 groups x 32 elements = 128 elements)
 //
 // Exponent Packing (byte-aligned):
 //  [31:24] = Group 3 exponent (5-bit value in lower bits, upper 3 bits ignored)
@@ -45,11 +45,11 @@ module gfp8_nv_dot (
     
     // Left Native Vector (128 elements = 4 groups)
     input  logic [31:0]  i_exp_left,          // 4 bytes: [31:24]=G3, [23:16]=G2, [15:8]=G1, [7:0]=G0
-    input  logic [255:0] i_man_left [0:3],    // 4 × 256-bit mantissas
+    input  logic [255:0] i_man_left [0:3],    // 4 x 256-bit mantissas
     
     // Right Native Vector (128 elements = 4 groups)
     input  logic [31:0]  i_exp_right,         // 4 bytes: [31:24]=G3, [23:16]=G2, [15:8]=G1, [7:0]=G0
-    input  logic [255:0] i_man_right [0:3],   // 4 × 256-bit mantissas
+    input  logic [255:0] i_man_right [0:3],   // 4 x 256-bit mantissas
     
     // Result (GFP format) - registered outputs
     output logic signed [31:0] o_result_mantissa,  // Sum of 4 group results
@@ -61,7 +61,7 @@ module gfp8_nv_dot (
     // ===================================================================
     // Problem 1: BCV controller reuses nv_exp/nv_man registers for next V iteration
     // Problem 2: Combinational logic in gfp8_group_dot reads on same cycle as register write
-    // Solution: Two-stage pipeline: capture → stable → compute
+    // Solution: Two-stage pipeline: capture -> stable -> compute
     
     // Stage 1: Capture incoming data
     logic [31:0]  exp_left_captured, exp_right_captured;
@@ -107,25 +107,25 @@ module gfp8_nv_dot (
                 `endif
             end
             
-            // Stage 2: Propagate captured → prop (1 cycle delay)
+            // Stage 2: Propagate captured -> prop (1 cycle delay)
             exp_left_prop <= exp_left_captured;
             exp_right_prop <= exp_right_captured;
             man_left_prop <= man_left_captured;
             man_right_prop <= man_right_captured;
             
-            // Stage 3: Propagate prop → stable (1 more cycle delay)
+            // Stage 3: Propagate prop -> stable (1 more cycle delay)
             exp_left_stable <= exp_left_prop;
             exp_right_stable <= exp_right_prop;
             man_left_stable <= man_left_prop;
             man_right_stable <= man_right_prop;
-            // `ifdef SIMULATION
-            // if (man_left_prop[0] != 0) begin
-            //     $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[0]=0x%064x (from prop)",
-            //              $time, man_left_prop[0]);
-            //     $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[3]=0x%064x (from prop)",
-            //              $time, man_left_prop[3]);
-            // end
-            // `endif
+            `ifdef SIMULATION
+            if (man_left_prop[0] != 0) begin
+                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[0]=0x%064x (from prop)",
+                         $time, man_left_prop[0]);
+                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[3]=0x%064x (from prop)",
+                         $time, man_left_prop[3]);
+            end
+            `endif
         end
     end
     
@@ -134,18 +134,18 @@ module gfp8_nv_dot (
     // ===================================================================
     
     // Extract 5-bit exponents from byte-aligned registered input
-    logic [4:0] exp_left_unpacked [0:3];
-    logic [4:0] exp_right_unpacked [0:3];
+    logic [7:0] exp_left_unpacked [0:3];
+    logic [7:0] exp_right_unpacked [0:3];
     
-    assign exp_left_unpacked[0] = exp_left_stable[7:0]   & 5'h1F;  // Group 0, mask to 5 bits
-    assign exp_left_unpacked[1] = exp_left_stable[15:8]  & 5'h1F;  // Group 1
-    assign exp_left_unpacked[2] = exp_left_stable[23:16] & 5'h1F;  // Group 2
-    assign exp_left_unpacked[3] = exp_left_stable[31:24] & 5'h1F;  // Group 3
+    assign exp_left_unpacked[0] = exp_left_stable[7:0];  // Group 0
+    assign exp_left_unpacked[1] = exp_left_stable[15:8];  // Group 1
+    assign exp_left_unpacked[2] = exp_left_stable[23:16];  // Group 2
+    assign exp_left_unpacked[3] = exp_left_stable[31:24];  // Group 3
     
-    assign exp_right_unpacked[0] = exp_right_stable[7:0]   & 5'h1F;
-    assign exp_right_unpacked[1] = exp_right_stable[15:8]  & 5'h1F;
-    assign exp_right_unpacked[2] = exp_right_stable[23:16] & 5'h1F;
-    assign exp_right_unpacked[3] = exp_right_stable[31:24] & 5'h1F;
+    assign exp_right_unpacked[0] = exp_right_stable[7:0];
+    assign exp_right_unpacked[1] = exp_right_stable[15:8];
+    assign exp_right_unpacked[2] = exp_right_stable[23:16];
+    assign exp_right_unpacked[3] = exp_right_stable[31:24];
     
     `ifdef SIMULATION
     always @(exp_left_stable or exp_right_stable) begin
@@ -168,28 +168,9 @@ module gfp8_nv_dot (
     logic signed [7:0]  group_exponent [0:3];
     
     // ===================================================================
-    // Instantiate 4× gfp8_group_dot (one per group)
+    // Instantiate 4x gfp8_group_dot_mlp (MLP72 Hardware-Accelerated)
     // ===================================================================
-    
-    // Original implementation (commented out)
-    /*
-    genvar g;
-    generate
-        for (g = 0; g < 4; g++) begin : gen_group_dots
-            gfp8_group_dot #(.GROUP_ID(g)) u_group_dot (
-                .i_clk              (i_clk),
-                .i_reset_n          (i_reset_n),
-                .i_exp_left         (exp_left_unpacked[g]),
-                .i_man_left         (man_left_stable[g]),    // Use STABLE mantissas (2-cycle delay)
-                .i_exp_right        (exp_right_unpacked[g]),
-                .i_man_right        (man_right_stable[g]),   // Use STABLE mantissas (2-cycle delay)
-                .o_result_mantissa  (group_mantissa[g]),
-                .o_result_exponent  (group_exponent[g])
-            );
-        end
-    endgenerate
-    */
-    
+
     // MLP72 Hardware-Accelerated Implementation
     genvar g;
     generate

@@ -169,7 +169,7 @@ If working correctly:
 - `src/rtl/dispatcher_control.sv` ✓ (GDDR6 page ID added)
 
 ### RTL (Need Debug)
-- `src/rtl/dispatcher_bram_dual_read.sv` (GFP8 unpacking)
+- `src/rtl/dispatcher_bram.sv` (GFP8 unpacking)
 - `src/rtl/gfp8_bcv_controller.sv` (BCV loop indexing)
 - `src/rtl/compute_engine_modular.sv` (dot product & accumulator)
 - `src/rtl/result_fifo_to_bram.sv` (result capture)

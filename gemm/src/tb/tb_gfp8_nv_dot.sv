@@ -234,8 +234,8 @@ module tb_gfp8_nv_dot;
         $display("[TEST %0d] Real data from hex files (NV 0, Groups 0-3)", test_num);
         
         // Load actual hex file data
-        $readmemh("/home/dev/Dev/elastix_gemm/hex/left.hex", left_data);
-        $readmemh("/home/dev/Dev/elastix_gemm/hex/right.hex", right_data);
+        $readmemh("/home/workstation/elastix_gemm/hex/left.hex", left_data);
+        $readmemh("/home/workstation/elastix_gemm/hex/right.hex", right_data);
         
         // Extract NV 0 exponents (line 0, bytes 0-3)
         exp_left = left_data[0][31:0];

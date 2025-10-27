@@ -46,7 +46,7 @@ package gemm_pkg;
     localparam tile_right_bias_gp = 15;
     localparam tile_out_bias_gp = 15;
 
-    localparam tile_mem_els_gp = 2048;  // Increased from 512 to support 128×128 matrices (528 lines each)
+    localparam tile_mem_els_gp = 2048;  // Increased from 512 to support 128x128 matrices (528 lines each)
     localparam tile_mem_addr_width_gp = $clog2(tile_mem_els_gp);
 
     localparam tile_out_fifo_els_gp = 256;  // Result FIFO depth (increased for large tests, was 64)
@@ -97,29 +97,39 @@ package gemm_pkg;
     } cmd_flags_s;
 
     typedef struct packed {
-        logic [14:0]                   reserved;    // Reduced from 16 to 15 bits
-        logic                          fetch_right; // 0=left, 1=right
-        logic [link_len_width_gp-1:0]  len;
-        logic [link_addr_width_gp-1:0] start_addr;
+        logic [30:0]                   reserved;    // Word3[31:1]
+        logic                          fetch_right; // Word3[0]: 0=left, 1=right
+        logic [15:0]                   reserved2;   // Word2[31:16]
+        logic [link_len_width_gp-1:0]  len;        // Word2[15:0]
+        logic [link_addr_width_gp-1:0] start_addr; // Word1[31:0]
     } cmd_fetch_s;
 
     typedef struct packed {
-        logic [12:0]                       reserved;
-        logic                              man_4b_8b_n;
-        logic [tile_mem_addr_width_gp-1:0] len;
-        logic [tile_mem_addr_width_gp-1:0] tile_addr;
+        logic [15:0]  col_en;         // Word3[31:16]: Column enable mask
+        logic [7:0]   reserved;       // Word3[15:8]
+        logic [5:0]   col_start;      // Word3[7:2]: Distribution start column
+        logic         broadcast;      // Word3[1]: Reserved (tied to 0)
+        logic         man_4b;         // Word3[0]: Mantissa width
+        logic [15:0]  reserved2;      // Word2[31:16]
+        logic [15:0]  tile_addr;      // Word2[15:0]: Tile destination address
+        logic [7:0]   reserved3;      // Word1[31:24]
+        logic [7:0]   man_nv_cnt;     // Word1[23:16]: Total NVs to dispatch
+        logic [7:0]   reserved4;      // Word1[15:8]
+        logic [7:0]   ugd_vec_size;   // Word1[7:0]: NVs per UGD vector
     } cmd_disp_s;
 
     typedef struct packed{
-        logic [7:0]                        dim_b;    // Batch dimension (rows in output matrix)
-        logic [7:0]                        dim_c;    // Column dimension (cols in output matrix)
-        logic [7:0]                        dim_v;    // Vector count (inner dimension = 128*V)
-        cmd_flags_s                        flags;
-        logic [tile_mem_addr_width_gp-1:0] vec_len;
-        logic [tile_mem_addr_width_gp-1:0] right_ugd_len;
-        logic [tile_mem_addr_width_gp-1:0] left_ugd_len;
-        logic [tile_mem_addr_width_gp-1:0] right_addr;
-        logic [tile_mem_addr_width_gp-1:0] left_addr;
+        logic [15:0]  col_en;         // Word3[31:16]: Column enable mask (NEW)
+        logic [12:0]  reserved;       // Word3[15:3]
+        logic         left_4b;        // Word3[2]: Left mantissa width (replaces cmd_flags_s)
+        logic         right_4b;       // Word3[1]: Right mantissa width
+        logic         main_loop_left; // Word3[0]: Main loop dimension
+        logic [7:0]   reserved2;      // Word2[31:24]
+        logic [7:0]   left_ugd_len;   // Word2[23:16]: Left UGD vectors (also dim_b)
+        logic [7:0]   right_ugd_len;  // Word2[15:8]: Right UGD vectors (also dim_c)
+        logic [7:0]   vec_len;        // Word2[7:0]: UGD vector size (also dim_v)
+        logic [15:0]  left_addr;      // Word1[31:16]: Left start address
+        logic [15:0]  right_addr;     // Word1[15:0]: Right start address
     } cmd_tile_s;
 
     typedef struct packed {

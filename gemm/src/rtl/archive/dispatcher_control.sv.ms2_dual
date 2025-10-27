@@ -3,15 +3,15 @@
 //
 // Purpose: DDR fetch and BRAM buffering for MS2.0 architecture
 // Features:
-//  - FETCH command: Read GFP8 block (528 lines × 256-bit) from DDR to BRAM
+//  - FETCH command: Read GFP8 block (528 lines x 256-bit) from DDR to BRAM
 //  - DISP command: Acknowledge vector dispatch configuration
 //  - Dual-port BRAM: Port A (write from DDR), Port B (read by CE)
 //  - AXI4 burst read interface for DDR access
-//  - Sequential buffer access: Fetch complete → done → CE reads
+//  - Sequential buffer access: Fetch complete -> done -> CE reads
 //
 // Memory Layout (GFP8 Block):
 //  Lines 0-15:   Exponents (512 total, 32 per line)
-//  Lines 16-527: Mantissas (128 rows × 4 groups/row = 512 lines)
+//  Lines 16-527: Mantissas (128 rows x 4 groups/row = 512 lines)
 //
 // Author: MS2.0 Migration
 // Date: Thu Oct 2 00:14:43 AM PDT 2025
@@ -231,7 +231,7 @@ import gemm_pkg::*;
                         lines_remaining_reg <= lines_remaining_reg - 16;
                         current_line_reg <= current_line_reg + 16;
                         fetch_addr_reg <= fetch_addr_reg + 16;  // Increment by 16 lines
-                        $display("[DC_DEBUG] @%0t BURST_DONE: current_line %0d → %0d, lines_remaining=%0d",
+                        $display("[DC_DEBUG] @%0t BURST_DONE: current_line %0d -> %0d, lines_remaining=%0d",
                                  $time, current_line_reg, current_line_reg + 16, lines_remaining_reg - 16);
                     end
                 end
@@ -306,10 +306,10 @@ import gemm_pkg::*;
     // ===================================================================
     // BRAM Module Instantiation (Dual Read Ports)
     // ===================================================================
-    dispatcher_bram_dual_read #(
+    dispatcher_bram #(
         .DATA_WIDTH (TGT_DATA_WIDTH),
         .DEPTH      (BRAM_DEPTH),
-        .ADDR_WIDTH (11)  // 2048 addresses for 128×128 matrices
+        .ADDR_WIDTH (11)  // 2048 addresses for 128x128 matrices
     ) u_dispatcher_bram (
         // Single clock for all ports
         .i_clk              (i_clk),

@@ -117,7 +117,7 @@ Unused or obsolete RTL modules moved here to keep the main src/rtl/ directory cl
 ### dispatcher_bram_single_port.sv.backup
 - **Date Archived**: Fri Oct 10 12:55:44 PDT 2025
 - **Reason**: Single-port dispatcher BRAM superseded by dual-read architecture
-- **Status**: ARCHIVED - Replaced by dispatcher_bram_dual_read.sv
+- **Status**: ARCHIVED - Replaced by dispatcher_bram.sv
 - **Note**: Original single-port design, replaced for MS2.0 parallel left/right matrix reads
 
 ### dispatcher_control.sv.ms2_dual

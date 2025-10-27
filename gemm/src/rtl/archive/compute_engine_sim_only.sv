@@ -4,22 +4,22 @@
 // Purpose: Parameterizable GEMM compute engine with V-loop iteration
 // Features:
 //  - **V-loop support**: Accumulates across multiple Native Vectors (V>1)
-//  - **Parallel group-based dot product** (4 groups × 32 elements = 128 per NV)
+//  - **Parallel group-based dot product** (4 groups x 32 elements = 128 per NV)
 //  - **Hardware-compatible GFP arithmetic** (based on matrix_engine_w4gfp8/group_fp.sv)
 //  - **Runtime configurable dimensions** via TILE commands (B, C, V parameters)
 //  - Integer accumulation per group followed by FP summation
 //  - FP16 output with overflow clamping
 //
 // Matrix Dimensions (configurable via TILE command):
-//  - Matrix A: B rows × (128×V) columns, uses B×V Native Vectors
-//  - Matrix B: (128×V) rows × C columns, uses C×V Native Vectors
-//  - Output: B × C results
-//  - Constraints: B×V ≤ 128, C×V ≤ 128
+//  - Matrix A: B rows x (128xV) columns, uses BxV Native Vectors
+//  - Matrix B: (128xV) rows x C columns, uses CxV Native Vectors
+//  - Output: B x C results
+//  - Constraints: BxV ≤ 128, CxV ≤ 128
 //
 // Performance:
 //  - Single NV dot product: ~30 cycles (4 parallel group MACs + control)
 //  - V-loop overhead: ~25 cycles per iteration (load + accumulate)
-//  - Total for V iterations: ~30 + (V-1)×25 cycles per output element
+//  - Total for V iterations: ~30 + (V-1)x25 cycles per output element
 //
 // Data Layout (528-line Native Vector format):
 //  - Lines 0-15: Exponents (512 total, 32 per line, 5-bit each, bias=15)
@@ -28,9 +28,9 @@
 //  - Supports 128 NVs per memory block (left @ 0-527, right @ 528-1055)
 //
 // GFP Arithmetic (hardware-compatible):
-//  - Per-group integer accumulation: acc[g] = Σ(mant_a[i] × mant_b[i])
-//  - Per-group exponent: exp_result[g] = exp_a[g] + exp_b[g] - 2×bias
-//  - Per-group result: result[g] = acc[g] × 2^exp_result[g]
+//  - Per-group integer accumulation: acc[g] = Σ(mant_a[i] x mant_b[i])
+//  - Per-group exponent: exp_result[g] = exp_a[g] + exp_b[g] - 2xbias
+//  - Per-group result: result[g] = acc[g] x 2^exp_result[g]
 //  - Dot product: Σ(result[g]) for g=0 to 3
 //  - V-loop accumulation: Σ(dot_product[v]) for v=0 to V-1
 //
@@ -231,7 +231,7 @@ import gemm_pkg::*;
                          dim_c_reg-1, dim_b_reg-1,
                          (col_idx >= dim_c_reg-1) && (row_idx >= dim_b_reg-1));
                 if (col_idx >= dim_c_reg-1 && row_idx >= dim_b_reg-1) begin
-                    // Completed all B×C dot products
+                    // Completed all BxC dot products
                     $display("[CE_DEBUG] @%0t   Terminating - all %0d x %0d results complete", $time, dim_b_reg, dim_c_reg);
                     state_next = ST_DONE;
                 end else begin

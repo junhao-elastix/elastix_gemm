@@ -1,9 +1,9 @@
 # Elastix GEMM Engine Project
 
 **Status**: ✅ **PRODUCTION READY** - MS2.0 GEMM Engine with Modular Compute Architecture
-**Last Updated**: Tue Oct 14 02:22:38 PDT 2025  
-**Bitstream Build**: elastix_gemm_top.VP815.1.1.hex (10/14 01:57, ID: 0x10140157)
-**Validation Status**: Hardware tested - 8/9 tests passing (88%)
+**Last Updated**: Fri Oct 24 09:30:00 PDT 2025
+**Bitstream Build**: In progress (awaiting hardware validation after Oct 24 RTL cleanup)
+**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - Pending validation
 **Top-Level Module**: `elastix_gemm_top.sv`
 
 ## Project Overview
@@ -237,7 +237,7 @@ gemm/
 │   │   ├── gfp8_nv_dot.sv            # Native Vector dot product
 │   │   ├── gfp8_group_dot.sv         # Group dot product
 │   │   ├── gfp8_to_fp16.sv           # GFP8 to FP16 conversion
-│   │   ├── dispatcher_bram_dual_read.sv # Dual-read BRAM module
+│   │   ├── dispatcher_bram.sv # Dual-read BRAM module
 │   │   ├── result_bram.sv            # Result FIFO (256×16-bit FP16)
 │   │   ├── dma_bram_bridge.sv        # Enhanced BRAM responder
 │   │   ├── reg_control_block.sv      # PCIe register interface (133 regs)

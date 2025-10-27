@@ -110,7 +110,7 @@ typedef struct packed {
 
 ---
 
-### 2. `src/rtl/dispatcher_bram_dual_read.sv`
+### 2. `src/rtl/dispatcher_bram.sv`
 
 **Purpose**: Implement 6-buffer architecture (3 per side)
 
@@ -311,7 +311,7 @@ generate_fetch_command(1, 528, 528, 1'b1, fetch_right_cmd);  // fetch_right=1 (r
 1. **gemm_pkg.sv**: Add fetch_right bit to cmd_fetch_s
 2. **master_control.sv**: Extract and output fetch_target
 3. **engine_top.sv**: Wire fetch_target signal
-4. **dispatcher_bram_dual_read.sv**: Implement 6-buffer architecture
+4. **dispatcher_bram.sv**: Implement 6-buffer architecture
 5. **dispatcher_control.sv**: Implement parallel unpacking
 6. **gfp8_bcv_controller.sv**: Remove base addresses, use 0-511 indexing
 7. **tb_engine_top.sv**: Update test command generation
@@ -353,7 +353,7 @@ generate_fetch_command(1, 528, 528, 1'b1, fetch_right_cmd);  // fetch_right=1 (r
 ## Rollback Plan
 
 If implementation fails:
-1. Revert dispatcher_bram_dual_read.sv to single bram_array[2048]
+1. Revert dispatcher_bram.sv to single bram_array[2048]
 2. Keep gfp8_nv_dot.sv input register fix (that was correct!)
 3. Fix base addresses: left_base=16, right_base=544
 

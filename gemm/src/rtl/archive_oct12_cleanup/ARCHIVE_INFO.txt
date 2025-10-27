@@ -12,9 +12,9 @@ Files archived in this cleanup:
 
 2. dispatcher_bram.sv  
    - Status: OBSOLETE - Single-read BRAM, replaced by dual-read version
-   - Reason: Not instantiated anywhere, dispatcher_bram_dual_read.sv is used
+   - Reason: Not instantiated anywhere, dispatcher_bram.sv is used
    - Date created: Thu Oct 2 00:23:05 AM PDT 2025
-   - Replacement: dispatcher_bram_dual_read.sv (parallel left/right reads)
+   - Replacement: dispatcher_bram.sv (parallel left/right reads)
 
 3. ila_cmd_debug.sv
    - Status: DEBUG ONLY - Not in build

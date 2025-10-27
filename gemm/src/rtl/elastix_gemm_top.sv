@@ -494,7 +494,7 @@ module elastix_gemm_top
                 if (i == 1) begin : gemm_engine_channel
                     // MS2.0 GEMM Engine on Channel 1
                     // Architecture (CORRECTED per GDDR6 reference design):
-                    //   Engine (initiator) → NAP (responder) → NoC → GDDR6_1
+                    //   Engine (initiator) -> NAP (responder) -> NoC -> GDDR6_1
                     // Engine performs FETCH from GDDR6 and matrix multiplication
 
                     // NAP responder wrapper for MS2.0 Engine (FIXED Oct 8 2025!)
@@ -564,7 +564,7 @@ module elastix_gemm_top
                     // Uses engine_top.sv (validated in simulation with 8/8 tests passing)
                     // with simple adapter bridges for CSR and BRAM interfaces
                     
-                    // Command path: CSR → csr_to_fifo_bridge → cmd FIFO → engine_top
+                    // Command path: CSR -> csr_to_fifo_bridge -> cmd FIFO -> engine_top
                     logic [31:0] cmd_fifo_wdata;
                     logic        cmd_fifo_wen;
                     logic        cmd_fifo_full, cmd_fifo_afull;
@@ -586,7 +586,7 @@ module elastix_gemm_top
                         .i_fifo_afull  (cmd_fifo_afull)
                     );
 
-                    // Result path: engine_top → result FIFO → result_fifo_to_bram → BRAM + Registers
+                    // Result path: engine_top -> result FIFO -> result_fifo_to_bram -> BRAM + Registers
                     logic [15:0] result_fifo_rdata;
                     logic        result_fifo_ren;
                     logic        result_fifo_empty;

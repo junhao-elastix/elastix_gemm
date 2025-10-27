@@ -8,7 +8,7 @@
 
 ## The Problem
 
-The `dispatcher_bram_dual_read.sv` module was **incorrectly implemented** and did NOT match the refactoring plan we discussed.
+The `dispatcher_bram.sv` module was **incorrectly implemented** and did NOT match the refactoring plan we discussed.
 
 ### What Was WRONG (Previous Implementation)
 
@@ -85,7 +85,7 @@ Each uses lower 9 bits of address (independent address spaces)
 
 ## Files Modified
 
-1. **`src/rtl/dispatcher_bram_dual_read.sv`**:
+1. **`src/rtl/dispatcher_bram.sv`**:
    - Replaced single `bram_array[2048]` with TWO separate arrays
    - Added `left_mantissa_mem[512]` and `right_mantissa_mem[512]`
    - Fixed write logic to decode address and write to correct BRAM

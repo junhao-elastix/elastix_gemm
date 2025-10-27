@@ -1,526 +1,609 @@
 # CHANGELOG - Elastix GEMM Project
 
-## [2025-10-21 Early Morning] - DISPATCH Addressing Fixed! Phase 1.6 Complete
+## [2025-10-27 15:30] - test_gemm_full.cpp Updated to 4-Word Command Format
 
-**Timestamp**: Tue Oct 21 02:17:21 PDT 2025
-**Status**: [SUCCESS] **PHASE 1.6 COMPLETE** - All 16 results matching golden values!
-
----
+**Timestamp**: Mon Oct 27 15:30:13 PDT 2025
+**Status**: [COMPLETE] **SOFTWARE FIX** - Updated test_gemm_full.cpp raw command format to match 4-word specification, all 10/10 hardware tests passing
 
 ### Summary
 
-Fixed fundamental DISPATCH addressing bug through architecture education session! Root cause: I was treating `disp_addr_reg` as SOURCE address in dispatcher_bram when it's actually the DESTINATION address in tile_bram. DISPATCH always reads from address 0 in aligned buffers and writes to command-specified destination in tile_bram. After fixing addressing logic and correcting testbench DISPATCH length from 528 to 512, simulation now successfully:
-- DISPATCH correctly copies 512 lines from dispatcher_bram aligned buffers [0-511] to tile_bram
-- All 16 results match golden values perfectly ✅
-- Phase 1 (Single-Row Multi-Tile Infrastructure) officially COMPLETE!
+Successfully updated test_gemm_full.cpp (1224 lines, uses raw issueCommand() calls) to use correct 4-word command format. Fixed two critical issues: (1) command structure with proper length fields, (2) **MATMUL parameters using B,C,V instead of fixed 128 values**. All 10 test configurations now passing (100%).
 
-**Architecture Clarification**: Added comprehensive hardware architecture details to SINGLE_ROW_PLAN.md documenting memory block organization, FETCH unpacking process, and DISPATCH operation specification.
+### Root Cause Analysis - MATMUL Parameter Bug
 
----
+**Problem**: test_gemm_full failing all tests (0 or very few matches) even after implementing 4-word command structure correctly.
 
-### Bug Fixed: DISPATCH Source/Destination Addressing
+**Investigation Process**:
+1. **Initial Symptoms**: All hardware results showing same value (0x8de2 = -0.000359) instead of actual computation results
+2. **Comparison with Working Code**: Examined test_gemm.cpp (wrapper version, 10/10 passing)
+3. **Critical Discovery**: test_gemm.cpp uses **B, C, V** as MATMUL parameters, not fixed 128 values
 
-**Root Cause** (dispatcher_control.sv lines 440-516):
-```systemverilog
-// WRONG (before):
-// Source read - was incorrectly adding disp_addr_reg
-assign disp_bram_rd_addr_left = disp_addr_reg[10:0] + disp_cnt_reg[10:0];
-assign disp_bram_rd_addr_right = disp_addr_reg[10:0] + disp_cnt_reg[10:0];
+**Root Cause**: MATMUL command encoding used fixed values instead of test parameters:
+```cpp
+// WRONG (initial implementation):
+uint8_t left_ugd_len = 128;   // Fixed value
+uint8_t right_ugd_len = 128;  // Fixed value
+uint8_t vec_len = 128;        // Fixed value
 
-// Destination write - was only using counter
-assign o_tile_man_wr_addr_left = disp_cnt_delayed;
-assign o_tile_man_wr_addr_right = disp_cnt_delayed;
-
-// CORRECT (after):
-// Source ALWAYS reads from address 0 in aligned buffers
-assign disp_bram_rd_addr_left = disp_cnt_reg[10:0];   // [0 : disp_len-1]
-assign disp_bram_rd_addr_right = disp_cnt_reg[10:0];  // [0 : disp_len-1]
-
-// Destination writes to command-specified address + offset
-assign o_tile_man_wr_addr_left = disp_addr_reg[8:0] + disp_cnt_delayed;
-assign o_tile_man_wr_addr_right = disp_addr_reg[8:0] + disp_cnt_delayed;
+// CORRECT (matching test_gemm.cpp):
+uint8_t left_ugd_len = MATRIX_ROWS;   // B (output rows)
+uint8_t right_ugd_len = MATRIX_COLS;  // C (output cols)
+uint8_t vec_len = VLOOP_SIZE;         // V (V-loop iterations)
 ```
 
-**Key Insight**: DISPATCH command has no source address field - it always reads from address 0 in aligned buffers. The `disp_addr_reg` from command is the DESTINATION base address in tile_bram.
-
----
-
-### Testbench Fix: DISPATCH Length
-
-**Root Cause** (tb_engine_top.sv line 507):
-```systemverilog
-// WRONG (before):
-generate_disp_command(2, 0, 528, 1'b0, disp_cmd);  // Trying to dispatch 528 lines
-
-// CORRECT (after):
-generate_disp_command(2, 0, 512, 1'b0, disp_cmd);  // Dispatch 512 aligned lines
+**Evidence from test_gemm.cpp** (lines 314-323):
+```cpp
+uint8_t tile_id = gemm_device.tile(
+    0,    // left_addr
+    0,    // right_addr
+    B,    // leftUgdLen (NOT 128!)
+    C,    // rightUgdLen (NOT 128!)
+    V,    // vecLen (NOT 128!)
+    ...
+);
 ```
 
-**Explanation**: DISPATCH operates on aligned buffers (512 lines) created by FETCH unpacking, NOT on packed memory blocks (528 lines). The 528-line format only exists in GDDR6 and the exp_packed staging buffer.
-
----
-
-### Architecture Documentation Added
-
-**SINGLE_ROW_PLAN.md** (lines 56-251):
-- **Memory Block Organization**: 16 packed exponent lines (32 exp/line) + 512 mantissa lines
-- **FETCH Operation**: Three-stage process creating aligned buffers
-  - Stage 1: Read lines 0-15 → exp_packed buffer
-  - Stage 2: Read lines 16-527 → man buffer (with address translation)
-  - Parallel: Unpack exp_packed → exp_aligned during Stage 2
-- **DISPATCH Operation**: Source always address 0, destination from command
-- **Broadcast vs Distribute**: Two data distribution modes for left/right matrices
-- **tile_bram Organization**: Identical structure to dispatcher_bram aligned buffers
-
----
-
-### Test Results
-
-**Before Fix**:
-- 16/16 results received but ALL mismatched golden values
-- Result diffs ranging from 9-511 (close) to 44k-47k (zero values)
-- Indicated DISPATCH addressing problem
-
-**After Fix**:
-- 16/16 results received ✅
-- **ALL 16 results match golden values perfectly!** ✅
-- Total simulation time: 18879 cycles
-- Status: `ALL TESTS PASSED`
-
-**Simulation Log**:
-```
-[TB] TEST 1: Running configuration B4_C4_V32 (B=4, C=4, V=32)
-[TB] Collected 16 results after 18879 cycles
-[TB] PASS: B4_C4_V32 - All 16 results matched!
-
-================================================================================
-TEST SUMMARY
-================================================================================
-Total Tests: 1
-Passed:      1
-Failed:      0
-STATUS: ALL TESTS PASSED
-```
-
----
-
-### Files Modified
-
-1. **dispatcher_control.sv** (lines 440-516):
-   - Fixed source read addresses: Always use `disp_cnt_reg[10:0]`
-   - Fixed destination write addresses: `disp_addr_reg[8:0] + disp_cnt_delayed`
-   - Simplified delayed write logic (removed 512-entry wrap prevention)
-
-2. **tb_engine_top.sv** (line 507):
-   - Changed DISPATCH length from 528 to 512
-
-3. **SINGLE_ROW_PLAN.md** (lines 56-251):
-   - Added comprehensive "Hardware Architecture Details" section
-
----
-
-### Phase 1 Status: COMPLETE! 🎉
-
-**Phase 1.1-1.3**: Infrastructure ✅
-- tile_bram_wrapper.sv
-- compute_tile_array.sv
-- engine_top.sv integration
-
-**Phase 1.4**: DISPATCH bugs fixed ✅
-- Address width mismatches corrected
-- Data flow validated
-
-**Phase 1.5**: WAIT_DISPATCH synchronization ✅
-- ID tracking working
-- 10ns blocking time
-
-**Phase 1.6**: Result correctness ✅
-- **All 16 results matching golden values!**
-- DISPATCH addressing completely fixed
-- Architecture understanding aligned
-
-**Next Steps**: Ready to proceed to Phase 2.3 (Full Multi-Tile DISPATCH with broadcast/distribute modes) when needed.
-
----
-
-## [2025-10-20 Late Evening] - WAIT_DISPATCH Synchronization Fixed! Phase 1.5 Complete
-
-**Timestamp**: Mon Oct 20 20:34:15 PDT 2025
-**Status**: [SUCCESS] **PHASE 1.5 COMPLETE** - WAIT_DISPATCH synchronization working, results received (16/16)
-
----
-
-### Summary
-
-Fixed critical WAIT_DISPATCH synchronization bug! Root cause: testbench was placing `wait_id` in wrong header location (bits [31:24] instead of [15:8]). After fixing testbench command generation and adding ID tracking debug prints, simulation now successfully:
-- DISPATCH completes and updates `last_disp_id_reg`
-- WAIT_DISPATCH captures correct `wait_id` from header
-- Synchronization unblocks immediately (10ns blocking time)
-- All 16 results received after 18895 cycles
-
-**New Issue Discovered**: Result values don't match golden reference (16/16 mismatches). This indicates compute engine may not be reading correct data from tile_bram, or DISPATCH didn't copy data correctly. Moving to Phase 1.6 to debug data correctness.
-
----
-
-### Bug Fixed: wait_id Header Location
-
-**Root Cause** (tb_engine_top.sv lines 575-585):
-```systemverilog
-// WRONG (before):
-cmd[0] = {wait_id, 8'd0, id, e_cmd_op_wait_disp};
-//        [31:24] [23:16] [15:8] [7:0]
-// master_control reads bits [15:8] → got cmd_id=3 instead of wait_id=2!
-
-// CORRECT (after):
-cmd[0] = {16'd4, wait_id, e_cmd_op_wait_disp};
-//        [31:16]  [15:8]  [7:0]
-//          len   wait_id  opcode
-```
-
-**Changes**:
-1. Removed `id` parameter from `generate_wait_disp_command` task
-2. Put `wait_id` directly in header bits [15:8] per MS2.0 spec
-3. Updated call site from `(3, 2, cmd)` to `(2, cmd)`
-
-**Verification** (sim.log):
-```
-@ 20295000: DISPATCH completed: last_disp_id_reg <= 2
-@ 20355000: WAIT command decoded: wait_id_reg <= 2
-@ 20355000: WAIT_DISP satisfied: last_disp_id=2 >= wait_id=2
-```
-
----
-
-### Debug Instrumentation Added
-
-**master_control.sv** (lines 464-489):
-- Added `$display` when `last_disp_id_reg` updates in ST_CMD_COMPLETE
-- Added `$display` when `wait_id_reg` captured in ST_DECODE
-- Added conditional `$display` in ST_WAIT_DISP showing blocking reason (every 10us)
-
----
-
-### State Machine Flow Verified
-
-**DISPATCH Command (0xF1)**:
-```
-@ 14975000: ST_DECODE (0x4 → 0x5)
-@ 14985000: ST_EXEC_DISP (0x5 → 0x7)
-@ 14995000: ST_WAIT_DONE (0x7 → 0xb)
-@ 20295000: ST_CMD_COMPLETE (0xb → 0xc) ← last_disp_id_reg <= 2
-@ 20305000: ST_IDLE (0xc → 0x0)
-```
-
-**WAIT_DISPATCH Command (0xF3)**:
-```
-@ 20355000: ST_DECODE (0x4 → 0x5) ← wait_id_reg <= 2
-@ 20365000: ST_WAIT_DISP (0x5 → 0x9)
-@ 20375000: ST_CMD_COMPLETE (0x9 → 0xc) ← unblocked (10ns blocking)
-@ 20385000: ST_IDLE (0xc → 0x0)
-```
-
----
-
-### Test Results
-
-**Before Fix**:
-- 0/16 results received
-- MC stuck in ST_WAIT_DISP forever
-- Test timeout
-
-**After Fix**:
-- 16/16 results received ✅
-- Total simulation time: 18895 cycles
-- Blocking time: 10ns (1 clock cycle) ✅
-- **BUT**: All 16 results mismatch golden values ⚠️
-
-**Result Mismatches** (test_results.log):
-```
-[0]: hw=0x0000 golden=0xb6ae diff=46766
-[1]: hw=0x0000 golden=0xb811 diff=47121
-...
-[5]: hw=0x3b48 golden=0x3af5 diff=83      ← Small diff
-[6]: hw=0xb652 golden=0xb6ec diff=154     ← Small diff
-```
-
-Some results are close (small diffs), others are zero or very wrong. This suggests:
-- DISPATCH may have copied some data correctly but not all
-- Compute engine address generation for tile_bram may be incorrect
-- Data alignment issues between dispatcher_bram and tile_bram
-
----
-
-### Next Steps: Phase 1.6 - Debug Result Correctness
-
-1. Add tile_bram read/write monitoring
-2. Compare dispatcher_bram vs tile_bram contents after DISPATCH
-3. Verify compute engine address generation for tile_bram reads
-4. Check if exponent data is being copied correctly
-5. Verify mantissa vs exponent address alignment
-
----
-
-### Files Modified
-
-1. **tb_engine_top.sv**:
-   - Line 575-585: Fixed `generate_wait_disp_command` task signature and header format
-   - Line 512: Updated call site to match new signature
-
-2. **master_control.sv**:
-   - Lines 468-476: Added debug prints for `last_disp_id_reg` updates
-   - Lines 485-488: Added debug print for `wait_id_reg` capture
-   - Lines 227-239: Added debug prints in ST_WAIT_DISP state
-
----
-
-### Phase 1 Status Update
-
-- ✅ Phase 1.1: tile_bram_wrapper created
-- ✅ Phase 1.2: compute_tile_array created
-- ✅ Phase 1.3: engine_top integration
-- ✅ Phase 1.4: DISPATCH FSM bugs fixed
-- ✅ Phase 1.5: WAIT_DISPATCH synchronization working
-- ⚠️ Phase 1.6: Result correctness debugging (IN PROGRESS)
-
----
-
-## [2025-10-20 Evening] - DISPATCH Debugging Session: Data Copy Working, WAIT_DISPATCH Blocked
-
-**Timestamp**: Mon Oct 20 19:46:05 PDT 2025
-**Status**: [IN PROGRESS] **DEBUGGING** - DISPATCH data copy confirmed working, blocked on WAIT_DISPATCH synchronization
-
----
-
-### Summary
-
-Debugged DISPATCH implementation and confirmed data copy from dispatcher_bram → tile_bram[0] is executing correctly (5290 cycles for 528 lines). Identified and fixed duplicate parameter assignment bug in dispatcher_control.sv. Testbench updated with correct disp_len=528. Simulation shows DISPATCH completes successfully, but system is now blocked in WAIT_DISPATCH state - MC stuck in ST_WAIT_DISP (0x9) waiting for synchronization that never arrives.
-
----
-
-### Debugging Findings
-
-**✅ DISPATCH Data Copy Confirmed Working**:
-- DC state transitions: IDLE (0x0) → DISPATCH (0x7) @ 15005000
-- DISPATCH executes for 5290 cycles (10 cycles/line for 528 lines)
-- DC exits DISPATCH → IDLE @ 20295000
-- All 4 data paths enabled (left/right × mantissa/exponent)
-
-**Bug Fixed** (dispatcher_control.sv:376-381):
-- **Problem**: Duplicate assignment to `disp_len_reg` in same `always_ff` block
-  - ST_IDLE case captured parameters (lines 329-334)
-  - ST_DISPATCH case re-assigned same parameters (lines 376-381)
-  - Created race condition where `disp_len_reg` might be 0 when checked
-- **Solution**: Removed duplicate assignments, kept only ST_IDLE capture
-- **Impact**: DISPATCH now enters correctly and counts properly
-
-**Testbench Fix** (tb_engine_top.sv:505):
-- **Problem**: `generate_disp_command(2, 0, 0, 1'b0)` sent len=0
-- **Solution**: Changed to `generate_disp_command(2, 0, 528, 1'b0)`
-- **Impact**: DISPATCH now copies all 528 lines instead of exiting immediately
-
----
-
-### Current Blocker
-
-**WAIT_DISPATCH Synchronization Stuck**:
-- MC enters ST_WAIT_DISP (0x9) @ 20365000 with opcode 0xF3
-- Never progresses past this state
-- Test times out waiting for results (0/16 results received)
-- Likely issue: `last_disp_id_reg` not updating or wait condition never satisfied
-
-**Next Debugging Steps**:
-1. Check `last_disp_id_reg` update logic in dispatcher_control
-2. Verify `o_disp_done` assertion and timing
-3. Check WAIT_DISPATCH condition in master_control (ST_WAIT_DISP case)
-4. Add debug outputs for disp_id tracking
-
----
-
-### Files Modified
-
-**dispatcher_control.sv** (lines 372-390):
-- Removed duplicate parameter assignments in ST_DISPATCH case
-- Kept parameter capture in ST_IDLE case only (lines 329-334)
-- Counter initialization moved to transition condition
-
-**tb_engine_top.sv** (line 505):
-- Updated DISPATCH command: len=0 → len=528
-- Comment updated to reflect Phase 1 data copy purpose
-
-**Makefile** (sim/vector_system_test/Makefile):
-- Added compilation output redirection to compile.log
-- Added simulation output redirection to sim.log
-- Added `-noasdb` flag to avoid database locking issues
-- Improved user experience with quieter output
-
----
-
-### Test Results
-
-**B4_C4_V32 Test Status**: ❌ FAIL (0/16 results, timeout)
-
-**State Machine Trace**:
-```
-MC:  EXEC_DISP (0x5) → EXEC_WAIT (0x7) → WAIT_DONE (0xb) → CMD_COMPLETE (0xc)
-  → READ_CMD (0x0) → EXEC_CMD (0x1) → READ_PAYLOAD (0x2-0x4) → WAIT_DISP (0x9) [STUCK]
-
-DC:  IDLE (0x0) → DISPATCH (0x7) [5290 cycles] → IDLE (0x0) → DISP_ACK (0x7) [instant]
-
-CE:  [Not yet reached]
-```
-
-**Timing**:
-- DISPATCH start: 15005000 ps
-- DISPATCH end:   20295000 ps
-- Duration: 5.29ms (5290 cycles @ 1ns period)
-- MC stuck: 20365000 ps onwards
-
----
-
-### Compilation Statistics
-
-- **Compile**: 0 Errors, 19 Warnings (VCP2597 unconnected ports, VCP2675 init conflicts)
-- **Simulation**: Completed with timeout
-- **Log Files**: compile.log (clean), sim.log (2.5MB with ACX warnings)
-
----
-
-## [2025-10-20] - Multi-Tile Architecture Implementation (Phase 1 + Minimal DISPATCH)
-
-**Timestamp**: Mon Oct 20 14:03:19 PDT 2025
-**Status**: [IN PROGRESS] **MULTI-TILE MIGRATION** - Phase 1 complete with minimal DISPATCH for backward compatibility testing
-
----
-
-### Summary
-
-Implemented foundational multi-tile architecture to enable parallel matrix multiplication across up to 16 compute tiles. Created three-level memory hierarchy (L3: GDDR6 → L2: dispatcher_bram → L1: tile_bram) with private per-tile L1 caches. Added minimal DISPATCH functionality to copy data from dispatcher_bram to tile_bram[0] for single-tile backward compatibility validation. Architecture ready for simulation testing with column_enable=0x0001.
-
----
+**Impact**:
+- Hardware was computing with wrong dimensions (always 128×128×128 instead of B×C×V)
+- Results were incorrect for all test configurations except B128_C1_V1 variants
+- Tests failing validation even though command structure was correct
 
 ### Changes Made
 
-#### New RTL Modules (3 files, ~680 lines)
+**File**: `sw_test/test_gemm_full.cpp` (1224 lines)
 
-**tile_bram_wrapper.sv** (132 lines):
-- 512×256-bit dual-port mantissa BRAM per tile
-- 512×8-bit dual-port exponent BRAM per tile
-- Port A: Write from dispatcher (DISPATCH phase)
-- Port B: Read from compute engine (MATMUL phase)
-- Supports 128 Native Vectors per tile (4 lines/NV)
+**All 5 Commands Updated to 4-Word Format**:
 
-**compute_tile_array.sv** (273 lines):
-- NUM_TILES parameter (max 16) for scalable architecture
-- Instantiates NUM_TILES parallel compute engines
-- Each tile has private tile_bram_left and tile_bram_right
-- column_enable mask for selective tile execution
-- Per-tile exponent storage (required for distributed weights)
-- Tile-major result collection with tile_id
+1. **FETCH Commands** (lines 739-757):
+   - Fixed length field: 12 → 16 (4 words × 4 bytes = 16 bytes)
+   - Address division by 32 already correct from previous fix
+   - Proper fetch_right flag placement (word3 instead of word2[16])
 
-**Modified Modules**:
+2. **DISPATCH Command** (lines 769-796):
+   - Completely rewritten to new format with multi-parameter API
+   - Consolidated two separate dispatches (left/right) into single command
+   - New format: `{man_nv_cnt, ugd_vec_size, tile_addr, col_en, ...}`
 
-**engine_top.sv** (~450 lines, significant updates):
-- Added NUM_TILES parameter (default 16)
-- Replaced compute_engine_modular with compute_tile_array
-- Added column_enable (hardcoded to 16'h0001 for Phase 1 testing)
-- Updated status logic for per-tile ce_state arrays
-- Connected dispatcher write ports to tile array
+3. **WAIT_DISPATCH Command** (lines 790-796):
+   - Moved wait_id from word0[15:8] to word1[7:0]
+   - Fixed length: variable → 16
 
-**dispatcher_control.sv** (~750 lines, added DISPATCH FSM):
-- Added ST_DISPATCH state (code 4'd7) to state machine
-- Implemented data copy from dispatcher_bram → tile_bram[0]
-- MUXed BRAM read ports (DISPATCH internal vs compute engine reads)
-- Added 6 new output ports for tile writes (mantissa + exponent, left + right)
-- For Phase 1: writes to tile[0] only (broadcast pattern 16'h0001)
-- Exponents tied off (will implement in full Phase 2)
-- NUM_TILES parameter added
+4. **MATMUL Command** (lines 798-830) - **CRITICAL FIX**:
+   - Removed complex 87-bit structure packing
+   - Simplified to 4-word format
+   - **Fixed parameters: 128,128,128 → B,C,V**
+   - New encoding: `{left_addr, right_addr}, {left_ugd_len, right_ugd_len, vec_len}, {col_en, flags}`
 
-**Simulation Updates**:
+5. **WAIT_MATMUL Command** (lines 832-843):
+   - Moved wait_id from word0 to word1
+   - Fixed length: 4 → 16
 
-**Makefile** (sim/vector_system_test/):
-- Added tile_bram_wrapper.sv to RTL_SOURCES
-- Added compute_tile_array.sv to RTL_SOURCES
-- Updated compilation order for new dependencies
+**Multi-Tile Test Section** (lines 1013-1110):
+- Applied identical fixes to FETCH, MATMUL commands
+- Fixed MATMUL parameters: 128 → B, C, V
 
----
+### Test Results
 
-### Architecture Overview
-
+**Before Fix**:
 ```
-L3 (GDDR6) → L2 (dispatcher_bram) → L1 (tile_bram) → Compute Engine
-             ✅ Working              ✅ Just implemented   ✅ Infrastructure ready
+Test 1/10: B1_C1_V1 - [FAIL] (0/1 matches)
+Test 2/10: B2_C2_V2 - [FAIL] (0/4 matches)
+...
+All hardware results: 0x8de2 (same incorrect value)
 ```
 
-**Data Flow**:
-1. FETCH: GDDR6 → dispatcher_bram (L2, shared across tiles)
-2. DISPATCH: dispatcher_bram → tile_bram[0..N-1] (L1, per-tile private)
-   - Left (activations): Broadcast same data to all tiles
-   - Right (weights): Distribute unique data per tile
-3. MATMUL: tile_bram → compute_engine (parallel execution)
+**After Fix**:
+```
+Test 1/10: B1_C1_V1 - [PASS]
+Test 2/10: B2_C2_V2 - [PASS]
+Test 3/10: B4_C4_V4 - [PASS]
+Test 4/10: B2_C2_V64 - [PASS]
+Test 5/10: B4_C4_V32 - [PASS]
+Test 6/10: B8_C8_V16 - [PASS]
+Test 7/10: B16_C16_V8 - [PASS]
+Test 8/10: B1_C128_V1 - [PASS]
+Test 9/10: B128_C1_V1 - [PASS]
+Test 10/10: B1_C1_V128 - [PASS]
 
-**Current Status**:
-- Phase 1: Single-tile mode (column_enable = 0x0001) ✅ READY FOR TESTING
-- DISPATCH copies to tile[0] only
-- Backward compatible with existing MS2.0 tests
+Total: 10/10 PASS (100%)
+Average test time: 253 us
+```
+
+### Key Learnings
+
+1. **Parameter Semantics**: The MATMUL ugd_len and vec_len parameters control computation dimensions, not just memory access
+2. **Reference Code Validation**: Always compare with working reference code when debugging mysterious failures
+3. **Command Structure vs Parameters**: Both must be correct - proper 4-word structure alone isn't sufficient
+4. **Test Coverage**: Multiple test configurations (B1_C1_V1 through B128_C1_V1) caught dimension parameter bugs
+
+### Hardware Status
+
+**FPGA Health** (verified post-test):
+- ✅ Bitstream ID: 0x10271410 (Build: Oct 27 14:10)
+- ✅ ADM Status: 0x00000003 (GDDR6 training complete)
+- ✅ LTSSM State: 0x00000011 (PCIe link up)
+- ✅ All registers accessible
+
+**Test Status**:
+- ✅ test_gemm.cpp: 10/10 passing (wrapper version with vp815_gemm_device.hpp)
+- ✅ test_gemm_full.cpp: 10/10 passing (raw command version)
+- ✅ Both tests now use identical 4-word command format
+
+### References
+
+- **Specification**: SINGLE_ROW_REFERENCE.md (4-word command format)
+- **Working Reference**: test_gemm.cpp (lines 314-323 showing B,C,V parameters)
+- **Command Wrapper**: vp815_gemm_device.hpp (validated command construction)
+- **State Reference**: STATE_TRANSITIONS_REFERENCE.md
 
 ---
 
-### Testing Status
+## [2025-10-27 15:18] - vp815_gemm_device.hpp Updated to 4-Word Command Format
 
-**Compilation**: ✅ SUCCESS (0 Errors, 19 Warnings)
-- ACX libraries compiled
-- All new modules compiled successfully
-- Ready for simulation testing
+**Timestamp**: Mon Oct 27 15:18:43 PDT 2025
+**Status**: [COMPLETE] **SOFTWARE FIX** - Updated software test wrappers to match 4-word command format, fixed GDDR6 address format (byte vs 32-byte units), all 10/10 hardware tests passing
 
-**Hardware Testing**: PENDING
-- Requires simulation validation first
-- Then bitstream build and FPGA programming
+### Summary
 
----
+Updated software test infrastructure to correctly implement the 4-word command format specification from SINGLE_ROW_REFERENCE.md. Fixed critical GDDR6 address format bug where wrapper was sending byte addresses instead of 32-byte line units expected by hardware. All hardware tests now passing (10/10 = 100%).
+
+### Root Cause Analysis
+
+**Problem**: Hardware tests failing with result=infinity despite:
+- ✅ Commands formatted correctly (4-word structure verified)
+- ✅ RTL structures in gemm_pkg.sv matching specification
+- ✅ Simulation tests passing (9/9)
+- ✅ FPGA healthy with recent bitstream
+
+**Investigation Process**:
+1. **Initial Implementation**: Rewrote vp815_gemm_device.hpp with 4-word command format based on SINGLE_ROW_REFERENCE.md
+2. **Command Verification**: Added debug output showing all 6 commands sent to hardware
+3. **Address Format Discovery**: Compared with gemm_simple working reference code
+4. **Root Cause**: FETCH command address parameter was sending full byte addresses instead of 32-byte line units
+
+**Technical Details**:
+
+FETCH command address format mismatch:
+```cpp
+// WRONG (initial implementation):
+uint32_t w1 = startAddr;  // Byte address: 0x4200 (16896 decimal)
+
+// CORRECT (verified in gemm_simple):
+uint32_t w1 = startAddr / 32;  // 32-byte line units: 0x210 (528 decimal)
+```
+
+**Evidence from gemm_simple** (working reference):
+```cpp
+uint32_t cmd_fetch_left_word1 = 0;  // Address in 32-byte units
+uint32_t cmd_fetch_right_word1 = fetch_addr_lines;  // Address in 32-byte units
+```
+
+**Impact**:
+- Hardware was reading from wrong GDDR6 addresses
+- Data fetched was garbage, causing computation failures
+- Result: infinity (0x7c00) instead of expected values
+
+### Changes Made
+
+**File**: `sw_test/vp815_gemm_device.hpp`
+
+**1. FETCH Command - Fixed Address Format**:
+```cpp
+// 4-Word Format:
+// cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_FETCH}
+// cmd[1] = start_addr[31:0] (in 32-byte units, NOT bytes!)
+// cmd[2] = {reserved[15:0], len[15:0]}
+// cmd[3] = {reserved[30:0], fetch_right}
+
+uint8_t fetch(uint32_t startAddr, uint16_t length, bool fetch_right = false) {
+    uint8_t id = next_cmd_id();
+    uint32_t w0 = build_word0(OPC_FETCH, id);
+    uint32_t w1 = startAddr / 32;  // ✅ Convert byte address to 32-byte line units
+    uint32_t w2 = static_cast<uint32_t>(length & 0xFFFF);
+    uint32_t w3 = fetch_right ? 1u : 0u;
+    issue_command(w0, w1, w2, w3);
+    return id;
+}
+```
+
+**2. DISPATCH Command - New Multi-Parameter API**:
+```cpp
+// 4-Word Format:
+// cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_DISPATCH}
+// cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
+// cmd[2] = {16'b0, tile_addr[15:0]}
+// cmd[3] = {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b}
+
+uint8_t dispatch(uint8_t man_nv_cnt, uint8_t ugd_vec_size, uint16_t tile_addr,
+                 uint16_t col_en = 0x0001, uint8_t col_start = 0,
+                 bool broadcast = false, bool man_4b = false);
+```
+
+**3. WAIT_DISPATCH Command - Fixed Format**:
+```cpp
+// cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_WAIT_DISPATCH}
+// cmd[1] = {24'd0, wait_id[7:0]}  // wait_id moved from word0 to word1
+// cmd[2] = 32'h00000000
+// cmd[3] = 32'h00000000
+```
+
+**4. MATMUL Command - Simplified Format**:
+```cpp
+// cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_MATMUL}
+// cmd[1] = {left_addr[15:0], right_addr[15:0]}
+// cmd[2] = {8'b0, left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
+// cmd[3] = {col_en[15:0], 13'b0, left_4b, right_4b, main_loop_left}
+```
+
+**5. WAIT_MATMUL Command - Fixed Format**:
+```cpp
+// cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_WAIT_MATMUL}
+// cmd[1] = {24'd0, wait_id[7:0]}
+// cmd[2] = 32'h00000000
+// cmd[3] = 32'h00000000
+```
+
+**File**: `sw_test/test_gemm.cpp`
+
+**Updated DISPATCH Call**:
+```cpp
+// NEW: Multi-parameter DISPATCH with explicit arguments
+uint8_t disp_id = gemm_device.dispatch(
+    128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
+    V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
+    0,      // tile_addr: Start at tile_bram[0]
+    0x0001, // col_en: Enable tile 0 only
+    0,      // col_start: Start from tile 0
+    false,  // broadcast: Reserved (hardware always broadcasts LEFT, distributes RIGHT)
+    false   // man_4b: 8-bit mantissas
+);
+```
+
+### Test Results
+
+**Before Fix**:
+```
+Test B1_C1_V1: FAIL - Result: 0x7c00 (infinity), Expected: 0x05f4 (9.08e-05)
+```
+
+**After Fix**: 10/10 tests passing (100%)
+```
+✅ B1_C1_V1    - PASS (1/1 matches)
+✅ B2_C2_V2    - PASS (4/4 matches)
+✅ B4_C4_V4    - PASS (16/16 matches)
+✅ B2_C2_V64   - PASS (4/4 matches)
+✅ B4_C4_V32   - PASS (16/16 matches)
+✅ B8_C8_V16   - PASS (64/64 matches)
+✅ B16_C16_V8  - PASS (256/256 matches)
+✅ B1_C128_V1  - PASS (128/128 matches)
+✅ B128_C1_V1  - PASS (128/128 matches)
+✅ B1_C1_V128  - PASS (1/1 matches)
+```
+
+**Command Format Verification** (with debug output):
+```
+FETCH LEFT:       w0=0x001000f0 w1=0x00000000 w2=0x00000210 w3=0x00000000 ✓
+FETCH RIGHT:      w0=0x001001f0 w1=0x00000210 w2=0x00000210 w3=0x00000001 ✓
+DISPATCH:         w0=0x001002f1 w1=0x00800001 w2=0x00000000 w3=0x00010000 ✓
+WAIT_DISPATCH:    w0=0x001003f3 w1=0x00000002 w2=0x00000000 w3=0x00000000 ✓
+MATMUL:           w0=0x001004f2 w1=0x00000000 w2=0x00010101 w3=0x00010001 ✓
+WAIT_MATMUL:      w0=0x001005f4 w1=0x00000004 w2=0x00000000 w3=0x00000000 ✓
+```
+
+Note the corrected FETCH RIGHT w1 value:
+- ❌ Before: w1=0x00004200 (16896 decimal = byte address, WRONG)
+- ✅ After:  w1=0x00000210 (528 decimal = 32-byte line units, CORRECT)
+
+### Key Learnings
+
+1. **Always verify working reference code** - gemm_simple provided critical insight on address format
+2. **Hardware expectations may differ from spec** - Documentation said "address" but hardware expects "line units"
+3. **Address format is critical** - Byte vs line units caused complete computation failure
+4. **Systematic debugging workflow**:
+   - Verify command format (4-word structure) ✓
+   - Verify RTL structures match spec ✓
+   - Compare with working reference code → **Found the issue!**
+   - Verify GDDR6 DMA address expectations
+
+### References
+
+- **gemm_simple/sw_test/test_bulk_dma.cpp** - Working reference for address format
+- **SINGLE_ROW_REFERENCE.md** - 4-word command specification
+- **gemm_pkg.sv** - RTL command structures (already correct)
+
+### Status
+
+- ✅ vp815_gemm_device.hpp wrapper fully corrected
+- ✅ test_gemm.cpp updated and validated (10/10 tests passing)
+- ⏳ test_gemm_full.cpp - Still needs 4-word command updates (raw command construction)
+- ⏳ Other sw_test/ tests - Need verification and updates
 
 ### Next Steps
 
-1. **Phase 1.4**: Run simulation tests with single-tile mode
-2. **Phase 2 (Full DISPATCH)**:
-   - Implement broadcast logic (left, activations to all tiles)
-   - Implement distribute logic (right, unique weights per tile)
-   - Add exponent write support
-3. **Phase 3**: Update master_control for 16-byte MATMUL with column_enable
-4. **Phase 4**: Implement result_collector for tile-major output
-5. **Phase 5**: Full multi-tile validation
+1. Update test_gemm_full.cpp with correct 4-word raw command construction
+2. Verify and update all other tests in sw_test/ directory
+3. Run full test suite to ensure all tests pass
 
 ---
 
-### Files Modified
+## [2025-10-27] - DISPATCH Pipeline Bug Fix - Address [511] Missing Write
 
-**RTL (New)**:
-- `src/rtl/tile_bram_wrapper.sv` (NEW, 132 lines)
-- `src/rtl/compute_tile_array.sv` (NEW, 273 lines)
+**Timestamp**: Mon Oct 27 13:20:49 PDT 2025
+**Status**: [COMPLETE] **CRITICAL BUG FIX** - Fixed DISPATCH pipeline bug causing final address [511] to not be written, all 9/9 tests now passing
 
-**RTL (Modified)**:
-- `src/rtl/engine_top.sv` (MODIFIED, multi-tile instantiation)
-- `src/rtl/dispatcher_control.sv` (MODIFIED, DISPATCH FSM added)
+### Summary
 
-**Simulation**:
-- `sim/vector_system_test/Makefile` (MODIFIED, added new modules)
+Fixed critical DISPATCH operation bug where the final address [511] was never written to tile_bram due to premature assertion of the done flag blocking the pipelined write. This caused large-V dimension tests (V≥16) to fail with ~3-4% relative error. Implemented pipelined valid signals to properly handle the 1-cycle BRAM read latency.
+
+### Root Cause Analysis
+
+**Problem**: DISPATCH operation only wrote addresses [0-510], missing final address [511]
+
+**Investigation Process**:
+1. **Standalone CE Test**: Verified compute engine correct in isolation (8/8 tests PASS including V=128, V=64, V=32)
+2. **Full System Test**: Only 3/9 tests passing (V≤4 pass, V≥16 fail)
+3. **Hypothesis**: Data path integration issue, not compute engine
+4. **Discovery**: Log analysis showed tile_bram[511] = 0x0000... (never written during DISPATCH)
+5. **Root Cause**: Pipeline hazard in write enable logic
+
+**Technical Details**:
+
+The DISPATCH operation uses a pipelined read-write sequence:
+```
+Cycle N:   Counter = 511, read dispatcher_bram[511] → 1-cycle latency
+Cycle N+1: Write tile_bram[511] with data from previous cycle
+```
+
+**Bug**: When counter reached 511:
+- `disp_man_done_reg` was set HIGH in cycle N (line 378)
+- Write enable checked `copy_active_pipe && !disp_man_done_reg` (line 440)
+- In cycle N+1, `!disp_man_done_reg` = FALSE, blocking the write for address [511]
+
+**Why it affected large-V tests**:
+- Small V (V≤4): Only uses first few addresses, [511] unused → tests pass
+- Large V (V≥128): Uses addresses up to [511], missing data causes errors → tests fail
+- Error magnitude: ~3-4% relative error due to incorrect final accumulation
+
+### Changes Made
+
+**File**: `src/rtl/dispatcher_control.sv` (lines 416-462)
+
+**Added Pipelined Valid Signals**:
+```systemverilog
+// New signals (lines 419-420)
+logic man_wr_valid_pipe;  // Valid signal for mantissa write
+logic exp_wr_valid_pipe;  // Valid signal for exponent write
+
+// Capture valid condition ONE cycle early (lines 436-437)
+man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) &&
+                     !disp_man_done_reg &&
+                     (disp_man_cnt_reg < disp_lines_to_copy_reg);
+
+exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) &&
+                     !disp_exp_done_reg &&
+                     (disp_exp_cnt_reg < disp_lines_to_copy_reg);
+```
+
+**Updated Write Enables** (lines 448, 453, 458, 462):
+```systemverilog
+// Before (buggy):
+assign o_tile_man_left_wr_en = copy_active_pipe && !disp_man_done_reg;
+
+// After (fixed):
+assign o_tile_man_left_wr_en = man_wr_valid_pipe;
+```
+
+**Rationale**: Pipelined valid signals capture the write condition in cycle N (when counter=511 but done flag not yet set), allowing the write to complete in cycle N+1 after the BRAM read latency.
+
+### Test Results
+
+**Before Fix**: 3/9 tests passing (33%)
+```
+✅ B1_C1_V1    - PASS (V≤4, doesn't use addr [511])
+✅ B2_C2_V2    - PASS (V≤4, doesn't use addr [511])
+✅ B4_C4_V4    - PASS (V≤4, doesn't use addr [511])
+❌ B1_C1_V128  - FAIL (large V, needs addr [511])
+❌ B4_C4_V32   - FAIL (large V, needs addr [511])
+❌ B2_C2_V64   - FAIL (large V, needs addr [511])
+❌ B8_C8_V16   - FAIL (large V, needs addr [511])
+❌ B1_C128_V1  - FAIL (large batch, needs addr [511])
+❌ B128_C1_V1  - FAIL (large batch, needs addr [511])
+```
+
+**After Fix**: 9/9 tests passing (100%)
+```
+✅ B1_C1_V1    - PASS
+✅ B2_C2_V2    - PASS
+✅ B4_C4_V4    - PASS
+✅ B1_C1_V128  - PASS (fixed)
+✅ B4_C4_V32   - PASS (fixed)
+✅ B2_C2_V64   - PASS (fixed)
+✅ B8_C8_V16   - PASS (fixed)
+✅ B1_C128_V1  - PASS (fixed)
+✅ B128_C1_V1  - PASS (fixed)
+```
+
+### Additional Investigation Notes
+
+**man_nv_cnt Parameter Usage**:
+- Initially investigated whether `man_nv_cnt` should be calculated from V parameter
+- **Clarified**: `man_nv_cnt=128` (full capacity) is CORRECT
+- Dispatcher always copies full 512-line capacity from dispatcher_bram → tile_bram
+- V parameter tells compute engine how much to USE, not how much to DISPATCH
+- Earlier implementation in `dispatcher_control.sv` correctly uses `man_nv_cnt × 4` for dynamic line count
+
+**Reference Comparison**:
+- Baseline: `gemm_simple/` represents state before MS2.0 command interface refactoring
+- Current: `gemm/` implements new microcode architecture with fixed command interface
+- This fix ensures DISPATCH operation completes correctly under new architecture
+
+### Impact Assessment
+
+**Functional Validation**:
+- ✅ All 9 simulation test configurations now passing (100%)
+- ✅ Compute engine verified correct in standalone tests (8/8)
+- ✅ Full system integration validated with proper data path operation
+- Test configurations: B1_C1_V{1,2,4,8,16,32,64,128}, B2_C2_V2, B4_C4_V4, B8_C8_V16, B1_C128_V1, B128_C1_V1
+
+**Code Quality**:
+- Minimal change: 4 new lines (valid signal declarations + assignments)
+- Clean fix: Addresses pipeline hazard at architectural level
+- No workarounds: Proper handling of BRAM read latency
+
+**Hardware Implications**:
+- Critical for production: Missing writes would cause silent data corruption
+- Affects all matrix sizes: Small matrices pass by luck, large matrices fail
+- FPGA build required: RTL changes need hardware validation
+
+### Next Steps
+
+1. **Hardware Validation**: Build bitstream and test on VectorPath 815 board
+2. **Performance Testing**: Verify timing closure with additional pipeline stage
+3. **Documentation**: Update architecture diagrams showing pipeline stages
 
 ---
 
-### Performance Impact
+## [2025-10-24] - Major RTL Cleanup - Debugging Workarounds Removed
 
-**BRAM Usage** (Phase 1 - 16 tiles):
-- Per-tile: 512 lines × (256-bit mantissa + 8-bit exp) × 2 (left/right) = 33 KB/tile
-- Total tiles: 16 × 33 KB = 528 KB
-- Dispatcher: 2048 lines × 256-bit × 2 = 1 MB
-- **Total L1+L2**: ~1.5 MB (40% of available BRAM)
+**Timestamp**: Fri Oct 24 09:30:00 PDT 2025
+**Status**: [COMPLETE] **PRODUCTION-READY RTL** - Removed 256 lines of debugging workarounds, 10/10 simulation tests passing
 
-**Timing**: TBD after synthesis
+### Summary
+
+Completed two rounds of systematic RTL cleanup, removing debugging artifacts and unused logic while maintaining 100% test pass rate. Eliminated SETTLE states, simplified ID tracking, removed unused registers, and cleaned up temporal comments. Code is significantly cleaner and ready for hardware validation.
+
+### Changes Made
+
+#### Round 1: Aggressive Debugging Workaround Removal
+**Files**: `master_control.sv`, `dispatcher_control.sv`, `compute_engine_modular.sv`, `gfp8_nv_dot.sv`
+
+- **Removed 3 SETTLE States**: ST_SETTLE_FETCH, ST_SETTLE_DISP, ST_SETTLE_TILE (40 lines)
+  - Removed settle_count_reg and SETTLE_CYCLES parameter
+  - Removed entire settle counter management block (~30 lines)
+  - Simplified state transitions: WAIT_FETCH → CMD_COMPLETE (direct, no settling)
+
+- **Simplified ID Tracking**: Removed complex HYBRID mode logic (66 lines)
+  - Removed 6 registers: executing_disp_id_reg, executing_tile_id_reg, disp_id_captured_reg, tile_id_captured_reg, disp_auto_increment_mode, tile_auto_increment_mode
+  - Replaced with direct assignment: `last_disp_id_reg <= cmd_id_reg`
+  - Reduced from capture/mode/increment logic to simple state-driven updates
+
+- **Cleanup Per File**:
+  - `master_control.sv`: 175 lines removed (20.8% reduction)
+  - `dispatcher_control.sv`: 2 lines (reverted o_disp_done, removed comments)
+  - `compute_engine_modular.sv`: 1 line (removed commented assignment)
+  - `gfp8_nv_dot.sv`: 20 lines (removed commented generate block)
+
+- **Testing**: ✅ 10/10 simulation tests PASSED
+
+#### Round 2: Incremental Comment and Logic Cleanup
+**Files**: `dispatcher_control.sv`, `master_control.sv`
+
+**Comment Cleanup** (no testing required):
+- Removed "NEW:" temporal comment markers (4 instances across files)
+- Removed 35-line commented-out DISP processing block (dispatcher_control.sv)
+- Removed commented ST_WAIT_DONE state handlers (11 lines, master_control.sv)
+
+**Logic Cleanup** (tested):
+- Removed unused DISP registers (dispatcher_control.sv):
+  - `disp_addr_reg`, `disp_len_reg`, `disp_man_4b_reg` (write-only, only used for debug display)
+  - Updated debug message to simple acknowledgment
+  - **Result**: 55 lines removed (7.9% reduction)
+
+- Removed redundant command tracking (master_control.sv):
+  - `cmd_len_reg` - unused in fixed 4-word architecture
+  - `payload_count_reg` - state machine tracks position implicitly
+  - Removed 2 declarations, 2 reset assignments, 7 signal assignments
+  - **Result**: 15 lines removed
+
+- **Testing**: ✅ 10/10 simulation tests PASSED after logic changes
+
+### Impact Assessment
+
+**Code Quality**:
+- Total lines removed: 256 (198 + 58 from two rounds)
+- master_control.sv: 840 → 639 lines (-23.9%)
+- dispatcher_control.sv: 699 → 644 lines (-7.9%)
+- Significantly improved readability and maintainability
+- Production-ready codebase without debugging artifacts
+
+**Functional Validation**:
+- All 10 simulation test configurations passing (100%)
+- Test suite expanded from 9 to 10 tests
+- Configurations: B1_C1_V{1,2,4,8,16,32,64,128}, B2_C2_V2, B4_C4_V4
+- Incremental testing after each cleanup round ensured no regressions
+
+**Backups Created**:
+- `master_control.sv.backup` (840 lines)
+- `dispatcher_control.sv.backup` (699 lines)
+- `compute_engine_modular.sv.backup` (232 lines)
+- `gfp8_nv_dot.sv.backup` (278 lines)
+
+### Documentation Updates
+
+- **STATUS.md**: Completely rewritten to reflect Oct 24 cleanup success (removed outdated Oct 22 sim/hw mismatch report)
+- **CHANGELOG.md**: This entry added
+- **README.md**: Pending update (test count 9→10, date)
+- **CLAUDE.md**: Pending update (paths, test count, date)
+
+### Hardware Validation
+
+**Status**: ⏳ Build in progress
+**Next**: Flash and run `test_ms2_gemm_full` to validate cleanup on hardware
+**Expected**: All tests should pass with cleaned-up RTL (SETTLE states and complex ID tracking were debugging artifacts)
 
 ---
 
-### Known Issues
+## [2025-10-20] - Simulation Test Suite Cleanup and Baseline Reference
 
-None - compilation clean, ready for testing.
+**Timestamp**: Mon Oct 20 21:02:35 PDT 2025
+**Status**: [COMPLETE] **BASELINE REFERENCE** - Simulation test suite cleaned up, professional logging added, documentation streamlined
+
+### Summary
+
+Established `gemm_simple/` as clean baseline reference for MS2.0 GEMM engine with complete simulation validation (9/9 tests passing) and professional development infrastructure. Archived 13 obsolete status/debug documents, enhanced simulation logging, and updated core documentation.
+
+### Changes Made
+
+#### Simulation Test Suite Improvements (`sim/vector_system_test/`)
+- **Professional Logging**: All compilation and simulation output redirected to `sim.log` (34MB detailed output)
+- **Clean Terminal**: Progress indicators only, automatic test summary extraction
+- **New Makefile Targets**:
+  - `make summary` - Display test results summary from sim.log
+  - `make view-log` - View full simulation log with less
+  - `make help` - Comprehensive help message
+- **Updated Documentation**: README.md with Makefile targets table, logging section, Oct 20 status
+- **Test Results**: 9/9 tests passing (100%) - B1_C1_V1 through B1_C1_V128
+
+#### Documentation Cleanup
+**Archived** (13 files):
+- Root: `MULTITILE_TEST_STATUS.md` → `docs/archive_oct20_baseline/`
+- Docs: `CLEANUP_VERIFICATION.md` → `docs/archive_oct20_baseline/`
+- Sim: 8 historical test result documents → `sim/archive_oct20_baseline/`
+  - FP16_ROUNDING_FIX_RESULTS.md
+  - MLP_PRIMITIVE_CONFIGURATION.md
+  - MLP_SIMULATION_SUCCESS.md
+  - ROOT_CAUSE_ANALYSIS.md
+  - SIMULATION_RESULTS_SUMMARY.md
+  - SIMULATION_TEST_RESULTS_FINAL.md
+  - SIM_CLEANUP_OCT14_SUMMARY.md
+  - TEST_COMPARISON.md
+
+**Deleted** (3 files):
+- `sim/engine_gddr6_test/STATUS.md` (obsolete status)
+- `sim/gfp8_group_dot/PRIMITIVE_VERIFICATION.md` (obsolete)
+- `sim/gfp8_group_dot/SIMULATION_ANALYSIS.md` (obsolete)
+
+**Updated** (3 files):
+- `CLAUDE.md` - Added simulation status (9/9 passing), updated timestamp, added sim/vector_system_test reference
+- `README.md` - Updated timestamp and validation status
+- `CHANGELOG.md` - This entry
+
+### Impact Assessment
+
+**Organization**: Clean baseline reference with only current, accurate documentation
+**Simulation**: Professional logging infrastructure for future development
+**Testing**: Complete validation suite with 100% pass rate
+**Documentation**: Single source of truth - CLAUDE.md, README.md, CHANGELOG.md
 
 ---
 

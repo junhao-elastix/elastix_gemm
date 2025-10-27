@@ -142,17 +142,58 @@ module gfp8_to_fp16 (
             
             // Handle exponent range
             // FP16 exponent field: 0 = denormal/zero, 1-30 = normal, 31 = inf/NaN
-            if (fp16_exp_signed <= 0) begin
-                // Underflow to zero
+            //
+            // DENORMAL SUPPORT:
+            // When fp16_exp_signed < 1, the value is in the denormal range.
+            // FP16 denormals: exp_field=0, value = 0.mantissa × 2^(-14)
+            // Minimum denormal: 2^(-24) (mantissa=1)
+            //
+            // For denormals, we need to denormalize by right-shifting the mantissa
+            // by (1 - fp16_exp_signed) positions.
+            if (fp16_exp_signed < -10) begin
+                // Below minimum FP16 denormal (mantissa would be shifted out completely)
+                // Minimum denormal needs at least 1 bit in 10-bit mantissa
+                // With fp16_exp_signed = 0, we shift by 1, so limit is -10
                 fp16_next = 16'h0000;
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d <= 0 → 0x0000", $time, fp16_exp_signed);
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d < -10 -> 0x0000", $time, fp16_exp_signed);
+                `endif
+            end else if (fp16_exp_signed < 1) begin
+                // DENORMAL RANGE: 0 >= fp16_exp_signed >= -10
+                // Denormalize mantissa by right-shifting
+                automatic integer denorm_shift;
+                automatic logic [31:0] denorm_mantissa;
+                automatic logic [9:0] mant_truncated_denorm;
+                automatic logic round_bit_denorm;
+                automatic logic sticky_bit_denorm;
+                automatic logic [9:0] mant_rounded_denorm;
+
+                denorm_shift = 1 - fp16_exp_signed;  // Shift amount (1 to 11)
+                denorm_mantissa = abs_mantissa >> denorm_shift;
+
+                // Extract mantissa and rounding bits from denormalized value
+                mant_truncated_denorm = denorm_mantissa[30:21];
+                round_bit_denorm = denorm_mantissa[20];
+                sticky_bit_denorm = |denorm_mantissa[19:0];
+
+                // IEEE 754 round-to-nearest-even for denormals
+                if (round_bit_denorm && (sticky_bit_denorm || mant_truncated_denorm[0])) begin
+                    mant_rounded_denorm = mant_truncated_denorm + 10'd1;
+                    fp16_mant = mant_rounded_denorm[9:0];  // Denormals don't carry into exponent
+                end else begin
+                    fp16_mant = mant_truncated_denorm;
+                end
+
+                fp16_next = {sign, 5'b00000, fp16_mant};  // exp_field = 0 for denormals
+                `ifdef SIM_VERBOSE
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t DENORMAL: fp16_exp_signed=%0d, shift=%0d, mant=0x%03x -> fp16=0x%04x",
+                         $time, fp16_exp_signed, denorm_shift, fp16_mant, {sign, 5'b00000, fp16_mant});
                 `endif
             end else if (fp16_exp_signed > 30) begin
                 // Overflow to infinity
                 fp16_next = {sign, 5'b11111, 10'b0000000000};
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 → 0x%04x (INF)", 
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 -> 0x%04x (INF)", 
                          $time, fp16_exp_signed, {sign, 5'b11111, 10'b0000000000});
                 `endif
             end else begin
@@ -177,13 +218,13 @@ module gfp8_to_fp16 (
                         fp16_exp = fp16_exp + 5'd1;
                         fp16_mant = 10'b0000000000;
                         `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND OVERFLOW: mant=%0d → exp++, mant=0", 
+                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND OVERFLOW: mant=%0d -> exp++, mant=0", 
                                  $time, mant_truncated);
                         `endif
                     end else begin
                         fp16_mant = mant_rounded[9:0];
                         `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND UP: mant=0x%03x → 0x%03x (rb=%b, sb=%b)", 
+                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND UP: mant=0x%03x -> 0x%03x (rb=%b, sb=%b)", 
                                  $time, mant_truncated, mant_rounded, round_bit, sticky_bit);
                         `endif
                     end
@@ -198,7 +239,7 @@ module gfp8_to_fp16 (
                 
                 fp16_next = {sign, fp16_exp, fp16_mant};
                 `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x → fp16=0x%04x", 
+                if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x -> fp16=0x%04x", 
                          $time, fp16_exp, fp16_mant, {sign, fp16_exp, fp16_mant});
                 `endif
             end
