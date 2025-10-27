@@ -6,7 +6,7 @@
 //  - Instantiates engine_top (DUT)
 //  - Instantiates tb_memory_model (GDDR6 emulation)
 //  - Uses tb_ucode_gen_pkg for command generation
-//  - Test sequence: FETCH → FETCH → DISP → TILE → WAIT
+//  - Test sequence: FETCH -> FETCH -> DISPATCH -> WAIT_DISPATCH -> TILE -> WAIT_TILE
 //  - Result verification with FP16 output checking
 //
 // Test Flow:
@@ -37,24 +37,6 @@ module tb_engine_top;
     localparam AXI_ADDR_WIDTH = 42;  // 42-bit for GDDR6 NoC addressing
     localparam GDDR6_PAGE_ID = 9'd2;  // Channel 1 page ID
 
-    // Test configuration parameters (can be overridden via +define)
-    `ifdef TEST_B
-        localparam int TEST_B = `TEST_B;
-    `else
-        localparam int TEST_B = 4;
-    `endif
-
-    `ifdef TEST_C
-        localparam int TEST_C = `TEST_C;
-    `else
-        localparam int TEST_C = 4;
-    `endif
-
-    `ifdef TEST_V
-        localparam int TEST_V = `TEST_V;
-    `else
-        localparam int TEST_V = 32;
-    `endif
 
     // ===================================================================
     // Clock and Reset
@@ -64,6 +46,9 @@ module tb_engine_top;
 
     initial begin
         clk = 1'b0;
+        $display("========================================");
+        $display("TB_ENGINE_TOP: COMMAND FORMAT FIX APPLIED - VERSION 2.9.1");
+        $display("========================================");
         forever #(CLK_PERIOD/2) clk = ~clk;
     end
 
@@ -95,7 +80,7 @@ module tb_engine_top;
     logic [3:0]   mc_state;
     logic [3:0]   mc_state_next;
     logic [3:0]   dc_state;
-    logic [3:0]   ce_state [0:15];  // Per-tile state array for NUM_TILES=16
+    logic [3:0]   ce_state;
     logic [cmd_op_width_gp-1:0] last_opcode;
     logic [9:0]   bram_wr_count;
     logic [15:0]  result_count;
@@ -172,67 +157,17 @@ module tb_engine_top;
     );
 
     // ===================================================================
-    // DEBUG: Continuous State Monitoring
-    // ===================================================================
-    logic [3:0] mc_state_prev;
-    logic [3:0] dc_state_prev;
-    logic [3:0] ce_state_prev;
-
-    initial mc_state_prev = 4'hF;
-    initial dc_state_prev = 4'hF;
-    initial ce_state_prev = 4'hF;
-
-    always @(posedge clk) begin
-        if (mc_state != mc_state_prev) begin
-            $display("[STATE] @%0t MC: 0x%1h → 0x%1h (busy=%b, opcode=0x%02x)",
-                     $time, mc_state_prev, mc_state, engine_busy, last_opcode);
-            mc_state_prev <= mc_state;
-        end
-
-        if (dc_state != dc_state_prev) begin
-            $display("[STATE] @%0t DC: 0x%1h → 0x%1h (wr_cnt=%0d)",
-                     $time, dc_state_prev, dc_state, bram_wr_count);
-            dc_state_prev <= dc_state;
-        end
-
-        if (ce_state[0] != ce_state_prev) begin
-            $display("[STATE] @%0t CE[0]: 0x%1h → 0x%1h (result_cnt=%0d)",
-                     $time, ce_state_prev, ce_state[0], result_count);
-            ce_state_prev <= ce_state[0];
-        end
-
-        // Monitor result FIFO status
-        if (result_fifo_count > 0) begin
-            $display("[FIFO] @%0t Result FIFO: count=%0d (empty=%b)",
-                     $time, result_fifo_count, result_fifo_empty);
-        end
-    end
-
-    // ===================================================================
     // Test Control Variables
     // ===================================================================
     integer cmd_idx;
     integer result_idx;
     integer timeout_count;
     integer watchdog;
-
+    
     // Test status
     integer total_tests = 0;
     integer passed_tests = 0;
     integer failed_tests = 0;
-    
-    // Log file handle
-    integer test_log_file;
-    
-    // ===================================================================
-    // Logging Functions
-    // ===================================================================
-    function void log_message(string message);
-        $display("%s", message);
-        if (test_log_file != 0) begin
-            $fdisplay(test_log_file, "%s", message);
-        end
-    endfunction
 
     // ===================================================================
     // Golden Reference Storage
@@ -253,32 +188,22 @@ module tb_engine_top;
     } test_config_t;
 
     test_config_t test_configs[] = '{
-        // DEBUG: Focus on B4_C4_V32 only
-        // '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},
-        // '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},
-        // '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},
-        // '{B: 2, C: 2, V: 64,   name: "B2_C2_V64"},
-        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"}
-        // '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
-        // '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
-        // '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
-        // '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
+        '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},   // Simplest case first
+        '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},   // Small symmetric
+        '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},   // Medium symmetric
+        '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}, // Max vector length
+        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},  // Larger test
+        '{B: 2, C: 2, V: 64,  name: "B2_C2_V64"},  // High V
+        '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},  // Larger B,C
+        '{B: 1, C: 128, V: 1, name: "B1_C128_V1"}, // Max columns
+        '{B: 128, C: 1, V: 1, name: "B128_C1_V1"}  // Max batch
+        // '{B: 16, C: 16, V: 8, name: "B16_C16_V8"} // Commented: very large
     };
 
     // ===================================================================
     // Main Test Sequence
     // ===================================================================
     initial begin
-        // Initialize log file
-        test_log_file = $fopen("/home/dev/Dev/elastix_gemm/gemm/sim/vector_system_test/test_results.log", "w");
-        if (test_log_file == 0) begin
-            $display("[TB] WARNING: Could not open test log file");
-        end else begin
-            $fdisplay(test_log_file, "MS2.0 GEMM Engine Test Results Log");
-            $fdisplay(test_log_file, "Generated: %t", $time);
-            $fdisplay(test_log_file, "================================================================================\n");
-        end
-        
         $display("\n================================================================================");
         $display("TB: MS2.0 GEMM Engine Top Testbench - FIFO Interface");
         $display("================================================================================\n");
@@ -316,24 +241,6 @@ module tb_engine_top;
             $display("STATUS: %0d TESTS FAILED", failed_tests);
         end
         $display("================================================================================\n");
-        
-        // Close log file
-        if (test_log_file != 0) begin
-            $fdisplay(test_log_file, "\n================================================================================");
-            $fdisplay(test_log_file, "TEST SUMMARY");
-            $fdisplay(test_log_file, "================================================================================");
-            $fdisplay(test_log_file, "Total Tests: %0d", total_tests);
-            $fdisplay(test_log_file, "Passed:      %0d", passed_tests);
-            $fdisplay(test_log_file, "Failed:      %0d", failed_tests);
-            if (failed_tests == 0) begin
-                $fdisplay(test_log_file, "STATUS: ALL TESTS PASSED");
-            end else begin
-                $fdisplay(test_log_file, "STATUS: %0d TESTS FAILED", failed_tests);
-            end
-            $fdisplay(test_log_file, "================================================================================");
-            $fclose(test_log_file);
-            $display("[TB] Test results logged to: test_results.log");
-        end
 
         $finish;
     end
@@ -357,8 +264,8 @@ module tb_engine_top;
         total_tests++;
         
         $display("\n[TB] ====================================================================");
-        log_message($sformatf("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
-                total_tests, test_name, config_B, config_C, config_V));
+        $display("[TB] TEST %0d: Running configuration %s (B=%0d, C=%0d, V=%0d)",
+                 total_tests, test_name, config_B, config_C, config_V);
         $display("[TB] ====================================================================");
 
         // Load golden reference
@@ -425,19 +332,19 @@ module tb_engine_top;
                 
                 // Check for X/Z states (uninitialized values)
                 if ($isunknown(fp16_hw)) begin
-                    log_message($sformatf("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d]", 
-                            fp16_hw, results_seen));
+                    $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d]", 
+                            fp16_hw, results_seen);
                     mismatches++;
                 end else begin
                     diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
                     
                     if (diff > 2) begin
-                        log_message($sformatf("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                                results_seen, fp16_hw, golden, diff));
+                        $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
+                                results_seen, fp16_hw, golden, diff);
                         mismatches++;
                     end else begin
-                        // log_message($sformatf("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                        //         results_seen, fp16_hw, golden, diff));
+                        $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
+                                results_seen, fp16_hw, golden, diff);
                     end
                 end
                 
@@ -446,19 +353,19 @@ module tb_engine_top;
         end
 
         if (timeout_count >= watchdog) begin
-            log_message($sformatf("[TB] ERROR: Result wait timeout! Expected %0d, got %0d",
-                     expected_results, results_seen));
+            $display("[TB] ERROR: Result wait timeout! Expected %0d, got %0d",
+                     expected_results, results_seen);
         end else begin
-            log_message($sformatf("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count));
+            $display("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count);
         end
 
         // Test verdict
         if (mismatches == 0 && results_seen == expected_results) begin
-            log_message($sformatf("[TB] PASS: %s - All %0d results matched!", test_name, results_seen));
+            $display("[TB] PASS: %s - All %0d results matched!", test_name, results_seen);
             passed_tests++;
         end else begin
-            log_message($sformatf("[TB] FAIL: %s - %0d mismatches, %0d/%0d results /n",
-                     test_name, mismatches, results_seen, expected_results));
+            $display("[TB] FAIL: %s - %0d mismatches, %0d/%0d results",
+                     test_name, mismatches, results_seen, expected_results);
             failed_tests++;
         end
 
@@ -501,25 +408,51 @@ module tb_engine_top;
         cmd_seq[idx++] = fetch_right_cmd[2];
         cmd_seq[idx++] = fetch_right_cmd[3];
 
-        // DISPATCH (Phase 1: Copy 512 lines from aligned buffers to tile[0])
-        // Source: dispatcher_bram aligned buffers [0-511] (NOT packed 528-line block!)
-        // Dest: tile_bram[0] starting at address 0
-        generate_disp_command(2, 0, 512, 1'b0, disp_cmd);
+        // DISPATCH triggers DISP_COPY: dispatcher_bram → tile_bram
+        // man_nv_cnt = 128 (full dispatcher_bram capacity: 128 NVs × 4 lines = 512 mantissa lines)
+        // V parameter tells compute engine how many groups to USE, not how many to DISPATCH
+        generate_disp_command(
+            2,              // id
+            128,            // man_nv_cnt: Total NVs in dispatcher_bram (always full capacity)
+            V,              // ugd_vec_size: NVs per UGD vector (matches test V parameter)
+            16'd0,          // tile_addr: Start of tile BRAM
+            1'b0,           // man_4b: 8-bit mantissa mode
+            16'h0001,       // col_en: Single-tile mode (only tile 0 enabled)
+            6'd0,           // col_start: Distribution starts at column 0
+            1'b0,           // broadcast: Reserved (tied to 0)
+            disp_cmd
+        );
         cmd_seq[idx++] = disp_cmd[0];
         cmd_seq[idx++] = disp_cmd[1];
         cmd_seq[idx++] = disp_cmd[2];
         cmd_seq[idx++] = disp_cmd[3];
 
         // WAIT_DISPATCH
-        generate_wait_disp_command(2, wait_disp_cmd);  // Wait for DISPATCH ID=2
+        generate_wait_disp_command(3, 2, wait_disp_cmd);
         cmd_seq[idx++] = wait_disp_cmd[0];
         cmd_seq[idx++] = wait_disp_cmd[1];
         cmd_seq[idx++] = wait_disp_cmd[2];
         cmd_seq[idx++] = wait_disp_cmd[3];
 
         // TILE (matrix multiply)
-        // NEW: With two-BRAM organization, both left and right address spaces start at 0
-        generate_tile_command(4, 0, 0, B, C, V, tile_cmd);
+        // tile_bram structure: Separate address spaces (like dispatcher_bram)
+        //   - man_left:  [0:511] × 256-bit
+        //   - man_right: [0:511] × 256-bit
+        //   - exp_left:  [0:511] × 8-bit
+        //   - exp_right: [0:511] × 8-bit
+        generate_tile_command(
+            4,              // id
+            0,              // left_addr: Start of left matrix (separate address space)
+            0,              // right_addr: Start of right matrix (separate address space)
+            B,              // dim_b: Batch dimension
+            C,              // dim_c: Column dimension
+            V,              // dim_v: Vector size
+            16'h0001,       // col_en: Single-tile mode (only tile 0 enabled)
+            1'b0,           // left_4b: 8-bit mantissa
+            1'b0,           // right_4b: 8-bit mantissa
+            1'b0,           // main_loop_left: Main loop over right dimension
+            tile_cmd
+        );
         cmd_seq[idx++] = tile_cmd[0];
         cmd_seq[idx++] = tile_cmd[1];
         cmd_seq[idx++] = tile_cmd[2];
@@ -542,87 +475,98 @@ module tb_engine_top;
         input logic [7:0] id,
         input logic [link_addr_width_gp-1:0] start_addr,
         input logic [link_len_width_gp-1:0] num_lines,
-        input logic fetch_right,  // NEW: 0=left, 1=right
+        input logic fetch_right,  // 0=left, 1=right
         output logic [31:0] cmd [0:3]
     );
-        cmd_fetch_s payload;
-        
-        // Pack using structure for correct bit alignment
-        payload.start_addr = start_addr;
-        payload.len = num_lines;
-        payload.fetch_right = fetch_right;  // NEW: Set target
-        payload.reserved = '0;
-        
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        cmd[0] = {16'd12, id, e_cmd_op_fetch};
-        cmd[1] = payload[31:0];    // start_addr
-        cmd[2] = payload[63:32];   // len in upper 16 bits, fetch_right bit, reserved
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // SPEC-COMPLIANT FETCH command (SINGLE_ROW_REFERENCE.md)
+        // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
+        // Word 1: start_addr[31:0]
+        // Word 2: {16'b0, len[15:0]}
+        // Word 3: {31'b0, fetch_right}
+
+        // Use bit shifts to avoid concatenation issues
+        cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_fetch};
+        cmd[1] = start_addr[31:0];                 // Word 1: Address
+        cmd[2] = {16'b0, num_lines[15:0]};         // Word 2: Length only
+        cmd[3] = {31'b0, fetch_right};             // Word 3: fetch_right in bit[0]
+        $display("[GEN_FETCH_DEBUG] Generated cmd[0]=0x%08x (should be 0x00100%02xF0)", cmd[0], id);
     endtask
 
     task automatic generate_disp_command(
         input logic [7:0] id,
-        input logic [tile_mem_addr_width_gp-1:0] disp_addr,
-        input logic [tile_mem_addr_width_gp-1:0] disp_len,
+        input logic [7:0] man_nv_cnt,      // NEW: Total NVs to dispatch
+        input logic [7:0] ugd_vec_size,    // NEW: NVs per UGD vector
+        input logic [15:0] tile_addr,      // Expanded to 16 bits
         input logic man_4b,
+        input logic [15:0] col_en,         // NEW: Column enable mask
+        input logic [5:0] col_start,       // NEW: Distribution start column
+        input logic broadcast,             // NEW: Reserved (tied to 0)
         output logic [31:0] cmd [0:3]
     );
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        cmd[0] = {16'd8, id, e_cmd_op_disp};
-        cmd[1] = {man_4b, 10'b0, disp_len, disp_addr};
-        cmd[2] = 32'h00000000;     // Unused payload word 2
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // SPEC-COMPLIANT DISPATCH command (SINGLE_ROW_REFERENCE.md)
+        // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
+        // Word 1: {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
+        // Word 2: {16'b0, tile_addr[15:0]}
+        // Word 3: {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b}
+
+        cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_disp};
+        cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]};   // Word 1
+        cmd[2] = {16'b0, tile_addr[15:0]};                            // Word 2
+        cmd[3] = {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b};  // Word 3
     endtask
 
     task automatic generate_wait_disp_command(
-        input logic [7:0] wait_id,  // ID to wait for (goes in header ID field)
+        input logic [7:0] id,
+        input logic [7:0] wait_id,
         output logic [31:0] cmd [0:3]
     );
-        // WAIT_DISPATCH: wait_id goes in header bits [15:8] per MS2.0 spec
-        // Header format: {len[31:16], wait_id[15:8], opcode[7:0]}
-        cmd[0] = {16'd4, wait_id, e_cmd_op_wait_disp};
-        cmd[1] = 32'h00000000;     // Unused payload word 1
-        cmd[2] = 32'h00000000;     // Unused payload word 2
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // SPEC-COMPLIANT WAIT_DISPATCH command (SINGLE_ROW_REFERENCE.md)
+        // All commands use 16-byte (4-word) format
+        // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
+        // Word 1: {24'b0, wait_id[7:0]}
+        // Word 2-3: Reserved
+
+        cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_wait_disp};
+        cmd[1] = {24'd0, wait_id[7:0]};             // wait_id in bits [7:0]
+        cmd[2] = 32'h00000000;                      // Reserved
+        cmd[3] = 32'h00000000;                      // Reserved
     endtask
 
     task automatic generate_tile_command(
         input logic [7:0] id,
-        input logic [tile_mem_addr_width_gp-1:0] left_addr,
-        input logic [tile_mem_addr_width_gp-1:0] right_addr,
+        input int left_addr,                 // FIXED: Use int for proper width handling
+        input int right_addr,                // FIXED: Use int for proper width handling
         input int dim_b,
         input int dim_c,
         input int dim_v,
+        input logic [15:0] col_en,           // Column enable mask (single-tile: 0x0001)
+        input logic left_4b,                 // Left mantissa width (0=8b, 1=4b)
+        input logic right_4b,                // Right mantissa width (0=8b, 1=4b)
+        input logic main_loop_left,          // Main loop dimension (0=right, 1=left)
         output logic [31:0] cmd [0:3]
     );
-        cmd_header_s header;
-        cmd_tile_s payload;
-        
-        // Pack header
-        header.op       = e_cmd_op_tile;
-        header.id       = id;
-        header.len      = cmd_tile_len_gp;
-        header.reserved = 8'h00;
-        
-        // Pack payload using structure (automatic bit width handling)
-        payload.left_addr      = left_addr;
-        payload.right_addr     = right_addr;
-        payload.left_ugd_len   = 11'd1;      // Default: 1 unified group dot
-        payload.right_ugd_len  = 11'd1;
-        payload.vec_len        = dim_v[10:0];
-        payload.dim_b          = dim_b[7:0];
-        payload.dim_c          = dim_c[7:0];
-        payload.dim_v          = dim_v[7:0];
-        payload.flags.left_man_4b        = 1'b0;
-        payload.flags.right_man_4b       = 1'b0;
-        payload.flags.main_loop_over_left = 1'b0;
-        payload.flags.reserved            = '0;
-        
-        // Output words (87 bits needs 3 words, padded to 96 bits)
-        cmd[0] = header;
-        cmd[1] = payload[31:0];              // Bits [31:0]
-        cmd[2] = payload[63:32];             // Bits [63:32]
-        cmd[3] = {9'b0, payload[86:64]};     // Bits [86:64], zero-padded
+        // SPEC-COMPLIANT MATMUL command (SINGLE_ROW_REFERENCE.md)
+        // Uses updated cmd_tile_s structure from gemm_pkg.sv
+
+        // Convert addresses to 16-bit (spec-compliant)
+        logic [15:0] left_addr_16  = left_addr[15:0];
+        logic [15:0] right_addr_16 = right_addr[15:0];
+
+        // Convert dimensions to 8-bit UGD lengths
+        logic [7:0] left_ugd_len  = dim_b[7:0];   // Batch dimension
+        logic [7:0] right_ugd_len = dim_c[7:0];   // Column dimension
+        logic [7:0] vec_len       = dim_v[7:0];   // Vector size (NVs per UGD vector)
+
+        // Pack according to cmd_tile_s structure:
+        // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
+        // Word 1: {left_addr[15:0], right_addr[15:0]}
+        // Word 2: {reserved2[7:0], left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
+        // Word 3: {col_en[15:0], reserved[12:0], left_4b, right_4b, main_loop_left}
+
+        cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_tile};
+        cmd[1] = {left_addr_16, right_addr_16};                                 // Addresses
+        cmd[2] = {8'b0, left_ugd_len, right_ugd_len, vec_len};                 // Dimensions
+        cmd[3] = {col_en, 13'b0, left_4b, right_4b, main_loop_left};          // Flags + col_en
     endtask
 
     task automatic generate_wait_tile_command(
@@ -630,11 +574,16 @@ module tb_engine_top;
         input logic [7:0] wait_id,
         output logic [31:0] cmd [0:3]
     );
-        // All commands are 4 words: header + 3 payload words (unused words are 0)
-        cmd[0] = {wait_id, 8'd0, id, e_cmd_op_wait_tile};
-        cmd[1] = 32'h00000000;     // Unused payload word 1
-        cmd[2] = 32'h00000000;     // Unused payload word 2
-        cmd[3] = 32'h00000000;     // Unused payload word 3
+        // SPEC-COMPLIANT WAIT_MATMUL command (SINGLE_ROW_REFERENCE.md)
+        // All commands use 16-byte (4-word) format
+        // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
+        // Word 1: {24'b0, wait_id[7:0]}
+        // Word 2-3: Reserved
+
+        cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_wait_tile};
+        cmd[1] = {24'd0, wait_id[7:0]};             // wait_id in bits [7:0]
+        cmd[2] = 32'h00000000;                      // Reserved
+        cmd[3] = 32'h00000000;                      // Reserved
     endtask
 
     // ===================================================================

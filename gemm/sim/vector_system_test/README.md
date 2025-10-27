@@ -1,21 +1,44 @@
 # Vector System Test - Engine Top Testbench
 
-**Status**: ✅ **ALL TESTS PASSING** (8/8)  
-**Last Validated**: Sun Oct 12 18:38 PDT 2025
+**Status**: ✅ **ALL TESTS PASSING** (9/9)
+**Last Validated**: Mon Oct 20 20:39 PDT 2025
 
 ## Overview
 
 SystemVerilog testbench for validating the MS2.0 GEMM engine with direct FIFO interface.
 Tests various B×C×V configurations with hardware-accurate GFP8 computation.
 
+**New Feature**: All compilation and simulation output is logged to `sim.log` for clean terminal operation.
+
 ## Quick Start
 
 ```bash
-# Clean and run all tests
-make -f Makefile.engine_top clean && make -f Makefile.engine_top run
+# Clean and run all tests (output logged to sim.log)
+make clean && make run
 
-# Expected output: STATUS: ALL TESTS PASSED
+# View test summary
+make summary
+
+# View full log
+make view-log
+
+# Get help
+make help
 ```
+
+**Expected Output**: Test summary with STATUS: ALL TESTS PASSED
+
+## Makefile Targets
+
+| Target | Description |
+|--------|-------------|
+| `make` or `make run` | Clean, compile, and run all tests (outputs to sim.log) |
+| `make compile` | Compile only (no simulation) |
+| `make summary` | Display test results summary from sim.log |
+| `make view-log` | View full simulation log (sim.log) |
+| `make debug` | Run simulation with GUI |
+| `make clean` | Remove all generated files |
+| `make help` | Show detailed help message |
 
 ## Test Configurations
 
@@ -23,24 +46,26 @@ make -f Makefile.engine_top clean && make -f Makefile.engine_top run
 |------|--------|---------|-------------|
 | 1 | B=1, C=1, V=1 | 1 | Single output |
 | 2 | B=2, C=2, V=2 | 4 | Small matrix |
-| 3 | B=8, C=8, V=16 | 64 | Medium matrix |
-| 4 | B=2, C=64, V=2 | 128 | Wide matrix |
-| 5 | B=4, C=2, V=2 | 8 | Tall matrix |
-| 6 | B=4, C=32, V=4 | 128 | Wide with V-loop |
-| 7 | B=4, C=4, V=32 | 16 | Large V-loop |
-| 8 | B=128, C=1, V=1 | 128 | Maximum batch |
+| 3 | B=4, C=4, V=4 | 16 | Small matrix |
+| 4 | B=2, C=2, V=64 | 4 | Large V-loop |
+| 5 | B=4, C=4, V=32 | 16 | Medium V-loop |
+| 6 | B=8, C=8, V=16 | 64 | Medium matrix |
+| 7 | B=1, C=128, V=1 | 128 | Wide matrix |
+| 8 | B=128, C=1, V=1 | 128 | Tall matrix (maximum batch) |
+| 9 | B=1, C=1, V=128 | 1 | Maximum V-loop |
 
 ## Files
 
 ### Active Files
-- **Makefile.engine_top** - Primary build script
+- **Makefile** - Primary build script with logging support
 - **tb_engine_top.sv** - Main testbench with continuous FIFO draining
 - **library.cfg** - Simulator library configuration
-- **left.hex, right.hex** - Test input matrices (from /home/dev/Dev/compute_engine_w8a8/hex/)
 
-### Generated Files (can be cleaned)
+### Generated Files (cleaned with `make clean`)
+- **sim.log** - Complete compilation and simulation log (all verbose output)
 - **work/** - Simulation working directory
 - **dataset.asdb** - Simulation dataset
+- **sim_debug.log** - Debug GUI log (when using `make debug`)
 
 ### Archived Files
 - **archive_debug_notes/** - Obsolete debugging files from Oct 2025 validation session
@@ -82,23 +107,51 @@ Generated using `/home/dev/Dev/compute_engine_w8a8/hex/hardware_gfp_reference.py
 4. Continuously read and verify results from result_fifo
 5. Report pass/fail with mismatch count
 
+## Logging and Output
+
+All compilation and simulation output is automatically logged to `sim.log`:
+- **Compilation warnings/errors**: Captured during vlog phase
+- **Simulation messages**: All $display statements and debug output
+- **Test results**: Individual test PASS/FAIL and final summary
+
+### Viewing Results
+
+```bash
+# Quick summary (recommended)
+make summary
+
+# Full log (for debugging)
+make view-log
+
+# Search for specific patterns
+grep "ERROR\|WARNING" sim.log
+grep "MISMATCH" sim.log
+```
+
 ## Troubleshooting
 
 ### All Tests Pass
-✅ System is working correctly!
+✅ System is working correctly! View summary with `make summary`
 
 ### Compilation Errors
 ```bash
-make -f Makefile.engine_top clean
-# Check that all RTL files are present in ../../src/rtl/
+make clean
+# Check sim.log for detailed error messages
+grep "ERROR" sim.log
 ```
 
 ### Timeout Errors
+- Review sim.log for state machine progress
 - Check that testbench is continuously draining the result FIFO
 - Verify FIFO depth and almost-full threshold are sufficient
-- Review compute engine state machine progress
 
 ## Development History
+
+**Oct 20, 2025**: Cleanup for baseline reference (9/9 tests passing)
+- Added logging to sim.log for clean terminal operation
+- Enhanced Makefile with summary and view-log targets
+- Updated test configurations to include B1_C1_V128 edge case
+- Improved documentation with detailed Makefile target descriptions
 
 **Oct 12, 2025**: Achieved full validation (8/8 tests passing)
 - Fixed golden reference file mismatch

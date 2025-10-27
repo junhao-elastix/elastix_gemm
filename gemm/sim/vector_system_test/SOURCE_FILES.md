@@ -81,8 +81,8 @@
      - Dual-page buffering
      - BRAM write control
 
-8. **dispatcher_bram_dual_read.sv**
-   - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_bram_dual_read.sv`
+8. **dispatcher_bram.sv**
+   - Location: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_bram.sv`
    - Purpose: Dual-port BRAM with simultaneous left/right matrix reads
    - Specs: 2048 entries × 256-bit
    - Features:
@@ -179,7 +179,7 @@ vlog -sv +incdir+<paths> +define+SIMULATION +define+SIM_VERBOSE \
     cmd_fifo.sv \
     master_control.sv \
     dispatcher_control.sv \
-    dispatcher_bram_dual_read.sv \
+    dispatcher_bram.sv \
     compute_engine_modular.sv \
     gfp8_bcv_controller.sv \
     gfp8_nv_dot.sv \
@@ -237,7 +237,7 @@ tb_engine_top.sv
         ├─> cmd_fifo.sv
         ├─> master_control.sv
         ├─> dispatcher_control.sv
-        │   └─> dispatcher_bram_dual_read.sv
+        │   └─> dispatcher_bram.sv
         ├─> compute_engine_modular.sv
         │   └─> gfp8_bcv_controller.sv
         │       └─> gfp8_nv_dot.sv
