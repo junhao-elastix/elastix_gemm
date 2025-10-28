@@ -1,5 +1,111 @@
 # CHANGELOG - Elastix GEMM Project
 
+## [2025-10-28 15:44] - CRITICAL FIX: Multi-Tile Write Enable Pipeline Delay Bug
+
+**Timestamp**: Tue Oct 28 15:44:04 PDT 2025
+**Status**: ✅ **CRITICAL BUG FIX** - Multi-tile distribute mode corrected
+**Issue**: First write of each batch in distribute mode routed to wrong tile
+**Expected Result**: All 14/14 tests passing after this fix
+
+### Summary
+
+Fixed critical multi-tile dispatch bug where `tile_wr_en` had 1-cycle pipeline delay causing the first write of each new batch to use the previous batch's tile enable. Changed from registered to combinational logic to ensure write enables update in the same cycle as tile index changes.
+
+### Root Cause Analysis
+
+**The Bug**:
+- `tile_wr_en_pipe` was registered (always_ff), creating 1-cycle delay
+- When batch N completed, `disp_current_tile_idx_reg` updated immediately to next tile
+- But `tile_wr_en_pipe` didn't update until NEXT cycle
+- **Result**: First write of batch N+1 used OLD tile_wr_en from batch N → wrong tile!
+
+**Example Timeline** (B2_C4_V16_2T - 2 tiles, 4 batches of 64 lines each):
+```
+Cycle 1000: Batch 0 writes lines 0-63 to tile 0 (wr_en=0x000001) ✓
+Cycle 1000: Batch 0 completes, tile_idx updates from 0 to 1
+Cycle 1001: Batch 1 FIRST write (line 0) - still uses wr_en=0x000001 ✗ WRONG!
+Cycle 1001: tile_wr_en_pipe updates to 0x000002
+Cycle 1002: Batch 1 remaining writes use wr_en=0x000002 ✓
+```
+
+**Impact**:
+- Every batch's first write went to PREVIOUS tile
+- Tile 0 got: batch 0 + (first write of batch 1) + batch 2 + (first write of batch 3)
+- Tile 1 got: (rest of batch 1) + (rest of batch 3)
+- **Test results**: Tile 0 wrong (got mixed data), Tile 1 correct but incomplete
+
+### The Fix
+
+**Changed from REGISTERED to COMBINATIONAL logic:**
+
+```systemverilog
+// OLD (WRONG - 1-cycle delay):
+always_ff @(posedge i_clk) begin
+    tile_wr_en_pipe <= 24'h000001 << disp_current_tile_idx_reg;
+end
+assign o_tile_wr_en = tile_wr_en_pipe;
+
+// NEW (CORRECT - no delay):
+always_comb begin
+    tile_wr_en_comb = (state_reg == ST_DISP_BUSY) ?
+        (disp_broadcast_reg ? disp_col_en_reg : 24'h000001 << disp_current_tile_idx_reg)
+        : '0;
+end
+assign o_tile_wr_en = tile_wr_en_comb;
+```
+
+**Why This Works**:
+- Combinational logic updates in SAME cycle as `disp_current_tile_idx_reg`
+- When batch completes and tile index changes, write enable updates immediately
+- First write of new batch uses CORRECT tile enable from cycle 0
+
+### Code Changes
+
+**dispatcher_control.sv**:
+- Removed registered `tile_wr_en_pipe` signal declaration (line 584)
+- Removed `tile_wr_en_pipe` from reset section (line 661)
+- Removed `tile_wr_en_pipe` assignment from pipeline always_ff block (lines 686-706)
+- Added combinational `tile_wr_en_comb` logic (lines 699-717):
+  - Broadcast mode: `disp_col_en_reg` (all enabled tiles)
+  - Distribute mode: `24'h000001 << disp_current_tile_idx_reg` (one-hot)
+- Updated output assignment to use `tile_wr_en_comb` (line 757)
+
+### Expected Test Results After Fix
+
+**Single-Tile Tests**: 10/10 ✅ (already passing, unaffected by this fix)
+**Multi-Tile Tests**: Should now be 4/4 ✅ (was 0/4 before fix)
+- B2_C4_V16_2T: Tile 0 and Tile 1 both get correct, complete data
+- B4_C8_V8_2T: Proper round-robin distribution
+- B8_C32_V2_2T: Correct tile assignment for all batches
+- B16_C16_V4_2T: Full 256 results correctly distributed
+
+**Total Expected**: 14/14 tests passing (100%) 🎯
+
+### Technical Details
+
+**Why Combinational is Safe**:
+1. `disp_current_tile_idx_reg` is registered (stable for full batch)
+2. `state_reg` is registered (stable transitions)
+3. `disp_broadcast_reg` is registered (command parameter)
+4. All inputs to `tile_wr_en_comb` are registered → no combinational loops
+5. Output `o_tile_wr_en` feeds into engine_top AND gates, which are already gated by write enable signals
+
+**Timing Considerations**:
+- Combinational path: `disp_current_tile_idx_reg` → shift-left → AND with write_en
+- Very short path (5-bit shift + 24-bit gate) → easily meets timing at 400MHz
+- No impact on critical paths (write address/data already pipelined)
+
+### Testing Strategy
+
+1. Run full simulation suite (14 tests)
+2. Verify all multi-tile tests now pass
+3. Confirm single-tile tests still pass (regression check)
+4. Examine simulation logs to verify correct tile routing:
+   - Each batch goes to correct tile from first write
+   - No data corruption or mixing between tiles
+
+---
+
 ## [2025-10-28 15:09] - CRITICAL FIX: DISPATCH Read Address Mux & BRAM Latency Compensation
 
 **Timestamp**: Tue Oct 28 15:09:16 PDT 2025

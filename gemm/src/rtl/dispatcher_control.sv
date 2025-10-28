@@ -570,7 +570,7 @@ import gemm_pkg::*;
 
     // Multi-tile write enable pipeline (1-stage to avoid blocking first write)
     logic [4:0] physical_tile_id_pipe;   // Physical tile ID (0-23) for future round-robin
-    logic [23:0] tile_wr_en_pipe;        // One-hot tile write enable mask
+    // tile_wr_en now uses combinational logic (tile_wr_en_comb) - no pipeline register needed
 
     // BRAM read latency compensation - delay write valid by 1 cycle
     logic       man_wr_valid_delayed;
@@ -647,7 +647,6 @@ import gemm_pkg::*;
             man_wr_valid_delayed <= 1'b0;
             exp_wr_valid_delayed <= 1'b0;
             physical_tile_id_pipe <= '0;
-            tile_wr_en_pipe <= '0;
         end else begin
             // Pipeline the addresses for 1-cycle BRAM read latency
             // Multi-tile dispatch with broadcast/distribute addressing
@@ -682,19 +681,26 @@ import gemm_pkg::*;
             // Multi-tile write enable pipeline
             // Broadcast vs Distribute mode (per SINGLE_ROW_REFERENCE.md)
             physical_tile_id_pipe <= disp_current_tile_idx_reg;
-            if (state_reg == ST_DISP_BUSY) begin
-                if (disp_broadcast_reg) begin
-                    // BROADCAST MODE: Enable all tiles in col_en
-                    // Same data written to all enabled tiles simultaneously
-                    tile_wr_en_pipe <= disp_col_en_reg;
-                end else begin
-                    // DISTRIBUTE MODE: Enable only current tile (one-hot)
-                    // Different data written to each tile sequentially
-                    tile_wr_en_pipe <= 24'h000001 << disp_current_tile_idx_reg;
-                end
+        end
+    end
+
+    // Multi-tile write enable - COMBINATIONAL (no pipeline delay)
+    // CRITICAL: Must update in SAME cycle as disp_current_tile_idx_reg changes
+    // to avoid first write of new batch going to wrong tile
+    logic [23:0] tile_wr_en_comb;
+    always_comb begin
+        if (state_reg == ST_DISP_BUSY) begin
+            if (disp_broadcast_reg) begin
+                // BROADCAST MODE: Enable all tiles in col_en
+                // Same data written to all enabled tiles simultaneously
+                tile_wr_en_comb = disp_col_en_reg;
             end else begin
-                tile_wr_en_pipe <= '0;
+                // DISTRIBUTE MODE: Enable only current tile (one-hot)
+                // Different data written to each tile sequentially
+                tile_wr_en_comb = 24'h000001 << disp_current_tile_idx_reg;
             end
+        end else begin
+            tile_wr_en_comb = '0;
         end
     end
 
@@ -735,7 +741,8 @@ import gemm_pkg::*;
     assign o_tile_exp_right_wr_en   = exp_wr_valid_delayed && disp_right_pipe;   // DELAYED write
 
     // Multi-tile write enable output (one-hot encoding of current tile)
-    assign o_tile_wr_en = tile_wr_en_pipe;
+    // COMBINATIONAL: Updates immediately when disp_current_tile_idx_reg changes
+    assign o_tile_wr_en = tile_wr_en_comb;
 
     // DISPATCH read address outputs (for engine_top muxing to internal dispatcher_bram)
     // Selective read addressing based on disp_right_reg
