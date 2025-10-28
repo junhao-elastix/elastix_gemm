@@ -1,0 +1,95 @@
+Archive Date: Sun Oct 12 19:30 PDT 2025
+Reason: Cleanup after engine_top.sv integration and debugging
+
+Files archived in this cleanup (18 files total):
+========================================================
+
+Debug Test Programs (one-off debugging during Oct 10-12):
+----------------------------------------------------------
+1. check_bram.cpp + binary
+   - Purpose: One-off BRAM accessibility check
+   - Status: Debug only, not part of regular test suite
+
+2. check_bram_writer.cpp
+   - Purpose: Debug result BRAM writer during integration
+   - Status: Obsolete after result_fifo_to_bram.sv created
+
+3. check_nap_address.cpp
+   - Purpose: Debug NAP address calculations
+   - Status: One-time debug, not needed
+
+4. debug_bram_read.cpp
+   - Purpose: Debug BRAM DMA read issues
+   - Status: Temporary diagnostic
+
+5. diagnose_bram_location.cpp
+   - Purpose: Find correct BRAM address
+   - Status: One-time debug
+
+6. quick_check.cpp + quick_check_results.cpp
+   - Purpose: Quick register/FIFO checks during debugging
+   - Status: Temporary diagnostic tools
+
+7. scan_bram_address.cpp
+   - Purpose: Scan for working BRAM addresses
+   - Status: One-time address discovery
+
+8. test_bram_addresses.cpp + binary
+   - Purpose: Test various BRAM addressing schemes
+   - Status: Obsolete after correct address found
+
+9. test_bram_nap35.cpp + binary
+   - Purpose: Test specific NAP location
+   - Status: One-time test
+
+10. test_bram_readback.cpp + binary
+    - Purpose: Debug DMA readback
+    - Status: Temporary diagnostic
+
+Debug Scripts and Logs:
+------------------------
+11. read_results.sh
+    - Purpose: Quick script to check engine status
+    - Status: Temporary helper script
+
+12. test_fixed.log
+    - Purpose: Test output from Oct 12 debugging
+    - Status: Stale log file
+
+13. test_run.log
+    - Purpose: Test output from Oct 12 debugging
+    - Status: Stale log file
+
+Active Test Suite (NOT archived):
+==================================
+- test_registers.cpp - Device health and register validation
+- test_gddr6.cpp - GDDR6 status and performance
+- test_bram.cpp - BRAM DMA functionality
+- scan_registers.cpp - Register address space diagnostic
+- test_ms2_gemm_full.cpp - MS2.0 GEMM engine full integration
+- DMA_example.cpp - Advanced DMA testing
+- DMA_simple_example.cpp - Basic DMA validation
+- test_mem_endpoints.cpp - Memory endpoint testing
+
+Archive Rationale:
+==================
+All archived files were one-off debug programs created during:
+- Oct 10-12: engine_wrapper → engine_top migration debugging
+- BRAM address discovery and DMA troubleshooting
+- Result path validation
+
+These files served their purpose but are not part of the regular test suite.
+They can be restored if similar debugging is needed in the future.
+
+Build Status at Archive Time:
+==============================
+- Hardware: engine_top.sv validated architecture integrated
+- Bitstream: 10/12 19:16 (with FIFO timing fix)
+- Device Status: Healthy (registers accessible)
+- Known Issue: DMA read address needs investigation
+
+Next Steps:
+===========
+- Investigate DMA read address for result BRAM
+- Validate MS2.0 GEMM engine with hardware test
+- Create production test suite once hardware validated

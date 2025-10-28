@@ -1,0 +1,546 @@
+#OPTIONS:"|-layerid|0|-orig_srs|/home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/syn/rev_acx/synwork/elastix_gemm_top_impl_1_comp.srs|-top|elastix_gemm_top|-prodtype|synplify_pro|-primux|-infer_seqShift|-fixsmult|-sdff_counter|-dspmac|-nram|-divnmod|-pqdpadd|-nostructver|-achronix|-I|/opt/achronix/ACE_10_3_1/Achronix-linux/libraries|-I|/home/dev/Dev/elastix_gemm/gemm/src/include|-I|/home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/syn/|-I|/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib|-sysv|-devicelib|/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib/generic/speedster7t.v|-encrypt|-pro|-msgseveritypreffile|/home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/syn/rev_acx/syntmp/messagefilter.txt|-DACX_USE_SNAPSHOT=1|-ui|-fid2|-ram|-sharing|on|-ll|2000|-autosm|-D_MULTIPLE_FILE_COMPILATION_UNIT_|-lib|work|-fsysv|-lib|work|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv|-lib|work|-fsysv"
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/linux_a_64/c_ver":1734445598
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/syn/rev_acx/syntmp/messagefilter.txt":1760980936
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib/generic/speedster7t.v":1741288430
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib/vlog/hypermods.v":1734445125
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib/vlog/scemi_objects.v":1734445125
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/Synplify/lib/vlog/scemi_pipes.svh":1734445125
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/device_models/AC7t1500_synplify.sv":1746377768
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/speedster7t_user_macros.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/defines_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/common/ace_defines.sv":1746380148
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_core.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_core_hd1000.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/bram80k_init_params_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/bram20k_init_params_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_io.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/common/ace_defines.sv":1746380148
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/ioring_defines_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_LRAM2K_FIFO.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_LRAM2K_SDP.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT8_MULT_4X.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT16_MULT_2X.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_SDP.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_FIFO.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_COMMON.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtag_types.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/acx_integer.sv":1746377760
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/default_nettype.v":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/gemm_pkg.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/reset_processor_v2.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/shift_reg.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/reg_control_block.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/reg_control_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/version_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dma_bram_bridge.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/axi_bram_responder.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/nap_initiator_wrapper.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/nap_responder_wrapper.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/cmd_fifo.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/master_control.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_bram_dual_read.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_control.sv":1760980626
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_bcv_controller.sv":1760896522
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_nv_dot.sv":1760896266
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_group_dot_mlp.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_to_fp16.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/compute_engine_modular.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/result_bram.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/csr_to_fifo_bridge.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/result_fifo_to_simple_bram.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/engine_top.sv":1760980663
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/irq_gen.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/reg_control_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/msix_irq_handler.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/reg_control_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/flr_responder.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/acx_device_manager.sv":1760895879
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/macros/ACX_DEVICE_MANAGER.svp":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/defines_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/ioring_defines_inc.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtag_types.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv":1746377760
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/elastix_gemm_top.sv":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/reg_control_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/build_timestamp.svh":1760980883
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_tap_sim.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtag_types.sv":1746377760
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/BW_BMC_IF.svp":1760895879
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_snapshot_v3.sv":1746377760
+#CUR:"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv":1746377760
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/rtl/../ioring/elastix_gemm_top_user_design_port_list.svh":1760980888
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/src/include/vp815_rev0_led_defines.svh":1760895879
+#CUR:"/home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/syn/rev_acx/synwork/_ACX_SNAPSHOT_deep_fifo_bmlp_Z4923900_almost_full_inline_init":1760980939
+#numinternalfiles:4
+#defaultlanguage:verilog
+0			"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/device_models/AC7t1500_synplify.sv" verilog
+1		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/speedster7t_user_macros.sv" verilog
+2		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/defines_inc.sv" verilog
+3		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/common/ace_defines.sv" verilog
+4		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_core.sv" verilog
+5		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_core_hd1000.sv" verilog
+6		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/bram80k_init_params_inc.sv" verilog
+7		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/bram20k_init_params_inc.sv" verilog
+8		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_io.sv" verilog
+9		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/ioring_defines_inc.sv" verilog
+10		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_LRAM2K_FIFO.sv" verilog
+11		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_LRAM2K_SDP.sv" verilog
+12		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72.sv" verilog
+13		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT8_MULT_4X.sv" verilog
+14		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT16_MULT_2X.sv" verilog
+15		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_MLP72_INT.sv" verilog
+16		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_SDP.sv" verilog
+17		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_FIFO.sv" verilog
+18		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K.sv" verilog
+19		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/syn/speedster7t_user_macros_BRAM72K_COMMON.sv" verilog
+20		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtag_types.sv" verilog
+21		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/acx_integer.sv" verilog
+22			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/default_nettype.v" verilog
+23			"/home/dev/Dev/elastix_gemm/gemm/src/include/gemm_pkg.sv" verilog
+24			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/reset_processor_v2.sv" verilog
+25			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/shift_reg.sv" verilog
+26			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/reg_control_block.sv" verilog
+27		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/nap_interfaces.svh" verilog
+28		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/reg_control_defines.svh" verilog
+29		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/version_defines.svh" verilog
+30			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dma_bram_bridge.sv" verilog
+31			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/axi_bram_responder.sv" verilog
+32			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/nap_initiator_wrapper.sv" verilog
+33			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/nap_responder_wrapper.sv" verilog
+34			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/cmd_fifo.sv" verilog
+35			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/master_control.sv" verilog
+36			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_bram_dual_read.sv" verilog
+37			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/dispatcher_control.sv" verilog
+38			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_bcv_controller.sv" verilog
+39			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_nv_dot.sv" verilog
+40			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_group_dot_mlp.sv" verilog
+41			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/gfp8_to_fp16.sv" verilog
+42			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/compute_engine_modular.sv" verilog
+43			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/result_bram.sv" verilog
+44			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/csr_to_fifo_bridge.sv" verilog
+45			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/result_fifo_to_simple_bram.sv" verilog
+46			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/engine_top.sv" verilog
+47			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/irq_gen.sv" verilog
+48			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/msix_irq_handler.sv" verilog
+49			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/flr_responder.sv" verilog
+50			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/acx_device_manager.sv" verilog
+51		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/macros/ACX_DEVICE_MANAGER.svp" verilog
+52		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_jtap.sv" verilog
+53			"/home/dev/Dev/elastix_gemm/gemm/src/rtl/elastix_gemm_top.sv" verilog
+54		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/build_timestamp.svh" verilog
+55		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_tap_sim.sv" verilog
+56		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/BW_BMC_IF.svp" verilog
+57		*	"/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/speedster7t/common/speedster7t_snapshot_v3.sv" verilog
+58		*	"/home/dev/Dev/elastix_gemm/gemm/src/rtl/../ioring/elastix_gemm_top_user_design_port_list.svh" verilog
+59		*	"/home/dev/Dev/elastix_gemm/gemm/src/include/vp815_rev0_led_defines.svh" verilog
+#Dependency Lists(Uses List)
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 0
+1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 0 26 27 28 29 50 51 52 1
+2 1 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 0 51 52 50 2 26 27 28 29
+3 1 2 4 5 6 7 8 3 9 10 11 12 13 14 15 16 17 18 19 20 21 0 26 27 28 29 50 51 52
+4 0 1 2 3 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 4
+5 0 1 2 3 4 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 5
+6 1 2 3 4 5 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 0 26 27 28 29 50 51 52 6
+7 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18 19 20 21 0 26 27 28 29 50 51 52 7
+8 0 1 2 3 4 5 6 7 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 8
+9 1 2 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 20 21 0 51 52 50 9 26 27 28 29
+10 0 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 10
+11 0 1 2 3 4 5 6 7 8 9 10 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 11
+12 0 1 2 3 4 5 6 7 8 9 10 11 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 12
+13 0 1 2 3 4 5 6 7 8 9 10 11 12 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52 13
+14 0 1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 21 26 27 28 29 50 51 52 14
+15 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 26 27 28 29 50 51 52 15
+16 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 26 27 28 29 50 51 52 16
+17 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 18 19 20 21 26 27 28 29 50 51 52 17
+18 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 19 20 21 26 27 28 29 50 51 52 18
+19 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 21 26 27 28 29 50 51 52 19
+20 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 0 51 52 50 20 27 28 54 55 56 57 58 59 53 26 29 32
+21 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 26 27 28 29 50 51 52 21
+22 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+23 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+24 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52
+25 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+26 27 28 29 32 26 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+27 26 28 29 32 27 54 55 20 56 57 52 58 59 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 50 51
+28 27 29 26 28 54 55 20 56 57 52 58 59 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 50 51 32
+29 27 28 26 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+30 27 26 28 29 32 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 50 51 52
+31 27 26 28 29 32 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 50 51 52
+32 27 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 28 29 50 51 52
+33 27 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 28 29 50 51 52
+34 23 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+35 23 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+36 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+37 23 27 36 26 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+38 39 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+39 40 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+40 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 26 27 28 29 50 51 52
+41 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+42 23 38 41 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+43 23 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+44 23 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+45 26 27 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+46 23 27 34 35 37 43 26 28 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+47 28 26 27 29 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+48 27 28 26 29 33 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+49 27 26 28 29 33 50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21
+50 51 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 26 27 28 29 50
+51 50 52 2 9 20 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 26 27 28 29 51
+52 50 51 2 9 20 52 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 27 28 54 55 56 57 58 59 53 26 29 32
+53 27 28 54 55 20 56 57 52 58 59 24 26 29 25 30 31 33 44 46 45 47 48 49 50 51 2 9 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 32
+54 27 28 55 20 56 57 52 58 59 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 26 29 50 51 32
+55 27 28 54 20 56 57 52 58 59 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 26 29 50 51 32
+56 53 27 28 54 55 20 57 52 58 59 24 26 29 25 30 31 33 44 46 45 47 48 49 50 51 2 9 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 32
+57 53 27 28 54 55 20 56 52 58 59 24 26 29 25 30 31 33 44 46 45 47 48 49 50 51 2 9 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 32
+58 27 28 54 55 20 56 57 52 59 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 26 29 50 51 32
+59 27 28 54 55 20 56 57 52 58 53 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 26 29 50 51 32
+#Dependency Lists(Users Of)
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+1 0 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+2 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+3 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+4 0 1 2 3 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+5 0 1 2 3 4 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+6 0 1 2 3 4 5 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+7 0 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+8 0 1 2 3 4 5 6 7 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+9 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+10 0 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+11 0 1 2 3 4 5 6 7 8 9 10 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+12 0 1 2 3 4 5 6 7 8 9 10 11 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+13 0 1 2 3 4 5 6 7 8 9 10 11 12 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+14 0 1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+15 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+16 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+17 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+18 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+19 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+20 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+21 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 24 27 28 30 31 32 33 40 50 51 52 53 54 55 56 57 58 59 22 23 25 26 29 34 35 36 37 38 39 41 42 43 44 45 46 47 48 49
+22 -1
+23 34 35 37 42 43 44 46
+24 53 56 57
+25 53 56 57
+26 20 27 28 30 31 32 33 37 46 47 48 49 52 53 54 55 56 57 58 59 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 29 34 35 36 38 39 40 41 42 43 44 45 50 51
+27 20 26 27 28 29 30 31 32 33 37 46 47 48 49 52 53 54 55 56 57 58 59 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 34 35 36 38 39 40 41 42 43 44 45 50 51
+28 20 26 27 28 29 30 31 32 33 37 46 47 48 49 52 53 54 55 56 57 58 59 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 34 35 36 38 39 40 41 42 43 44 45 50 51
+29 20 26 27 28 30 31 32 33 37 46 47 48 49 52 53 54 55 56 57 58 59 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 34 35 36 38 39 40 41 42 43 44 45 50 51
+30 53 56 57
+31 53 56 57
+32 20 26 27 28 30 31 52 53 54 55 56 57 58 59
+33 48 49 53 56 57
+34 46
+35 46
+36 37
+37 46
+38 42
+39 38
+40 39
+41 42
+42 -1
+43 46
+44 53 56 57
+45 53 56 57
+46 53 56 57
+47 53 56 57
+48 53 56 57
+49 53 56 57
+50 2 9 20 27 28 51 52 53 54 55 56 57 58 59 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 26 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49
+51 2 9 20 27 28 50 52 53 54 55 56 57 58 59 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 26 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49
+52 2 9 20 27 28 50 51 52 53 54 55 56 57 58 59 0 1 3 4 5 6 7 8 10 11 12 13 14 15 16 17 18 19 21 22 23 24 25 26 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49
+53 20 27 28 52 54 55 56 57 58 59
+54 20 27 28 52 53 55 56 57 58 59
+55 20 27 28 52 53 54 56 57 58 59
+56 20 27 28 52 53 54 55 57 58 59
+57 20 27 28 52 53 54 55 56 58 59
+58 20 27 28 52 53 54 55 56 57 59
+59 20 27 28 52 53 54 55 56 57 58
+#Design Unit to File Association
+module work ALU8f 4
+module work ACX_ALU8f 4
+module work ALU8i 4
+module work ACX_ALU8i 4
+module work BUS_DFFE 4
+module work ACX_BUS_DFFE 4
+module work BUS_DFFNE 4
+module work ACX_BUS_DFFNE 4
+module work BUS_DFFN 4
+module work ACX_BUS_DFFN 4
+module work BUS_DFF 4
+module work ACX_BUS_DFF 4
+module work BUS_MUX4 4
+module work ACX_BUS_MUX4 4
+module work CLKDIV 4
+module work ACX_CLKDIV 4
+module work CLKGATE 4
+module work ACX_CLKGATE 4
+module work CLKSWITCH 4
+module work ACX_CLKSWITCH 4
+module work DFFER 4
+module work ACX_DFFER 4
+module work DFFES 4
+module work ACX_DFFES 4
+module work DFFE 4
+module work ACX_DFFE 4
+module work DFFNER 4
+module work ACX_DFFNER 4
+module work DFFNES 4
+module work ACX_DFFNES 4
+module work DFFNE 4
+module work ACX_DFFNE 4
+module work DFFNR 4
+module work ACX_DFFNR 4
+module work DFFNS 4
+module work ACX_DFFNS 4
+module work DFFN 4
+module work ACX_DFFN 4
+module work DFFR 4
+module work ACX_DFFR 4
+module work DFFS 4
+module work ACX_DFFS 4
+module work DFF 4
+module work ACX_DFF 4
+module work LMUX2 4
+module work ACX_LMUX2 4
+module work LUT5x2 4
+module work ACX_LUT5x2 4
+module work LUT6 4
+module work ACX_LUT6 4
+module work LUTf 4
+module work ACX_LUTf 4
+module work MLUT 4
+module work ACX_MLUT 4
+module work MUX2 4
+module work ACX_MUX2 4
+module work NAP_AXI_MASTER 4
+module work ACX_NAP_AXI_MASTER 4
+module work NAP_AXI_SLAVE 4
+module work NAP_DFT_MASTER 4
+module work ACX_NAP_DFT_MASTER 4
+module work NAP_DFT_SLAVE 4
+module work ACX_NAP_DFT_SLAVE 4
+module work NAP_ETHERNET 4
+module work ACX_NAP_ETHERNET 4
+module work NAP_HORIZONTAL 4
+module work ACX_NAP_HORIZONTAL 4
+module work NAP_VERTICAL 4
+module work ACX_NAP_VERTICAL 4
+module work ACX_ALU4 4
+module work ACX_ALU8 4
+module work ACX_LUT4 4
+module work ACX_NAP_AXI_SLAVE 4
+module work ALU8 4
+module work ACX_SYNCHRONIZER 4
+module work ACX_SYNCHRONIZER_N 4
+module work ACX_TIMING_DISABLE_BUF 4
+module work ACX_AUTO_CLKGEN_TOGGLE 4
+module work ACX_AUTO_CLKGEN 4
+module work ACX_WEAK_PULLUP 8
+module work ACX_SLACKMATCH_SINGLE 4
+module work ACX_SLACKMATCH 4
+module work ACX_PROBE_POINT256 4
+module work ACX_PROBE_CONNECT256 4
+module work ACX_PROBE_POINT 4
+module work ACX_PROBE_CONNECT 4
+module work ACX_DFFC 4
+module work ACX_DFFP 4
+module work ACX_DFFEC 4
+module work ACX_DFFEP 4
+module work ACX_DFFNC 4
+module work ACX_DFFNP 4
+module work ACX_DFFNEC 4
+module work ACX_DFFNEP 4
+module work BRAM80K 5
+module work BRAM80KFIFO 5
+module work BMACC56 5
+module work ACX_BMACC56 5
+module work BMULT28X28 5
+module work CFG_CLK_IPIN 8
+module work CFG_CLK_OPIN 8
+module work CFG_IPIN 8
+module work CFG_OPIN 8
+module work CLK_IPIN 8
+module work ACX_CLK_IPIN 8
+module work CLK_OPIN 8
+module work ACX_CLK_OPIN 8
+module work IPIN 8
+module work ACX_IPIN 8
+module work OPIN 8
+module work ACX_OPIN 8
+module work RST_SYNC_CLKTRUNK 8
+module work ACX_RST_SYNC_CLKTRUNK 8
+module work jtap 8
+module work ACX_jtap 8
+module work ACX_FLOAT 8
+module work ACX_UNUSED 8
+module work ACX_WEAK_PULLDOWN 8
+module work ACX_TIEHI 8
+module work ACX_TIELO 8
+module work ACX_ITIEHI 8
+module work ACX_ITIELO 8
+module work LRAM2K_FIFO 10
+module work ACX_LRAM2K_FIFO 10
+module work LRAM2K_SDP 11
+module work ACX_LRAM2K_SDP 11
+module work MLP72 12
+module work MLP72_INT8_MULT_4X 13
+module work ACX_MLP72_INT8_MULT_4X 13
+module work MLP72_INT16_MULT_2X 14
+module work ACX_MLP72_INT16_MULT_2X 14
+module work MLP72_INT 15
+module work ACX_MLP72_INT 15
+module work BRAM72K_SDP 16
+module work ACX_BRAM72K_SDP 16
+module work BRAM72K_SDPW 16
+module work BRAM72K_SDPN 16
+module work BRAM72K_FIFO 17
+module work ACX_BRAM72K_FIFO 17
+module work BRAM72K 18
+module work ACX_BMLP72 18
+module work ACX_BRAM72K 18
+module work ACX_MLP72 18
+module work BRAM72K_COMMON 19
+module work ACX_BRAM72K_COMMON 19
+package work work_/opt/achronix/ACE_10_3_1/Achronix-linux/libraries/device_models/AC7t1500_synplify.sv_unit 20
+module work _ACX_INT_MLP_FABRIC 21
+module work _ACX_INT_MULT_MLP 21
+module work _ACX_INT_MULT_32X32_FABRIC 21
+module work _ACX_INT_REG 21
+module work _ACX_BOOTHGEN_PAIR_MLUT 21
+module work _ACX_BOOTHGEN_PAIR_MLUT_TOP_4N_PLUS0 21
+module work _ACX_BOOTHGEN_PAIR_MLUT_TOP_4N_PLUS1 21
+module work _ACX_BOOTHGEN_PAIR_MLUT_TOP_4N_PLUS2 21
+module work _ACX_BOOTHGEN_PAIR_MLUT_TOP_4N_PLUS3 21
+module work _ACX_MLUT_BUFFER 21
+module work _ACX_PRODGEN_ADD_ROW_MLUT 21
+module work _ACX_RLB_MULTGEN 21
+module work ACX_INT_MULT 21
+module work ACX_INT_MULT_N 21
+module work ACX_INT_MULT_ADD 21
+module work ACX_INT_RLB_MULT 21
+module work ACX_INT_SQUARE_ADD 21
+module work ACX_INT_COMPLEX_MULT 21
+package work gemm_pkg 23
+module work reset_processor_v2 24
+module work shift_reg 25
+interface work t_AXI4 27
+interface work t_DATA_STREAM 27
+interface work t_ETH_STREAM 27
+module work reg_control_block 26
+module work nap_initiator_wrapper 32
+module work dma_bram_bridge 30
+module work axi_bram_responder 31
+module work nap_responder_wrapper 33
+module work cmd_fifo 34
+module work master_control 35
+module work dispatcher_bram_dual_read 36
+module work dispatcher_control 37
+module work gfp8_bcv_controller 38
+module work gfp8_nv_dot 39
+module work gfp8_group_dot_mlp 40
+module work gfp8_to_fp16 41
+module work compute_engine_modular 42
+module work result_bram 43
+module work csr_to_fifo_bridge 44
+module work result_fifo_to_simple_bram 45
+module work engine_top 46
+module work irq_gen 47
+module work msix_irq_handler 48
+module work flr_responder 49
+module work ACX_JTAP_INTERFACE 52
+module work ACX_JTAP 52
+module work ACX_JTAP_SHIFT_REG 52
+module work ACX_JTAP_UNIT 52
+module work ACX_JTAP_REG_UNIT 52
+module work ACX_JTAP_negedge_shift_reg 52
+module work ACX_DEVICE_MANAGER 51
+module work acx_bus_synchronizer 51
+module work hot_rst_detect 51
+module work ACX_DEVICE_MANAGER_TOP 51
+module work ACX_DEVICE_MANAGER_ENCRYPTED 51
+module work yELPDSSQXGmq 51
+module work COBBQxJjBZuI 51
+module work GQsnEMjqTmrg 51
+module work vtOvUGkXTcsz 51
+module work SFBDGsoVtQGl 51
+module work eYayfAWYbhzF 51
+module work pYQKwJrBPlEl 51
+module work SaKKgKfnwFFv 51
+module work giawSnWhKTQQ 51
+module work LGCEMDqZLrHi 51
+module work jVBICjKnvCGD 51
+module work iOtVAKXCFXEb 51
+module work VTunQvHHGgzd 51
+module work hKRoxEXAgYqv 51
+module work BABvXUHsgUvu 51
+module work wzGCJsYSgbTN 51
+module work myhDjMtjsPJF 51
+module work LOQtAfhtnLCv 51
+module work AzEnGPclStnj 51
+module work dLkqUDMhQDaR 51
+module work RagcyFwxsINw 51
+module work POevAdbUycaO 51
+module work xoFMKzXNtKak 51
+interface work t_DBI_GATEWAY_AXI4 51
+module work IXdWJrBFOAWK 51
+module work oBzefhHFAXqt 51
+module work jZXsZgZglTwz 51
+module work ekNznBgwbZaR 51
+module work OjiUwWwdlPJq 51
+module work HLgfeCynlXFu 51
+module work FxaNIaIwCwcD 51
+module work XJDXVaIfpFsh 51
+module work mFmQDIFqqagj 51
+module work OIUTxMiakzzC 51
+module work aPLPhxSmqEdJ 51
+module work lipoyUSgkJto 51
+module work yNphBxmSwDEO 51
+module work ZvAvGNlALpzE 51
+module work xNRPKWDTbffq 51
+module work sXxLCxgEPgfv 51
+module work yopdFndJCmDj 51
+module work acx_device_manager 50
+module work BW_BMC_IF 56
+module work bw_bmc_if_encrypted 56
+module work i2c_initiator_top_encrypted 56
+module work axi_master_ctrl 56
+module work axi_slave_ctrl 56
+module work block_ram_infer 56
+module work bretime 56
+module work uart_axi_master 56
+module work uart_edge_v4 56
+module work axi_responder_ctrl 56
+module work i2c_initiator 56
+module work ACX_SNAPSHOT 57
+module work ACX_SNAPSHOT_JTAP_UNIT 57
+module work _ACX_SNAPSHOT_pipeline 57
+module work _ACX_SNAPSHOT_monitor 57
+module work ACX_SNAPSHOT_UNIT 57
+module work _ACX_SNAPSHOT_deep_fifo_bmlp 57
+module work _ACX_SNAPSHOT_bram_fifo_ctrl 57
+module work _ACX_SNAPSHOT_wide_fifo 57
+module work ACX_SYNCHRONIZER_STABLE 57
+module work _ACX_SNAPSHOT_bit_match 57
+module work _ACX_SNAPSHOT_trigger 57
+module work _ACX_SNAPSHOT_all_triggers 57
+module work _ACX_SNAPSHOT_pre_store 57
+module work elastix_gemm_top 53
+
+#identified top module
+top_module elastix_gemm_top

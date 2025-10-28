@@ -423,7 +423,7 @@ module tb_engine_top;
         // Multi-tile: Use BROADCAST mode for left matrix (activations replicated to all tiles)
         generate_disp_command(
             1,              // id
-            128,            // man_nv_cnt: Total NVs in dispatcher_bram (full capacity)
+            B * V,          // man_nv_cnt: Total Native Vectors = B × V
             V,              // ugd_vec_size: NVs per UGD vector (matches test V parameter)
             16'd0,          // tile_addr: Start of tile BRAM
             1'b0,           // man_4b: 8-bit mantissa mode
@@ -433,7 +433,7 @@ module tb_engine_top;
             1'b1,           // broadcast: BROADCAST mode for left (activations)
             disp_cmd
         );
-        $display("[TB] DISPATCH LEFT: disp_right=0, broadcast=1, col_en=0x%06x", col_en);
+        $display("[TB] DISPATCH LEFT: man_nv_cnt=%0d (B×V=%0d×%0d), ugd_vec_size=%0d, broadcast=1, col_en=0x%06x", B*V, B, V, V, col_en);
         cmd_seq[idx++] = disp_cmd[0];
         cmd_seq[idx++] = disp_cmd[1];
         cmd_seq[idx++] = disp_cmd[2];
@@ -462,7 +462,7 @@ module tb_engine_top;
         // Multi-tile: Use DISTRIBUTE mode for right matrix (weights sharded across tiles)
         generate_disp_command(
             4,              // id
-            128,            // man_nv_cnt: Total NVs in dispatcher_bram (full capacity)
+            C * V,          // man_nv_cnt: Total Native Vectors = C × V
             V,              // ugd_vec_size: NVs per UGD vector (matches test V parameter)
             16'd0,          // tile_addr: Start of tile BRAM (same as left, different BRAM)
             1'b0,           // man_4b: 8-bit mantissa mode
@@ -472,7 +472,7 @@ module tb_engine_top;
             1'b0,           // broadcast: DISTRIBUTE mode for right (weights)
             disp_cmd
         );
-        $display("[TB] DISPATCH RIGHT: disp_right=1, broadcast=0, col_en=0x%06x", col_en);
+        $display("[TB] DISPATCH RIGHT: man_nv_cnt=%0d (C×V=%0d×%0d), ugd_vec_size=%0d, broadcast=0, col_en=0x%06x", C*V, C, V, V, col_en);
         cmd_seq[idx++] = disp_cmd[0];
         cmd_seq[idx++] = disp_cmd[1];
         cmd_seq[idx++] = disp_cmd[2];

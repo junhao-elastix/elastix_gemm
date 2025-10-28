@@ -1,0 +1,24 @@
+Multi-Tile Golden Reference: two_tiles_simple
+Description: 2 tiles with different addresses
+Number of tiles: 2
+
+--- Tile 0 ---
+Description: First tile at addr 0
+left_addr=0, right_addr=0, B=2, C=2, V=2
+Result shape: torch.Size([2, 2])
+Min: -0.149323, Max: -0.019211
+Mean: -0.069101
+Results:
+-0.071732 -0.019211 
+-0.149323 -0.036140 
+
+--- Tile 1 ---
+Description: Second tile at addr 32
+left_addr=32, right_addr=32, B=2, C=2, V=2
+Result shape: torch.Size([2, 2])
+Min: -0.251434, Max: 0.181030
+Mean: -0.002295
+Results:
+0.181030 0.066521 
+-0.251434 -0.005295 
+

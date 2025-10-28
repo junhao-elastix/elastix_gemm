@@ -1,0 +1,144 @@
+# elastix_gemm_top
+# AUTOMATICALLY GENERATED FILE
+# MAY BE OVERWRITTEN AT ANY TIME DURING USE OF TOOL
+
+# Created by: ACE -- Achronix CAD Environment -- Version 10.3.1 -- Build  780324 -- Date 2025-05-04 09:40
+# Release Version: 10.3.1
+set_project_option -project elastix_gemm_top -- partname {AC7t1500}
+set_project_option -project elastix_gemm_top -- package {F53}
+set_project_option -project elastix_gemm_top -- speed_grade {C1}
+set_project_option -project elastix_gemm_top -- core_voltage {0.90}
+set_project_option -project elastix_gemm_top -- junction_temperature {0}
+set_project_option -project elastix_gemm_top autoselect_top_module {0}
+set_project_option -project elastix_gemm_top bitstream_output_flash {1}
+set_project_option -project elastix_gemm_top bitstream_page0_dummy_cycle_4byte {0A}
+set_project_option -project elastix_gemm_top bitstream_page0_num_devices {4}
+set_project_option -project elastix_gemm_top bitstream_page0_vendor {1}
+set_project_option -project elastix_gemm_top flow_mode {normal}
+set_project_option -project elastix_gemm_top hdl_defines {ACX_USE_SNAPSHOT=1}
+set_project_option -project elastix_gemm_top hdl_include_path {../../../src/include}
+set_project_option -project elastix_gemm_top top_module {elastix_gemm_top}
+# Synthesis RTL Files
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/default_nettype.v}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/include/gemm_pkg.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/reset_processor_v2.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/shift_reg.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/reg_control_block.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/dma_bram_bridge.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/axi_bram_responder.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/nap_initiator_wrapper.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/nap_responder_wrapper.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/cmd_fifo.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/master_control.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/dispatcher_bram_dual_read.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/dispatcher_control.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/gfp8_bcv_controller.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/gfp8_nv_dot.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/gfp8_group_dot_mlp.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/gfp8_to_fp16.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/compute_engine_modular.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/result_bram.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/csr_to_fifo_bridge.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/result_fifo_to_simple_bram.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/engine_top.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/irq_gen.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/msix_irq_handler.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/flr_responder.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/acx_device_manager.sv}}
+add_project_source_files -rtl -libs { work } -project elastix_gemm_top {{./../../../src/rtl/elastix_gemm_top.sv}}
+# Synthesis Constraint Files
+add_project_source_files -syn_constraint -project elastix_gemm_top {{./../../../src/constraints/synplify_constraints.sdc}}
+add_project_source_files -syn_constraint -project elastix_gemm_top {{./../../../src/constraints/synplify_constraints.fdc}}
+add_project_source_files -syn_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring.sdc}}
+# Netlist Files
+
+# PnR Constraint Files
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring.sdc}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring.pdc}}
+add_project_source_files -pnr_constraint -corner fast -temperature 0 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_fast.sdc}}
+add_project_source_files -pnr_constraint -corner slow -temperature 0 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_slow.sdc}}
+add_project_source_files -pnr_constraint -corner fast -temperature -40 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_fast.sdc}}
+add_project_source_files -pnr_constraint -corner slow -temperature -40 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_slow.sdc}}
+add_project_source_files -pnr_constraint -corner fast -temperature 125 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_fast.sdc}}
+add_project_source_files -pnr_constraint -corner slow -temperature 125 -voltage 0.90 -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_slow.sdc}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/constraints/ace_constraints.sdc}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/constraints/ace_placements.pdc}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_bitstream0.hex}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_bitstream1.hex}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_util.xml}}
+add_project_source_files -pnr_constraint -project elastix_gemm_top {{./../../../src/ioring/elastix_gemm_top_ioring_power.xml}}
+# IP Settings Files
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/acx_device_manager.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/ddr4.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pci_express_x16.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/noc.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pll_ddr.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pll_pcie.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pll_noc.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_0.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_1.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_2.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_3.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_4.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_5.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_6.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/gddr6_7.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pll_gddr_SE.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/pll_gddr_SW.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_clkio_ne.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_clkio_nw.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_clkio_se.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_clkio_sw.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_n_b0.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_n_b1.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_n_b2.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_s_b0.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_s_b1.acxip}}
+add_project_source_files -ip -project elastix_gemm_top {{./../../../src/acxip/vp815_gpio_s_b2.acxip}}
+# Simulation Testbench Files
+
+# Implementations
+# impl_1
+create_impl -not_active -project elastix_gemm_top impl_1
+set_impl_option -project elastix_gemm_top -impl impl_1 pnr_optimize_corners {1}
+set_impl_option -project elastix_gemm_top -impl impl_1 report_unconstrained_timing_paths {1}
+set_impl_option -project elastix_gemm_top -impl impl_1 syn_default_frequency {500}
+enable_project_source_file -syn_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/constraints/synplify_constraints.sdc"
+enable_project_source_file -syn_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/constraints/synplify_constraints.fdc"
+enable_project_source_file -syn_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring.pdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_fast.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_slow.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_fast.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_slow.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_fast.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_slow.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/constraints/ace_constraints.sdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/constraints/ace_placements.pdc"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_bitstream0.hex"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_bitstream1.hex"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_util.xml"
+enable_project_source_file -pnr_constraint -project elastix_gemm_top -impl impl_1 "./../../../src/ioring/elastix_gemm_top_ioring_power.xml"
+
+
+set_active_impl "impl_1" -project "elastix_gemm_top"
+
+# Flow steps for active implementation
+disable_flow_step generate_all_ip_design_files
+disable_flow_step run_simulation_rtl
+enable_flow_step run_synthesis
+disable_flow_step run_simulation_gate
+disable_flow_step report_timing_placed
+enable_flow_step report_timing_routed
+disable_flow_step write_netlist_routed
+disable_flow_step run_simulation_routed
+enable_flow_step report_timing_final
+enable_flow_step write_reports_final
+disable_flow_step write_netlist_final
+disable_flow_step run_simulation_final
+enable_flow_step write_bitstream
+disable_flow_step fpga_download
+
+# End of file
+

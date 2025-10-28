@@ -53,7 +53,7 @@ module tb_gfp8_bcv_controller;
     logic [255:0] bram_right [0:1055];
     
     // Result collection
-    logic signed [31:0] results_mantissa [0:255];  // Up to 16x16 = 256 results
+    logic signed [31:0] results_mantissa [0:255];  // Up to 16×16 = 256 results
     logic signed [7:0]  results_exponent [0:255];
     
     // ===================================================================
@@ -151,8 +151,8 @@ module tb_gfp8_bcv_controller;
         logic [255:0] right_data [0:527];
         
         $display("  Loading BRAM from hex files...");
-        $readmemh("/home/workstation/elastix_gemm/hex/left.hex", left_data);
-        $readmemh("/home/workstation/elastix_gemm/hex/right.hex", right_data);
+        $readmemh("/home/dev/Dev/elastix_gemm/hex/left.hex", left_data);
+        $readmemh("/home/dev/Dev/elastix_gemm/hex/right.hex", right_data);
         
         // Copy to BRAM models
         for (int i = 0; i < 528; i++) begin
@@ -248,10 +248,10 @@ module tb_gfp8_bcv_controller;
         
         $display("  Results collected: %0d", result_count);
         if (result_count == 1) begin
-            $display("  Expected: 1 result (1x1 output)");
+            $display("  Expected: 1 result (1×1 output)");
             $display("  Result mantissa=%0d, exponent=%0d", 
                      results_mantissa[0], results_exponent[0]);
-            // Each NV dot product: 128 elements x (1*1) = 128
+            // Each NV dot product: 128 elements × (1*1) = 128
             if (results_mantissa[0] == 32'sd128 && results_exponent[0] == 8'sd0) begin
                 $display("  [PASS]\n");
             end else begin
@@ -283,7 +283,7 @@ module tb_gfp8_bcv_controller;
             $display("  Expected: 1 result (accumulation of 4 NV dots)");
             $display("  Result mantissa=%0d, exponent=%0d", 
                      results_mantissa[0], results_exponent[0]);
-            // 4 NV dot products: 4 x 128 = 512
+            // 4 NV dot products: 4 × 128 = 512
             if (results_mantissa[0] == 32'sd512 && results_exponent[0] == 8'sd0) begin
                 $display("  [PASS]\n");
             end else begin
@@ -312,12 +312,12 @@ module tb_gfp8_bcv_controller;
         
         $display("  Results collected: %0d", result_count);
         if (result_count == 4) begin
-            $display("  Expected: 4 results (2x2 output matrix)");
+            $display("  Expected: 4 results (2×2 output matrix)");
             for (int i = 0; i < 4; i++) begin
                 $display("    Output[%0d]: mantissa=%0d, exponent=%0d", 
                          i, results_mantissa[i], results_exponent[i]);
             end
-            // Each output: 2 NV dot products = 2 x 128 = 256
+            // Each output: 2 NV dot products = 2 × 128 = 256
             if (results_mantissa[0] == 32'sd256) begin
                 $display("  [PASS]\n");
             end else begin

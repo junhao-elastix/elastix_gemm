@@ -1,10 +1,10 @@
 "Pin Assignment Report - elastix_gemm_top"
 
-"ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-20 21:17"
+"ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-24 10:52"
 
 "Design: elastix_gemm_top"
 "Device: AC7t1500"
-"Generated on: 2025-10-20T21:17:28.559593584"
+"Generated on: 2025-10-24T10:52:22.188093722"
 "Host: workstation-10"
 "Pin Assignment"
 "Port Name","Direction","Ball Name","Bump Name","Bank","Ball","Pad/Macro Site","Site Polarity","Clock Capable Site","Reset Capable Site","Data Capable Site","Used as Clock","Used as Reset"

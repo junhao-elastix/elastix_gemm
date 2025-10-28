@@ -1,0 +1,32 @@
+#ACE 10.2.1 IP Properties File, generated on:
+#Tue Feb 18 14:06:39 PST 2025
+acxip_version=1
+enable_pcie_0=No
+enable_pcie_0_dbi_gateway=No
+enable_pcie_0_gen2_deemph=No
+enable_pcie_0_hot_rstn=No
+enable_pcie_0_perstn=No
+enable_pcie_1=Yes
+enable_pcie_1_dbi_gateway=Yes
+enable_pcie_1_gen2_deemph=No
+enable_pcie_1_hot_rstn=Yes
+enable_pcie_1_perstn=Yes
+enable_pcie_irq_to_avr=No
+enable_pcie_reconfig_fpga=Yes
+library=Speedster7t
+name=Device Manager
+nap_column=6
+nap_row=4
+output.instance_prefix=
+output.path_relative_to=ACXIP File
+output.pdc_file=./acx_device_manager.pdc
+output.pdc_file_en=Yes
+output.sdc_file=./acx_device_manager.sdc
+output.sdc_file_en=Yes
+output.systemverilog_file=../rtl/acx_device_manager.sv
+output.systemverilog_file_en=Yes
+output.verilog_file=./acx_device_manager.v
+output.verilog_file_en=Yes
+output.vhdl_file=./acx_device_manager.vhd
+output.vhdl_file_en=No
+target_device=AC7t1500

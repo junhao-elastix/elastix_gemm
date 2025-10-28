@@ -1,5 +1,5 @@
 #ACE 10.3.1 Auxiliary IO Design Properties File, generated on:
-#Mon Oct 20 21:17:28 PDT 2025
+#Fri Oct 24 10:52:22 PDT 2025
 ddr4_clk.frequency=800.0
 ddr4_clk.input_to_core=No
 ddr4_clk.output_from_core=No

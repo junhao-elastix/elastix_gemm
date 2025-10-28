@@ -1,0 +1,82 @@
+
+# -------------------------------------------------------------------------
+# ACE placements file
+# This defines the physical placement of instances on the die
+# Primarily the IO locations, however instance locations and placement
+# regions can also be defined here
+# -------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------
+# Place NAPs
+# IMPORTANT - if a location is changed here, then also change it in the testbench
+# Also - ensure NAP locations here match PCIe DMA targets, (BRAM responder)
+# and PCIe BAR registers (reg_control)
+# -------------------------------------------------------------------------
+
+# Reg control NAP to 5,5
+set_placement -fixed {i:i_reg_control_block.i_axi_initiator.i_axi_initiator} {s:x_core.NOC[5][5].logic.noc.nap_m}
+# Optional Reg control DMA accelerator to 5,5
+if { [find *gb_dma_accel*i_axi_responder* -insts] != "" } {
+    set_placement -fixed {i:i_reg_control_block.gb_dma_accel.i_dma_accel.i_axi_responder.i_axi_responder} {s:x_core.NOC[5][5].logic.noc.nap_s}
+}
+
+# BRAM responder - For ATU Demonstration
+set_placement -fixed {i:i_axi_bram_rsp_atu.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[7][7].logic.noc.nap_m}
+
+# BRAM responder - DMA (Result Data) - CO-LOCATED with MS2.0 engine (Oct 10, 2025 NAP fix)
+# CRITICAL: Must be near engine at NOC[3][4] for internal write ports to work
+# Internal BRAM write signals cannot cross NoC fabric - requires physical proximity
+set_placement -fixed {i:i_axi_bram_rsp_dma.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][5].logic.noc.nap_m}
+
+# BRAM responder - Descriptor lists
+set_placement -fixed {i:i_axi_bram_rsp_dl.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[9][7].logic.noc.nap_m}
+
+# MSIX Interrupt Handler
+set_placement -fixed {i:i_msix_irq_handler.i_axi_responder_nap.i_axi_responder} {s:x_core.NOC[5][7].logic.noc.nap_s}
+
+# FLR Responder
+set_placement -fixed {i:i_flr_responder.i_axi_responder_nap.i_axi_responder} {s:x_core.NOC[9][8].logic.noc.nap_s}
+
+# -------------------------------------------------------------------------
+# GDDR6 NAP Placements - Channel 0 Only (GEMM Engine Focus)
+# MS2.0 GEMM Engine uses Channel 0 @ NOC[3][3]
+# Channels 1-7 disabled for focused GEMM architecture
+# -------------------------------------------------------------------------
+
+# Channel 1: MS2.0 GEMM Engine NAP placement (FIXED Oct 8 2025)
+# West side: NOC[3][4] for GDDR6 Channel 1
+# Architecture (per GDDR6 reference design):
+#   Engine (initiator) → NAP responder wrapper → NoC → GDDR6_1
+# Dispatcher acts as AXI master/initiator, NAP provides slave/responder interface
+# Using nap_s (slave) for responder wrapper per reference design pattern
+# Note: Generate blocks create instance names with underscore syntax (gddr_gen_noc_1, not gddr_gen_noc[1])
+# Reference: gddr_ref_design/src/constraints/ace_placements.pdc
+set_placement -fixed [find -insts "gddr_gen_noc_1\*i_axi_responder_wrapper.i_axi_responder"] \
+    "s:x_core.NOC[3][4].logic.noc.nap_s"
+
+# Channel 0: MS2.0 GEMM Engine Placement Region (following reference design patterns)
+# West side region for Channel 0 GEMM engine - coordinates from GDDR6 reference design
+# This places GEMM engine components near NOC[3][3] for optimal Channel 0 access
+create_region "region_gemm_engine_ch0" "55 193 81 229" -snap fabric_clusters -type soft
+
+# Add GEMM engine components to placement region
+add_region_find_insts "region_gemm_engine_ch0" "find -insts *gemm_engine_channel*"
+
+# Explicit BRAM placement for engine components (if using ACX_BRAM72K)
+# Note: Following reference pattern - place BRAMs near their logic
+# set_placement -fixed [find -insts "*gemm_engine*bram*"] {s:x_core.BMLP[3][3].logic.bmlp.bram[0]}
+# set_placement -fixed [find -insts "*dispatcher*bram*"] {s:x_core.BMLP[3][4].logic.bmlp.bram[0]}
+
+# MLP placement (if compute engine uses ACX_MLP72 primitives)
+# Note: Would need to identify specific MLP instances in compute_engine
+# set_placement -fixed [find -insts "*compute_engine*mlp*"] {s:x_core.BMLP[3][3].logic.bmlp.mlp[0]}
+
+# Channels 1-7: Commented out in RTL, no placement constraints needed
+# Future expansion: Uncomment and add placements when additional channels used
+
+# -------------------------------------------------------------------------
+# Example of how to fix the location of an MLP and a BRAM
+# -------------------------------------------------------------------------
+# set_placement -fixed {i:<my_hierarchical_path>.i_bram} {s:x_core.BMLP[29][5].logic.bmlp.bram[0]}
+# set_placement -fixed {i:<my_hierarchical_path>.i_mlp}    {s:x_core.BMLP[29][5].logic.bmlp.mlp[0]}
+

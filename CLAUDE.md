@@ -8,32 +8,30 @@ This is a comprehensive FPGA-optimized GEMM (General Matrix Multiply) engine dev
 
 ## Critical Development Rules
 
-### Study and memorize the .cursor/rules at the begining of every sesson (MANDATORY)
+The following rules are critical to development and needs to be **STRICTLY FOLLOWED** during coding and testing:
 
-### **Display verbose and enforce all the following rules (starting from rule 3) at the beginning of every response (MANDATORY)**
+- Study and memorize the .cursor/rules at the begining of every sesson (MANDATORY)
+
+- **Display verbatim (DO NOT summarize) and enforce all the rules (including this one) at the beginning of EVERY response (MANDATORY)**
 
 <!-- ### **Always invoke agents (MANDATORY)** 
 You always want to invoke agents when dealing with specific tasks. You need to invoke **fpga-architect** when working with FPGA hardware designs. You need to invoke **hardware-ml-software-engineer** when working with software system and hardware tests in the host. -->
 
-### **Rigorous Thinking (MANDATORY)**
-You need to think step-by-step as a scientist and a engineer carefully and rigorously. Often ask yourself, what if we do this? Then, you need to acticipate the outcomes and analyze. You may also want to think about edge cases or multiple test cases when appropriate. 
+- **Rigorous Thinking (MANDATORY):** You need to think step-by-step as a scientist and a engineer carefully and rigorously. Often ask yourself, what if we do this? Then, you need to acticipate the outcomes and analyze. You may also want to think about edge cases or multiple test cases when appropriate. 
 
-### **Find references (CRITICAL)**
-When you are stuck, go back to read the relevant documents. **MANDATORY technical documentation:**
+- **Find references (CRITICAL):** Always read the reference manuals in the projects. It will be named with "REFERENCE". For example, [SINGLE_ROW_REFERENCE](/home/dev/Dev/elastix_gemm/gemm/SINGLE_ROW_REFERENCE.md) and [STATE_TRANSITION_REFERENCE](/home/dev/Dev/elastix_gemm/gemm/STATE_TRANSITIONS_REFERENCE.md). You should read it everytime when you attempt to debug. If you think the reference needs adjustments, you need to check with the user first. Challenge yourself to see if you understand everything. Ask yourself: Is this fix compliant to the reference manual? Should I ask the user to clarify?
 
-#### **Achronix Official Documentation**
-- **NoC Architecture**: ~/Dev/elastix_gemm/doc/2D_Network_on_Chip/Speedster7t_2D_Network_on_Chip_User_Guide_UG089.html
-- **GDDR6 Integration**: ~/Dev/elastix_gemm/doc/GDDR6_Reference_Design/Speedster7t_GDDR6_Reference_Design_Guide_RD017.html
-- **Component Library**: ~/Dev/elastix_gemm/doc/Component_Library/Speedster7t_Component_Library_User_Guide_UG086-1.html  
-- **Soft IP Configuration**: ~/Dev/elastix_gemm/doc/Soft_IP/Speedster7t_Soft_IP_User_Guide_UG103_3.html
+- **Achronix Official Documentation:**
+    - **NoC Architecture**: ~/Dev/elastix_gemm/doc/2D_Network_on_Chip/Speedster7t_2D_Network_on_Chip_User_Guide_UG089.html
+    - **GDDR6 Integration**: ~/Dev/elastix_gemm/doc/GDDR6_Reference_Design/Speedster7t_GDDR6_Reference_Design_Guide_RD017.html
+    - **Component Library**: ~/Dev/elastix_gemm/doc/Component_Library/Speedster7t_Component_Library_User_Guide_UG086-1.html  
+    - **Soft IP Configuration**: ~/Dev/elastix_gemm/doc/Soft_IP/Speedster7t_Soft_IP_User_Guide_UG103_3.html
 
-#### **Reference Projects (READ-ONLY)**
-For hardware designs, look for hints and reference designs in ~/Dev/elastix_gemm/llm_vp_demo_pcie_orig, ~/Dev/elastix_gemm/shell_demo, and ~/Dev/elastix_gemm/gddr_ref_degisn. These are reference projects so **do not modify the code there.**
+- **Reference Projects (READ-ONLY):** For hardware designs, look for hints and reference designs in ~/Dev/elastix_gemm/llm_vp_demo_pcie_orig, ~/Dev/elastix_gemm/shell_demo, and ~/Dev/elastix_gemm/gddr_ref_degisn. These are reference projects so **do not modify the code there.**
 
-#### **Project Documentation**
-You should also read the Markdowns (*.md) in these projects to enhance and refresh your knowledge. Each active project has **REFERENCES.md** for technical documentation integration. 
+- **Project Documentation:** You should also read the Markdowns (*.md) in these projects to enhance and refresh your knowledge. Each active project has **REFERENCES.md** for technical documentation integration. 
 
-### **Build Process Rules (MANDATORY)**
+- **Build Process Rules (MANDATORY):**
 ```bash
 # ALWAYS clean before building
 make clean && make run       # Correct
@@ -41,7 +39,7 @@ make clean && make all       # Correct
 make run                     # WRONG - will cause stale build issues
 ```
 
-### **Python Environment**
+- **Python Environment:**
 ```bash
 # ALWAYS activate conda environment for Python work
 conda activate elastix
@@ -51,17 +49,18 @@ conda install -y <package>   # Try conda first
 pip install <package>        # Use pip if conda fails
 ```
 
-### **Documentation Rules (MANDATORY)**
-- **Changelog Maintenance**: After EVERY successful compilation, update CHANGELOG.md with timestamp from `date` command
-- **Timestamp Requirements**: ALWAYS use `date` command for accurate timestamps in documentation
-- **Documentation Verification**: Read existing README.md, CLAUDE.md, and CHANGELOG.md before making changes
+- **Documentation Rules (MANDATORY):**
+    - **Changelog Maintenance**: After EVERY successful compilation, update CHANGELOG.md with timestamp from `date` command
+    - **Timestamp Requirements**: ALWAYS use `date` command for accurate timestamps in documentation
+    - **Documentation Verification**: Read existing README.md, CLAUDE.md, and CHANGELOG.md before making changes
 
-### **SystemVerilog Conventions**
-- **Use `logic`** instead of `wire` or `reg` (modern SystemVerilog), `always_comb` and `always_ff` for combinational (non-blocking) and registered (blocking) logics.
-- **State Machines**: ALWAYS list out explicit control signal assignments in the state machines. State transitions and state controls should be separated into two switch case blocks.
-- **Modular Design** ALWAYS keep your code modular and self-contained. You should be able to avoid having monolithic State Machines. The designs should be able to be replaced or upgraded with a similar functionality with similar interfaces.
+- **SystemVerilog Conventions:**
+    - **Use `logic`** instead of `wire` or `reg` (modern SystemVerilog), `always_comb` and `always_ff` for combinational (non-blocking) and registered (blocking) logics.
+    - **State Machines**: ALWAYS list out explicit control signal assignments in the state machines. State transitions and state controls should be separated into two switch case blocks.
+    - **Modular Design** ALWAYS keep your code modular and self-contained. You should be able to avoid having monolithic State Machines. The designs should be able to be replaced or upgraded with a similar functionality with similar interfaces.
+    - **Parameterized Bitwidths** Avoid hardcoding the bitwidths of the signals. Explore the opportunity to standardize and parameterize the bitwidths of either module parameters or local parameters. It is easier to maintain and debug. 
 
-### **FPGA Recovery Procedures (CRITICAL)**
+- **FPGA Recovery Procedures (CRITICAL):**
 **VERY IMPORTANT** DO NOT SET TIMEOUT!!! DANDEROUS TO INTERRUPT
 ```bash
 
@@ -74,7 +73,7 @@ sudo lspci -d 1b59: -v && sudo lspci -d 12ba: -v
 sudo reboot
 ```
 
-### **FPGA Build and Flash (MANDATORY)**
+- **FPGA Build and Flash (MANDATORY):**
 ```bash
 cd /home/dev/Dev/elastix_gemm/gemm
 ./build_and_flash.sh
@@ -94,25 +93,21 @@ cd /home/dev/Dev/elastix_gemm/gemm
 ```
 
 
-### **Monitor the build and flash in foreground (MANDATORY)**
+- **Monitor the build and flash in foreground (MANDATORY):**
 Do not run build in the background and forget to monitor. 
 Generating bitstream can take very long. Depending on the complexity of the design, it can take upto hours. You may set a timeout for 1 hour (60 minutes) for now.
 You should run it in the foreground and wait for it to return to shell. 
 If the returns with the register status, it means the bitstream is built and ready for tests.
 Otherwise, the build has failed, and you need to figure out why. You should look for ```@E``` for Errors in the log. Then, you should iterate on yourself.
 
-### **Software test sanity check (MANDATORY)**
-After you run each software test, you should run 
-```bash
-cd ~/Dev/elastix_gemm/matmul/sw_test/test_registers
-```
-to make sure the FPGA is still in a healthy state. Always check the register offsets. One good indication is to find the Bitstream ID location, which is the timestamp when this bitstream is built.
+- **Software test sanity check (MANDATORY):**
+After you run each software test, you should run `cd ~/Dev/elastix_gemm/matmul/sw_test/test_registers` to make sure the FPGA is still in a healthy state. Always check the register offsets. One good indication is to find the Bitstream ID location, which is the timestamp when this bitstream is built.
 If the FPGA hangs (showing 0xffffffff), you should engage the recovery protocal immediately to avoid further problems.
 If not recovered properly, it can cause the FPGA to enter a much worse state where we need to recover with reboots.
 If the FPGA ADM isn't showing 0x3, DMA may not work. At this point, you need to stop developing and get my attention. I will check and potentially reboot.
 You should also run bram and ddr basic tests to sanity check the implementation so that you make sure that new features do not break existing ones and the enhancements are incremental.
 
-### **Tests (MANDATORY)**
+- **Tests (MANDATORY)**
 NEVER hardcode reference results. You should either generate golden output from some reference model or compare the results with a golden output file. 
 Before you create new C tests, please always check the existing tests. You can either extend the existing tests or replace the ones that are obsolete. Don't add new tests unless necessary.
 Always compile from Makefile. 

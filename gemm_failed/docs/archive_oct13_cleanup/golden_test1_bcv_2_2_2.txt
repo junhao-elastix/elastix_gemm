@@ -1,0 +1,23 @@
+# Golden Reference for test1_bcv_2_2_2
+# Total tiles: 2
+
+--- Tile 0 ---
+B=2, C=2, V=2, left_addr=0, right_addr=0
+Expected results: 4
+
+Results (FP32 golden, FP16 for comparison):
+   0: -76992512.000000 (FP32: 0xcc92da00, FP16: 0xfc00)
+   1: -20598784.000000 (FP32: 0xcb9d2800, FP16: 0xfc00)
+   2: -160309248.000000 (FP32: 0xcd18e200, FP16: 0xfc00)
+   3: -38805504.000000 (FP32: 0xcc140800, FP16: 0xfc00)
+
+--- Tile 1 ---
+B=2, C=2, V=2, left_addr=32, right_addr=32
+Expected results: 4
+
+Results (FP32 golden, FP16 for comparison):
+   0: 194408448.000000 (FP32: 0x4d396700, FP16: 0x7c00)
+   1: 71430144.000000 (FP32: 0x4c883e00, FP16: 0x7c00)
+   2: -269946880.000000 (FP32: 0xcd80b880, FP16: 0xfc00)
+   3: -5632000.000000 (FP32: 0xcaabe000, FP16: 0xfc00)
+

@@ -1,0 +1,1 @@
+# KERNEL: [MC] @15435000 EXEC_TILE: B=1, C=1, V=1, left_addr=0, right_addr=528, bypass=z

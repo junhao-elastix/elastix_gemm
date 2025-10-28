@@ -1,0 +1,116 @@
+================================================================================
+Current Test Status Summary
+================================================================================
+Date: October 13, 2025
+
+TEST RESULTS (9 tests total):
+  PASS: 2 tests
+  FAIL: 7 tests (but 2 categories of failures)
+
+================================================================================
+CATEGORY 1: SMALL ACCEPTABLE ERRORS (5 tests)
+================================================================================
+
+TEST 1: B1_C1_V1 (1×1, V=1)
+  Status: PASS - All 1 results matched exactly
+
+TEST 2: B2_C2_V2 (2×2, V=2)  
+  Status: PASS - All 4 results matched exactly
+
+TEST 3: B4_C4_V4 (4×4, V=4)
+  Status: FAIL - 4/16 mismatches
+  Error magnitude: 4-12 LSBs (0.26%-0.72% relative error)
+  Error type: Same sign, small mantissa differences
+  Assessment: ACCEPTABLE - rounding errors from GFP accumulation
+
+TEST 4: B2_C2_V64 (2×2, V=64)
+  Status: FAIL - 2/4 mismatches  
+  Error magnitude: 3-12 LSBs
+  Error type: Same sign, small mantissa differences
+  Assessment: ACCEPTABLE
+
+TEST 5: B4_C4_V32 (4×4, V=32)
+  Status: FAIL - 5/16 mismatches
+  Error magnitude: 4-21 LSBs  
+  Error type: Same sign, small mantissa differences
+  Assessment: ACCEPTABLE
+
+TEST 8: B128_C1_V1 (128×1, V=1)
+  Status: FAIL - 4/128 mismatches (3.1%)
+  Error magnitude: Similar to above
+  Assessment: ACCEPTABLE
+
+================================================================================
+CATEGORY 2: LARGE CATASTROPHIC ERRORS (2 tests) - BUGS!
+================================================================================
+
+TEST 6: B8_C8_V16 (8×8, V=16)
+  Status: FAIL - 64/64 mismatches (100%!)
+  Error magnitude: 555-36978 LSBs
+  Error type: SIGN BIT MISMATCHES - positive vs negative!
+  Examples:
+    - hw=+0.088 vs gold=-0.488 (WRONG SIGN)
+    - hw=-0.232 vs gold=+0.241 (WRONG SIGN)
+    - hw=+0.211 vs gold=-0.036 (WRONG SIGN)
+  Assessment: CRITICAL BUG - completely wrong values
+
+TEST 9: B1_C1_V128 (1×1, V=128)
+  Status: FAIL - 1/1 mismatches
+  Error magnitude: Likely large (not yet analyzed)
+  Assessment: Likely same bug as B8_C8_V16
+
+TEST 7: B1_C128_V1 (1×128, V=1)
+  Status: Not shown (likely timed out or hung)
+
+================================================================================
+ROOT CAUSE ANALYSIS:
+================================================================================
+
+SMALL ERRORS (Category 1):
+  - Source: Exponent alignment right-shifts during V-loop accumulation
+  - Hardware: Integer GFP accumulation with arithmetic shifts
+  - Python: FP16 accumulation with different rounding
+  - Behavior: Small LSB differences, correct sign
+  - Occurs: All matrix sizes, but manageable error magnitude
+  - Verdict: Expected and acceptable
+
+LARGE ERRORS (Category 2):
+  - Source: UNKNOWN BUG in hardware
+  - Symptoms: Sign bit flips, completely wrong magnitudes
+  - Trigger: B≥8 or V≥128 (large matrices)
+  - Possible causes:
+    1. Integer overflow in accumulator (32-bit signed limit)
+    2. Addressing bug for large indices (B≥8)
+    3. BCV loop counter overflow (8-bit indices?)
+    4. Result FIFO overflow/corruption
+    5. Exponent overflow causing sign flip
+  - Verdict: CRITICAL BUG requiring investigation
+
+================================================================================
+NEXT STEPS:
+================================================================================
+
+1. Investigate B8_C8_V16 failure:
+   - Check if accumulator overflows (32-bit signed max = 2,147,483,647)
+   - Check BCV loop counters for B=8 (need 3+ bits)
+   - Check result collection for B×C=64 results
+   - Add debug for accumulator values
+
+2. Investigate B1_C1_V128 failure:
+   - Check V-loop counter (needs 7+ bits for V=128)
+   - Check if 128 accumulations cause overflow
+
+3. Compare working (B≤4) vs broken (B≥8) configurations:
+   - What changes when B crosses from 4 to 8?
+   - Are there hardcoded limits or bit width assumptions?
+
+================================================================================
+HARDWARE STATUS:
+================================================================================
+
+For production use:
+  ✓ B≤4, C≤4, V≤64: READY (small acceptable errors)
+  ✗ B≥8 or V≥128: BLOCKED (critical bug causing wrong results)
+
+The hardware is PARTIALLY PRODUCTION READY but has scalability issues.
+================================================================================

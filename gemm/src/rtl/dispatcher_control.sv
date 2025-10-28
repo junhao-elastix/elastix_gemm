@@ -211,9 +211,14 @@ import gemm_pkg::*;
     logic [7:0]   disp_num_enabled_tiles_reg;    // Count of enabled tiles (popcount of col_en)
     logic [8:0]   disp_tile_start_reg;           // Source pointer in dispatcher_bram
     logic [15:0]  disp_receive_tile_start_reg;   // Destination pointer in tile_bram
-    logic [8:0]   disp_ugd_batch_lines_reg;      // Lines per batch (ugd_vec_size × 4)
+    logic [9:0]   disp_ugd_batch_lines_reg;      // Lines per batch (ugd_vec_size × 4, max=512)
     logic [7:0]   disp_batch_cnt_reg;            // Current batch being dispatched
     logic [7:0]   disp_total_batches_reg;        // Total batches to dispatch (man_nv_cnt / ugd_vec_size)
+    logic [9:0]   disp_within_batch_cnt_reg;     // Lines within current batch (0 to ugd_batch_lines-1, max=511)
+
+    // Address calculation signals
+    logic [10:0]  dispatcher_read_addr;          // Final read address in dispatcher_bram
+    logic [10:0]  tile_write_addr;               // Final write address in tile_bram
 
     // Parallel unpacking signals (for 3-buffer architecture)
     logic [3:0]  unpack_exp_packed_rd_addr_reg; // 0-15: which exp_packed line to read
@@ -231,6 +236,10 @@ import gemm_pkg::*;
         end
         return count[7:0];
     endfunction
+
+    // Simplified tile selection: Sequential tiles starting from 0
+    // Assumptions: col_en is sequential (e.g., 0x3=tiles[0:1], 0xF=tiles[0:3])
+    //              col_start always 0, C divisible by num_tiles
 
     // ===================================================================
     // State Transition Logic
@@ -350,13 +359,15 @@ import gemm_pkg::*;
             disp_exp_cnt_reg <= '0;
             disp_man_done_reg <= 1'b0;
             disp_exp_done_reg <= 1'b0;
-            disp_ugd_batch_lines_reg <= 9'd512;  // Initialize to safe maximum value
+            disp_ugd_batch_lines_reg <= 10'd512;  // Initialize to safe maximum value
             disp_num_enabled_tiles_reg <= 8'd1;  // Initialize to 1 to avoid divide-by-zero
             disp_current_tile_idx_reg <= '0;
             disp_tile_start_reg <= '0;
             disp_receive_tile_start_reg <= '0;
             disp_batch_cnt_reg <= '0;
             disp_total_batches_reg <= '0;
+            disp_within_batch_cnt_reg <= '0;
+            batch_complete_pending <= 1'b0;
         end else begin
             fetch_done_reg <= 1'b0;  // Default
             disp_done_reg <= 1'b0;  // Default
@@ -401,15 +412,18 @@ import gemm_pkg::*;
                         disp_num_enabled_tiles_reg <= popcount_24bit(i_disp_col_en);
                         disp_ugd_batch_lines_reg <= {1'b0, i_disp_ugd_vec_size} << 2;  // ugd_vec_size × 4
                         disp_total_batches_reg <= i_disp_man_nv_cnt / i_disp_ugd_vec_size;
-                        disp_current_tile_idx_reg <= i_disp_col_start % popcount_24bit(i_disp_col_en);
+                        disp_current_tile_idx_reg <= 5'd0;  // Always start at tile 0 (simplified assumption)
 
-                        // NEW: Initialize pointers
-                        disp_tile_start_reg <= '0;  // Start at beginning of dispatcher_bram
-                        disp_receive_tile_start_reg <= i_disp_tile_addr;  // Start address in tile_bram
+                        // NEW: Initialize pointers (use addresses from DISP command)
+                        disp_tile_start_reg <= '0;  // Always read from 0 in dispatcher_bram (FETCH always starts at 0)
+                        disp_receive_tile_start_reg <= i_disp_tile_addr;  // Write to tile BRAM at specified address
                         disp_batch_cnt_reg <= '0;  // Start at batch 0
+                        disp_within_batch_cnt_reg <= '0;  // Start at line 0 within batch
+                        disp_write_cnt <= -11'sd1;  // Start at -1 so first write is to address 0
 
-                        $display("[DC] @%0t DISP triggered: man_nv_cnt=%0d, lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
-                                 $time, i_disp_man_nv_cnt, {2'b00, i_disp_man_nv_cnt} << 2,
+                        $display("[DC] @%0t DISP triggered: man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d, batch_lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
+                                 $time, i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size,
+                                 {2'b00, i_disp_ugd_vec_size} << 2,
                                  i_disp_right, i_disp_broadcast, i_disp_col_en, popcount_24bit(i_disp_col_en));
                     end
                 end
@@ -440,28 +454,87 @@ import gemm_pkg::*;
                 end
 
                 ST_DISP_BUSY: begin
-                    // Simplified single-tile dispatch (for now)
-                    // TODO: Multi-tile dispatch logic will be added later
-                    // For single-tile: Just copy all man_nv_cnt × 4 lines sequentially
+                    // Multi-tile dispatch with broadcast/distribute modes
+                    // Per SINGLE_ROW_REFERENCE.md lines 186-188
 
-                    // Copy mantissas (one line per cycle)
-                    if (!disp_man_done_reg && disp_man_cnt_reg < disp_lines_to_copy_reg) begin
-                        disp_man_cnt_reg <= disp_man_cnt_reg + 1;
-                        if (disp_man_cnt_reg == (disp_lines_to_copy_reg - 1)) begin
-                            disp_man_done_reg <= 1'b1;
-                            $display("[DC] @%0t DISP_BUSY: Mantissa copy complete (%0d lines, selective %s)",
-                                     $time, disp_lines_to_copy_reg, disp_right_reg ? "RIGHT" : "LEFT");
+                    // Initialize combinational flag
+                    set_batch_complete = 1'b0;
+
+                    // Copy one line per cycle (mantissa and exponent in parallel)
+                    if (!disp_man_done_reg) begin
+                        // Increment read counter
+                        disp_within_batch_cnt_reg <= disp_within_batch_cnt_reg + 1;
+                        // Increment write counter (lags read by 1 cycle initially due to -1 start)
+                        disp_write_cnt <= disp_write_cnt + 11'sd1;
+
+                        // Check if current batch complete (ugd_vec_size × 4 lines)
+                        if (disp_within_batch_cnt_reg == (disp_ugd_batch_lines_reg - 1)) begin
+                            // Batch complete, reset counters
+                            disp_within_batch_cnt_reg <= '0;
+                            disp_write_cnt <= -11'sd1;  // Reset write counter for next batch
+
+                            if (disp_broadcast_reg) begin
+                                // === BROADCAST MODE (SIMPLIFIED) ===
+                                // Same data to all tiles, then advance batch
+                                // Assumption: Tiles are sequential 0 to (num_tiles-1)
+                                $display("[DC] @%0t BROADCAST: Batch %0d to tile %0d complete",
+                                        $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
+
+                                if (disp_current_tile_idx_reg == (disp_num_enabled_tiles_reg - 1)) begin
+                                    // Last tile received this batch, advance to next batch
+                                    disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
+                                    disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                    disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
+                                    disp_current_tile_idx_reg <= 5'd0;  // Wrap to tile 0
+
+                                    $display("[DC] @%0t BROADCAST: All tiles done, advancing to batch %0d",
+                                            $time, disp_batch_cnt_reg + 1);
+
+                                    // Check if all batches dispatched
+                                    if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
+                                        set_batch_complete = 1'b1;  // Mark for delayed done
+                                        $display("[DC] @%0t BROADCAST: All %0d batches complete (pending final write)",
+                                                $time, disp_total_batches_reg);
+                                    end
+                                end else begin
+                                    // Move to next tile with SAME data (source pointer unchanged)
+                                    disp_current_tile_idx_reg <= disp_current_tile_idx_reg + 1;
+                                    $display("[DC] @%0t BROADCAST: Moving to tile %0d (same data)",
+                                            $time, disp_current_tile_idx_reg + 1);
+                                end
+                            end else begin
+                                // === DISTRIBUTE MODE (SIMPLIFIED) ===
+                                // Each tile gets different data, round-robin
+                                // Assumption: C divisible by num_tiles
+                                $display("[DC] @%0t DISTRIBUTE: Batch %0d to tile %0d complete",
+                                        $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
+
+                                // Each tile gets different data, advance source pointer
+                                disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
+                                disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
+
+                                // Move to next tile (simple modulo wrap-around)
+                                disp_current_tile_idx_reg <= (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg;
+
+                                // Check if all batches dispatched
+                                if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
+                                    set_batch_complete = 1'b1;  // Mark for delayed done
+                                    $display("[DC] @%0t DISTRIBUTE: All %0d batches complete (pending final write)",
+                                            $time, disp_total_batches_reg);
+                                end
+                            end
                         end
                     end
 
-                    // Copy exponents (parallel with mantissas, same counter)
-                    if (!disp_exp_done_reg && disp_exp_cnt_reg < disp_lines_to_copy_reg) begin
-                        disp_exp_cnt_reg <= disp_exp_cnt_reg + 1;
-                        if (disp_exp_cnt_reg == (disp_lines_to_copy_reg - 1)) begin
-                            disp_exp_done_reg <= 1'b1;
-                            $display("[DC] @%0t DISP_BUSY: Exponent copy complete (%0d addresses, selective %s)",
-                                     $time, disp_lines_to_copy_reg, disp_right_reg ? "RIGHT" : "LEFT");
-                        end
+                    // Unified batch completion management
+                    if (batch_complete_pending) begin
+                        disp_man_done_reg <= 1'b1;
+                        disp_exp_done_reg <= 1'b1;
+                        batch_complete_pending <= 1'b0;
+                        $display("[DC] @%0t Final delayed write complete, setting done", $time);
+                    end else if (set_batch_complete) begin
+                        batch_complete_pending <= 1'b1;
                     end
                 end
 
@@ -488,6 +561,9 @@ import gemm_pkg::*;
     logic [9:0] man_wr_addr_pipe;    // Pipeline for destination address [0-511]
     logic [9:0] exp_rd_addr_pipe;    // Pipeline for source address [0-511]
     logic [9:0] exp_wr_addr_pipe;    // Pipeline for destination address [0-511]
+
+    // Write counter lags read counter by 1 due to BRAM latency
+    logic signed [10:0] disp_write_cnt;  // Signed to allow -1 initial value
     logic       copy_active_pipe;
     logic       man_wr_valid_pipe;   // Valid signal for mantissa write
     logic       exp_wr_valid_pipe;   // Valid signal for exponent write
@@ -495,6 +571,69 @@ import gemm_pkg::*;
     // Multi-tile write enable pipeline (1-stage to avoid blocking first write)
     logic [4:0] physical_tile_id_pipe;   // Physical tile ID (0-23) for future round-robin
     logic [23:0] tile_wr_en_pipe;        // One-hot tile write enable mask
+
+    // BRAM read latency compensation - delay write valid by 1 cycle
+    logic       man_wr_valid_delayed;
+    logic       exp_wr_valid_delayed;
+
+    // Delay done signals to allow final delayed write to complete
+    logic       batch_complete_pending;    // Flag to delay setting done by 1 cycle
+    logic       set_batch_complete;        // Combinational flag indicating batch just completed
+
+    // Internal read addresses for DISPATCH operation
+    // During DISPATCH, we internally control reads from dispatcher_bram
+    // During MATMUL, external CE controls reads
+    logic [TILE_ADDR_WIDTH-1:0] internal_man_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_man_right_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_exp_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_exp_right_rd_addr;
+    logic                       internal_rd_en;
+
+    // Muxed read addresses (select internal during DISPATCH, external otherwise)
+    logic [TILE_ADDR_WIDTH-1:0] muxed_man_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_man_right_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_right_rd_addr;
+    logic                       muxed_man_left_rd_en;
+    logic                       muxed_man_right_rd_en;
+    logic                       muxed_exp_left_rd_en;
+    logic                       muxed_exp_right_rd_en;
+
+    // Address source multiplexing (internal during DISPATCH, external during MATMUL)
+    // CRITICAL: internal addresses must be combinational to match pipeline timing
+    always_comb begin
+        if (state_reg == ST_DISP_BUSY) begin
+            if (disp_right_reg) begin
+                // RIGHT DISPATCH: Read from right side only
+                internal_man_left_rd_addr  = '0;
+                internal_man_right_rd_addr = man_rd_addr_pipe[TILE_ADDR_WIDTH-1:0];
+                internal_exp_left_rd_addr  = '0;
+                internal_exp_right_rd_addr = exp_rd_addr_pipe[TILE_ADDR_WIDTH-1:0];
+            end else begin
+                // LEFT DISPATCH: Read from left side only
+                internal_man_left_rd_addr  = man_rd_addr_pipe[TILE_ADDR_WIDTH-1:0];
+                internal_man_right_rd_addr = '0;
+                internal_exp_left_rd_addr  = exp_rd_addr_pipe[TILE_ADDR_WIDTH-1:0];
+                internal_exp_right_rd_addr = '0;
+            end
+            internal_rd_en = 1'b1;
+        end else begin
+            internal_man_left_rd_addr  = '0;
+            internal_man_right_rd_addr = '0;
+            internal_exp_left_rd_addr  = '0;
+            internal_exp_right_rd_addr = '0;
+            internal_rd_en = 1'b0;
+        end
+    end
+
+    assign muxed_man_left_rd_addr  = (state_reg == ST_DISP_BUSY) ? internal_man_left_rd_addr  : i_disp_man_left_rd_addr;
+    assign muxed_man_right_rd_addr = (state_reg == ST_DISP_BUSY) ? internal_man_right_rd_addr : i_disp_man_right_rd_addr;
+    assign muxed_exp_left_rd_addr  = (state_reg == ST_DISP_BUSY) ? internal_exp_left_rd_addr  : i_disp_exp_left_rd_addr;
+    assign muxed_exp_right_rd_addr = (state_reg == ST_DISP_BUSY) ? internal_exp_right_rd_addr : i_disp_exp_right_rd_addr;
+    assign muxed_man_left_rd_en    = (state_reg == ST_DISP_BUSY) ? internal_rd_en : i_disp_man_left_rd_en;
+    assign muxed_man_right_rd_en   = (state_reg == ST_DISP_BUSY) ? internal_rd_en : i_disp_man_right_rd_en;
+    assign muxed_exp_left_rd_en    = (state_reg == ST_DISP_BUSY) ? internal_rd_en : i_disp_exp_left_rd_en;
+    assign muxed_exp_right_rd_en   = (state_reg == ST_DISP_BUSY) ? internal_rd_en : i_disp_exp_right_rd_en;
 
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
@@ -505,29 +644,54 @@ import gemm_pkg::*;
             copy_active_pipe <= 1'b0;
             man_wr_valid_pipe <= 1'b0;
             exp_wr_valid_pipe <= 1'b0;
+            man_wr_valid_delayed <= 1'b0;
+            exp_wr_valid_delayed <= 1'b0;
             physical_tile_id_pipe <= '0;
             tile_wr_en_pipe <= '0;
         end else begin
             // Pipeline the addresses for 1-cycle BRAM read latency
-            // Simplified: Direct counter addressing (for single-tile dispatch)
-            man_rd_addr_pipe <= disp_man_cnt_reg;
-            man_wr_addr_pipe <= disp_man_cnt_reg;
+            // Multi-tile dispatch with broadcast/distribute addressing
 
-            exp_rd_addr_pipe <= disp_exp_cnt_reg;
-            exp_wr_addr_pipe <= disp_exp_cnt_reg;
+            // Calculate addresses (SAME for both broadcast and distribute modes)
+            // The difference is handled by when disp_tile_start_reg advances:
+            //   BROADCAST: Advances after all tiles receive same batch
+            //   DISTRIBUTE: Advances after each tile receives (every batch)
+            // READ address uses current counter
+            dispatcher_read_addr = disp_tile_start_reg + disp_within_batch_cnt_reg;
+            // WRITE address uses lagging counter (compensates for BRAM latency)
+            tile_write_addr = disp_receive_tile_start_reg[10:0] + disp_write_cnt[9:0];
+
+            // Assign to pipeline registers (truncate to 10-bit for pipe)
+            man_rd_addr_pipe <= dispatcher_read_addr[9:0];
+            man_wr_addr_pipe <= tile_write_addr[9:0];
+            exp_rd_addr_pipe <= dispatcher_read_addr[9:0];
+            exp_wr_addr_pipe <= tile_write_addr[9:0];
 
             copy_active_pipe <= (state_reg == ST_DISP_BUSY);
 
-            // Valid signals: HIGH when actively copying (before lines_to_copy complete)
-            man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_man_done_reg && (disp_man_cnt_reg < disp_lines_to_copy_reg);
-            exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_exp_done_reg && (disp_exp_cnt_reg < disp_lines_to_copy_reg);
+            // Valid signals: HIGH when actively copying (not done)
+            man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_man_done_reg;
+            exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_exp_done_reg;
+
+            // CRITICAL: Delay write valid by 1 cycle to account for BRAM read latency
+            // Cycle N: Read address presented to BRAM
+            // Cycle N+1: BRAM data available, delayed write valid goes high
+            man_wr_valid_delayed <= man_wr_valid_pipe;
+            exp_wr_valid_delayed <= exp_wr_valid_pipe;
 
             // Multi-tile write enable pipeline
-            // For single-tile dispatch: Just use col_en mask
-            // For multi-tile dispatch: This will be enhanced to track current tile in round-robin
+            // Broadcast vs Distribute mode (per SINGLE_ROW_REFERENCE.md)
             physical_tile_id_pipe <= disp_current_tile_idx_reg;
             if (state_reg == ST_DISP_BUSY) begin
-                tile_wr_en_pipe <= disp_col_en_reg;  // Simple: Use col_en mask directly
+                if (disp_broadcast_reg) begin
+                    // BROADCAST MODE: Enable all tiles in col_en
+                    // Same data written to all enabled tiles simultaneously
+                    tile_wr_en_pipe <= disp_col_en_reg;
+                end else begin
+                    // DISTRIBUTE MODE: Enable only current tile (one-hot)
+                    // Different data written to each tile sequentially
+                    tile_wr_en_pipe <= 24'h000001 << disp_current_tile_idx_reg;
+                end
             end else begin
                 tile_wr_en_pipe <= '0;
             end
@@ -550,25 +714,25 @@ import gemm_pkg::*;
         end
     end
 
-    // Tile BRAM write outputs (1-stage pipeline)
+    // Tile BRAM write outputs (2-stage pipeline with BRAM read latency compensation)
     // Left mantissa write (ONLY when disp_right_reg=0)
     assign o_tile_man_left_wr_addr = man_wr_addr_pipe[8:0];
     assign o_tile_man_left_wr_data = o_disp_man_left_rd_data;        // From left BRAM read port
-    assign o_tile_man_left_wr_en   = man_wr_valid_pipe && !disp_right_pipe;  // Selective write
+    assign o_tile_man_left_wr_en   = man_wr_valid_delayed && !disp_right_pipe;  // DELAYED write
 
     // Right mantissa write (ONLY when disp_right_reg=1)
     assign o_tile_man_right_wr_addr = man_wr_addr_pipe[8:0];
     assign o_tile_man_right_wr_data = o_disp_man_right_rd_data;      // From right BRAM read port
-    assign o_tile_man_right_wr_en   = man_wr_valid_pipe && disp_right_pipe;   // Selective write
+    assign o_tile_man_right_wr_en   = man_wr_valid_delayed && disp_right_pipe;   // DELAYED write
 
     // Tile BRAM exponent writes (selective based on disp_right_reg)
     assign o_tile_exp_left_wr_addr  = exp_wr_addr_pipe[8:0];
     assign o_tile_exp_left_wr_data  = o_disp_exp_left_rd_data;       // From left_exp_bram
-    assign o_tile_exp_left_wr_en    = exp_wr_valid_pipe && !disp_right_pipe;  // Selective write
+    assign o_tile_exp_left_wr_en    = exp_wr_valid_delayed && !disp_right_pipe;  // DELAYED write
 
     assign o_tile_exp_right_wr_addr = exp_wr_addr_pipe[8:0];
     assign o_tile_exp_right_wr_data = o_disp_exp_right_rd_data;      // From right_exp_bram
-    assign o_tile_exp_right_wr_en   = exp_wr_valid_pipe && disp_right_pipe;   // Selective write
+    assign o_tile_exp_right_wr_en   = exp_wr_valid_delayed && disp_right_pipe;   // DELAYED write
 
     // Multi-tile write enable output (one-hot encoding of current tile)
     assign o_tile_wr_en = tile_wr_en_pipe;
@@ -723,22 +887,22 @@ import gemm_pkg::*;
         .i_exp_right_wr_en   (o_disp_exp_right_wr_en),
         .i_exp_right_wr_data (o_disp_exp_right_wr_data),
 
-        // Read ports (to CE) - mantissas
-        .i_man_left_rd_addr  (i_disp_man_left_rd_addr),
-        .i_man_left_rd_en    (i_disp_man_left_rd_en),
+        // Read ports (muxed: internal during DISPATCH, external during MATMUL)
+        .i_man_left_rd_addr  (muxed_man_left_rd_addr),
+        .i_man_left_rd_en    (muxed_man_left_rd_en),
         .o_man_left_rd_data  (o_disp_man_left_rd_data),
 
-        .i_man_right_rd_addr (i_disp_man_right_rd_addr),
-        .i_man_right_rd_en   (i_disp_man_right_rd_en),
+        .i_man_right_rd_addr (muxed_man_right_rd_addr),
+        .i_man_right_rd_en   (muxed_man_right_rd_en),
         .o_man_right_rd_data (o_disp_man_right_rd_data),
 
-        // Read ports (to CE) - exponents
-        .i_exp_left_rd_addr  (i_disp_exp_left_rd_addr),
-        .i_exp_left_rd_en    (i_disp_exp_left_rd_en),
+        // Read ports (muxed: internal during DISPATCH, external during MATMUL)
+        .i_exp_left_rd_addr  (muxed_exp_left_rd_addr),
+        .i_exp_left_rd_en    (muxed_exp_left_rd_en),
         .o_exp_left_rd_data  (o_disp_exp_left_rd_data),
 
-        .i_exp_right_rd_addr (i_disp_exp_right_rd_addr),
-        .i_exp_right_rd_en   (i_disp_exp_right_rd_en),
+        .i_exp_right_rd_addr (muxed_exp_right_rd_addr),
+        .i_exp_right_rd_en   (muxed_exp_right_rd_en),
         .o_exp_right_rd_data (o_disp_exp_right_rd_data),
         
         // Exp packed read interface (for unpacking logic)

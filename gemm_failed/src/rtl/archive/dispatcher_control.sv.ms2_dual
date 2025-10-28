@@ -1,0 +1,478 @@
+// ------------------------------------------------------------------
+// Dispatcher Control Module (MS2.0)
+//
+// Purpose: DDR fetch and BRAM buffering for MS2.0 architecture
+// Features:
+//  - FETCH command: Read GFP8 block (528 lines × 256-bit) from DDR to BRAM
+//  - DISP command: Acknowledge vector dispatch configuration
+//  - Dual-port BRAM: Port A (write from DDR), Port B (read by CE)
+//  - AXI4 burst read interface for DDR access
+//  - Sequential buffer access: Fetch complete → done → CE reads
+//
+// Memory Layout (GFP8 Block):
+//  Lines 0-15:   Exponents (512 total, 32 per line)
+//  Lines 16-527: Mantissas (128 rows × 4 groups/row = 512 lines)
+//
+// Author: MS2.0 Migration
+// Date: Thu Oct 2 00:14:43 AM PDT 2025
+// ------------------------------------------------------------------
+
+`include "nap_interfaces.svh"
+
+module dispatcher_control
+import gemm_pkg::*;
+#(
+    parameter TGT_DATA_WIDTH = 256,    // Target data width (256-bit AXI)
+    parameter AXI_ADDR_WIDTH = 42,     // AXI address width (42-bit for GDDR6 NoC: {Page[9], Line[26], Pad[2], Byte[5]})
+    parameter BRAM_DEPTH = 2048        // Increased from 528 to support both left+right matrices (1056 total, rounded to power of 2)
+)
+(
+    // Clock and Reset
+    input  logic                         i_clk,
+    input  logic                         i_reset_n,
+
+    // ====================================================================
+    // Master Control Interface (FETCH/DISP commands)
+    // ====================================================================
+    input  logic                         i_fetch_en,
+    input  logic [link_addr_width_gp-1:0] i_fetch_addr,
+    input  logic [link_len_width_gp-1:0]  i_fetch_len,
+    output logic                         o_fetch_done,
+
+    input  logic                         i_disp_en,
+    input  logic [tile_mem_addr_width_gp-1:0] i_disp_addr,
+    input  logic [tile_mem_addr_width_gp-1:0] i_disp_len,
+    input  logic                         i_man_4b_8b_n,
+    output logic                         o_disp_done,
+
+    // ====================================================================
+    // Dual BRAM Read Ports (for Compute Engine - parallel access)
+    // ====================================================================
+    // Port B: Left matrix read
+    input  logic [10:0]                  i_bram_rd_addr_left,
+    output logic [TGT_DATA_WIDTH-1:0]    o_bram_rd_data_left,
+    input  logic                         i_bram_rd_en_left,
+    
+    // Port C: Right matrix read
+    input  logic [10:0]                  i_bram_rd_addr_right,
+    output logic [TGT_DATA_WIDTH-1:0]    o_bram_rd_data_right,
+    input  logic                         i_bram_rd_en_right,
+
+    // ====================================================================
+    // AXI-4 Initiator Interface for DDR access
+    // ====================================================================
+    t_AXI4.initiator                     axi_ddr_if,
+
+    // ====================================================================
+    // Debug Interface
+    // ====================================================================
+    output logic [3:0]                   o_dc_state,
+    output logic [9:0]                   o_bram_wr_count
+);
+
+    // ===================================================================
+    // State Machine Definition
+    // ===================================================================
+    typedef enum logic [3:0] {
+        ST_IDLE         = 4'd0,
+        ST_FETCH_INIT   = 4'd1,
+        ST_FETCH_READ   = 4'd2,
+        ST_FETCH_WAIT   = 4'd3,
+        ST_FETCH_DONE   = 4'd4,
+        ST_DISP_ACK     = 4'd5
+    } state_t;
+
+    state_t state_reg, state_next;
+
+    // ===================================================================
+    // Local Parameters
+    // ===================================================================
+    localparam FIXED_BURST_LEN = 15;   // AXI burst length = 16 beats
+    localparam BYTES_PER_BEAT = 32;    // 32 bytes per AXI beat (256-bit)
+    localparam ADDR_BYTE_SHIFT = 5;    // Byte address to beat address shift
+
+    // ===================================================================
+    // Internal Signals
+    // ===================================================================
+
+    // BRAM control signals
+    logic [10:0] bram_wr_addr_reg;  // Increased from 10 to 11 bits for 2048-entry BRAM
+    logic [TGT_DATA_WIDTH-1:0] bram_wr_data_reg;
+    logic        bram_wr_en_reg;
+    logic [TGT_DATA_WIDTH-1:0] bram_rd_data_wire;
+
+    // FETCH command tracking
+    logic [link_addr_width_gp-1:0] fetch_addr_reg;
+    logic [link_len_width_gp-1:0]  fetch_len_reg;
+    logic [link_len_width_gp-1:0]  lines_remaining_reg;
+    logic [10:0] current_line_reg;  // Increased from 10 to 11 bits for 2048-entry BRAM
+
+    // AXI transaction control
+    logic axi_ar_req_reg;
+    logic axi_r_ready_reg;
+    logic [7:0] beat_count_reg;
+
+    // DISP command tracking
+    logic [tile_mem_addr_width_gp-1:0] disp_addr_reg;
+    logic [tile_mem_addr_width_gp-1:0] disp_len_reg;
+    logic disp_man_4b_reg;
+
+    // Status flags
+    logic fetch_done_reg;
+    logic disp_done_reg;
+
+    // Edge detection for command enables (prevent double-triggering)
+    logic fetch_en_prev;
+    logic disp_en_prev;
+
+    // ===================================================================
+    // State Transition Logic
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            state_reg <= ST_IDLE;
+            fetch_en_prev <= 1'b0;
+            disp_en_prev <= 1'b0;
+        end else begin
+            state_reg <= state_next;
+            fetch_en_prev <= i_fetch_en;
+            disp_en_prev <= i_disp_en;
+        end
+    end
+
+    // Next state combinational logic
+    always_comb begin
+        state_next = state_reg;
+
+        case (state_reg)
+            ST_IDLE: begin
+                // Only trigger on RISING edge of enables to prevent double-triggering
+                if (i_fetch_en && !fetch_en_prev) begin
+                    $display("[DC_DEBUG] @%0t ST_IDLE: i_fetch_en RISING EDGE, transitioning to FETCH_INIT", $time);
+                    state_next = ST_FETCH_INIT;
+                end else if (i_disp_en && !disp_en_prev) begin
+                    state_next = ST_DISP_ACK;
+                end
+            end
+
+            ST_FETCH_INIT: begin
+                // Initialize FETCH operation
+                state_next = ST_FETCH_READ;
+            end
+
+            ST_FETCH_READ: begin
+                // Issue AXI read request
+                if (axi_ddr_if.arvalid && axi_ddr_if.arready) begin
+                    $display("[DC_DEBUG] @%0t ST_FETCH_READ: AXI AR handshake complete, moving to FETCH_WAIT", $time);
+                    state_next = ST_FETCH_WAIT;
+                end
+            end
+
+            ST_FETCH_WAIT: begin
+                // Wait for AXI read data (16 beats)
+                if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
+                    if (lines_remaining_reg > 16) begin
+                        state_next = ST_FETCH_READ;  // More bursts needed
+                    end else begin
+                        state_next = ST_FETCH_DONE;
+                    end
+                end
+            end
+
+            ST_FETCH_DONE: begin
+                // Signal completion
+                $display("[DC_DEBUG] @%0t FETCH_DONE, returning to IDLE, current_line=%0d", $time, current_line_reg);
+                state_next = ST_IDLE;
+            end
+
+            ST_DISP_ACK: begin
+                // Acknowledge DISP command (1 cycle)
+                state_next = ST_IDLE;
+            end
+
+            default: begin
+                state_next = ST_IDLE;
+            end
+        endcase
+    end
+
+    // ===================================================================
+    // FETCH Command Processing
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            fetch_addr_reg <= '0;
+            fetch_len_reg <= '0;
+            lines_remaining_reg <= '0;
+            current_line_reg <= '0;
+            fetch_done_reg <= 1'b0;
+        end else begin
+            fetch_done_reg <= 1'b0;  // Default
+
+            case (state_reg)
+                ST_IDLE: begin
+                    // Only capture parameters on RISING edge (same as state transition logic)
+                    if (i_fetch_en && !fetch_en_prev) begin
+                        fetch_addr_reg <= i_fetch_addr;
+                        fetch_len_reg <= i_fetch_len;
+                        // len is in lines (528 for full block)
+                        lines_remaining_reg <= i_fetch_len;
+                        // DO NOT reset current_line_reg - let it continue from previous FETCH
+                        // This allows sequential FETCHes to write to consecutive BRAM regions
+                        // First FETCH: 0-527, Second FETCH: 528-1055
+                        $display("[DC_DEBUG] @%0t FETCH_START: DDR_addr=%0d, len=%0d, current_line=%0d",
+                                 $time, i_fetch_addr, i_fetch_len, current_line_reg);
+                    end
+                end
+
+                ST_FETCH_WAIT: begin
+                    // Decrement lines after each burst completes
+                    if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
+                        lines_remaining_reg <= lines_remaining_reg - 16;
+                        current_line_reg <= current_line_reg + 16;
+                        fetch_addr_reg <= fetch_addr_reg + 16;  // Increment by 16 lines
+                        $display("[DC_DEBUG] @%0t BURST_DONE: current_line %0d → %0d, lines_remaining=%0d",
+                                 $time, current_line_reg, current_line_reg + 16, lines_remaining_reg - 16);
+                    end
+                end
+
+                ST_FETCH_DONE: begin
+                    fetch_done_reg <= 1'b1;
+                end
+            endcase
+        end
+    end
+
+    assign o_fetch_done = fetch_done_reg;
+
+    // ===================================================================
+    // DISP Command Processing
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            disp_addr_reg <= '0;
+            disp_len_reg <= '0;
+            disp_man_4b_reg <= 1'b0;
+            disp_done_reg <= 1'b0;
+        end else begin
+            disp_done_reg <= 1'b0;  // Default
+
+            case (state_reg)
+                ST_IDLE: begin
+                    if (i_disp_en) begin
+                        disp_addr_reg <= i_disp_addr;
+                        disp_len_reg <= i_disp_len;
+                        disp_man_4b_reg <= i_man_4b_8b_n;
+                    end
+                end
+
+                ST_DISP_ACK: begin
+                    // Acknowledge DISP command (configuration stored)
+                    disp_done_reg <= 1'b1;
+                end
+            endcase
+        end
+    end
+
+    assign o_disp_done = disp_done_reg;
+
+    // ===================================================================
+    // BRAM Write Logic (Port A - DDR to BRAM)
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            bram_wr_addr_reg <= '0;
+            bram_wr_data_reg <= '0;
+            bram_wr_en_reg <= 1'b0;
+        end else begin
+            bram_wr_en_reg <= 1'b0;  // Default
+
+            if (state_reg == ST_FETCH_WAIT && axi_ddr_if.rvalid && axi_ddr_if.rready) begin
+                // Write DDR data to BRAM
+                bram_wr_addr_reg <= current_line_reg + beat_count_reg[3:0];
+                bram_wr_data_reg <= axi_ddr_if.rdata;
+                bram_wr_en_reg <= 1'b1;
+
+                // Debug: Track BRAM writes during FETCH
+                if (beat_count_reg[3:0] == 0 || beat_count_reg[3:0] == 15) begin
+                    $display("[DC_DEBUG] @%0t BRAM_WRITE: addr=%0d (current_line=%0d + beat=%0d), data[63:0]=0x%h",
+                             $time, current_line_reg + beat_count_reg[3:0],
+                             current_line_reg, beat_count_reg[3:0], axi_ddr_if.rdata[63:0]);
+                end
+            end
+        end
+    end
+
+    // ===================================================================
+    // BRAM Module Instantiation (Dual Read Ports)
+    // ===================================================================
+    dispatcher_bram_dual_read #(
+        .DATA_WIDTH (TGT_DATA_WIDTH),
+        .DEPTH      (BRAM_DEPTH),
+        .ADDR_WIDTH (11)  // 2048 addresses for 128×128 matrices
+    ) u_dispatcher_bram (
+        // Single clock for all ports
+        .i_clk              (i_clk),
+        
+        // Port A: Write (from DDR)
+        .i_wr_data          (bram_wr_data_reg),
+        .i_wr_addr          (bram_wr_addr_reg),
+        .i_wr_en            (bram_wr_en_reg),
+
+        // Port B: Read left matrix (to CE)
+        .i_rd_addr_left     (i_bram_rd_addr_left),
+        .i_rd_en_left       (i_bram_rd_en_left),
+        .o_rd_data_left     (o_bram_rd_data_left),
+        
+        // Port C: Read right matrix (to CE)
+        .i_rd_addr_right    (i_bram_rd_addr_right),
+        .i_rd_en_right      (i_bram_rd_en_right),
+        .o_rd_data_right    (o_bram_rd_data_right)
+    );
+
+    // ===================================================================
+    // AXI Read Transaction Control
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            axi_ar_req_reg <= 1'b0;
+            axi_r_ready_reg <= 1'b0;
+            beat_count_reg <= '0;
+        end else begin
+            // Read Address Channel
+            if (state_reg == ST_FETCH_INIT) begin
+                axi_ar_req_reg <= 1'b1;
+                $display("[DC_DEBUG] @%0t Setting axi_ar_req_reg=1 in ST_FETCH_INIT", $time);
+            end else if (state_reg == ST_FETCH_READ && axi_ddr_if.arvalid && axi_ddr_if.arready) begin
+                axi_ar_req_reg <= 1'b0;
+                $display("[DC_DEBUG] @%0t Clearing axi_ar_req_reg=0 after AR handshake", $time);
+            end else if (state_reg == ST_FETCH_WAIT && axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
+                // Prepare next burst if needed
+                if (lines_remaining_reg > 16) begin
+                    axi_ar_req_reg <= 1'b1;
+                end
+            end
+
+            // Read Data Channel
+            axi_r_ready_reg <= (state_reg == ST_FETCH_WAIT);
+
+            // Beat counter
+            if (state_reg == ST_FETCH_READ) begin
+                beat_count_reg <= '0;
+            end else if (state_reg == ST_FETCH_WAIT && axi_ddr_if.rvalid && axi_ddr_if.rready) begin
+                beat_count_reg <= beat_count_reg + 1;
+            end
+        end
+    end
+
+    // ===================================================================
+    // AXI Interface Assignments
+    // ===================================================================
+
+    // AXI Read Address Channel
+    assign axi_ddr_if.arvalid  = axi_ar_req_reg;
+    assign axi_ddr_if.arid     = 8'hDC;  // Dispatcher Control ID
+    assign axi_ddr_if.araddr   = {fetch_addr_reg, {ADDR_BYTE_SHIFT{1'b0}}};
+    assign axi_ddr_if.arlen    = FIXED_BURST_LEN;  // 16 beats
+    assign axi_ddr_if.arsize   = 3'h5;             // 32 bytes per beat
+    assign axi_ddr_if.arburst  = 2'b01;            // INCR burst
+    assign axi_ddr_if.arlock   = 1'b0;
+    assign axi_ddr_if.arcache  = 4'h0;             // Non-cacheable
+    assign axi_ddr_if.arprot   = 3'b010;           // Unprivileged, non-secure, data
+    assign axi_ddr_if.arqos    = 4'h0;
+    assign axi_ddr_if.arregion = 4'h0;
+
+    // AXI Read Data Channel
+    assign axi_ddr_if.rready   = axi_r_ready_reg;
+
+    // AXI Write Channels (unused - tie off)
+    assign axi_ddr_if.awvalid  = 1'b0;
+    assign axi_ddr_if.awid     = '0;
+    assign axi_ddr_if.awaddr   = '0;
+    assign axi_ddr_if.awlen    = '0;
+    assign axi_ddr_if.awsize   = '0;
+    assign axi_ddr_if.awburst  = '0;
+    assign axi_ddr_if.awlock   = '0;
+    assign axi_ddr_if.awcache  = '0;
+    assign axi_ddr_if.awprot   = '0;
+    assign axi_ddr_if.awqos    = '0;
+    assign axi_ddr_if.awregion = '0;
+    assign axi_ddr_if.wvalid   = 1'b0;
+    assign axi_ddr_if.wdata    = '0;
+    assign axi_ddr_if.wstrb    = '0;
+    assign axi_ddr_if.wlast    = 1'b0;
+    assign axi_ddr_if.bready   = 1'b0;
+
+    // ===================================================================
+    // Debug Outputs
+    // ===================================================================
+    assign o_dc_state = state_reg;
+    assign o_bram_wr_count = current_line_reg;
+
+    // ===================================================================
+    // Assertions (for simulation only)
+    // ===================================================================
+
+    `ifdef SIM
+        // Check BRAM write overflow
+        property no_bram_overflow;
+            @(posedge i_clk) disable iff (~i_reset_n)
+            (bram_wr_en_reg) |-> (bram_wr_addr_reg < BRAM_DEPTH);
+        endproperty
+        assert property (no_bram_overflow) else
+            $error("[DISPATCHER_CONTROL] BRAM write address overflow: %0d >= %0d",
+                   bram_wr_addr_reg, BRAM_DEPTH);
+
+        // Check BRAM read overflow
+        property no_bram_read_overflow;
+            @(posedge i_clk) disable iff (~i_reset_n)
+            (i_bram_rd_en) |-> (i_bram_rd_addr < BRAM_DEPTH);
+        endproperty
+        assert property (no_bram_read_overflow) else
+            $error("[DISPATCHER_CONTROL] BRAM read address overflow: %0d >= %0d",
+                   i_bram_rd_addr, BRAM_DEPTH);
+
+        // Check AXI burst alignment
+        property axi_burst_aligned;
+            @(posedge i_clk) disable iff (~i_reset_n)
+            (axi_ddr_if.arvalid) |-> (axi_ddr_if.araddr[4:0] == 5'h0);
+        endproperty
+        assert property (axi_burst_aligned) else
+            $error("[DISPATCHER_CONTROL] AXI address not 32-byte aligned: 0x%08x",
+                   axi_ddr_if.araddr);
+    `endif
+
+    // ===================================================================
+    // Debug Display (for simulation)
+    // ===================================================================
+
+    `ifdef SIM_VERBOSE
+        always @(posedge i_clk) begin
+            if (state_reg == ST_FETCH_INIT) begin
+                $display("[DISPATCHER_CONTROL] FETCH: addr=0x%08x, len=%0d lines",
+                         i_fetch_addr, i_fetch_len);
+            end
+
+            // Debug AXI handshaking
+            if (state_reg == ST_FETCH_READ) begin
+                $display("[DC_DEBUG] @%0t ST_FETCH_READ: arvalid=%b, arready=%b, araddr=0x%08x",
+                         $time, axi_ddr_if.arvalid, axi_ddr_if.arready, axi_ddr_if.araddr);
+            end
+
+            if (bram_wr_en_reg) begin
+                $display("[DISPATCHER_CONTROL] BRAM Write: addr=%0d, data=0x%064x",
+                         bram_wr_addr_reg, bram_wr_data_reg);
+            end
+
+            if (state_reg == ST_FETCH_DONE) begin
+                $display("[DISPATCHER_CONTROL] FETCH Complete: %0d lines written", current_line_reg);
+            end
+
+            if (state_reg == ST_DISP_ACK) begin
+                $display("[DISPATCHER_CONTROL] DISP: addr=%0d, len=%0d, man_4b=%0b",
+                         disp_addr_reg, disp_len_reg, disp_man_4b_reg);
+            end
+        end
+    `endif
+
+endmodule : dispatcher_control

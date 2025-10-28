@@ -1,0 +1,84 @@
+Multi-Tile Golden Reference: eight_tiles_medium
+Description: 8 tiles B=2, C=1, V=32
+Number of tiles: 8
+
+--- Tile 0 ---
+Description: Tile 0
+left_addr=0, right_addr=0, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -0.769608, Max: 0.648956
+Mean: -0.060326
+Results:
+0.648956 
+-0.769608 
+
+--- Tile 1 ---
+Description: Tile 1
+left_addr=256, right_addr=64, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -1.147644, Max: 0.967651
+Mean: -0.089996
+Results:
+-1.147644 
+0.967651 
+
+--- Tile 2 ---
+Description: Tile 2
+left_addr=0, right_addr=128, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -0.832260, Max: 0.595139
+Mean: -0.118561
+Results:
+-0.832260 
+0.595139 
+
+--- Tile 3 ---
+Description: Tile 3
+left_addr=256, right_addr=192, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: 0.031921, Max: 0.944962
+Mean: 0.488441
+Results:
+0.031921 
+0.944962 
+
+--- Tile 4 ---
+Description: Tile 4
+left_addr=0, right_addr=256, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -0.459442, Max: 0.782104
+Mean: 0.161331
+Results:
+-0.459442 
+0.782104 
+
+--- Tile 5 ---
+Description: Tile 5
+left_addr=256, right_addr=320, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -0.678131, Max: -0.211746
+Mean: -0.444939
+Results:
+-0.678131 
+-0.211746 
+
+--- Tile 6 ---
+Description: Tile 6
+left_addr=0, right_addr=384, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -0.156845, Max: 0.000137
+Mean: -0.078354
+Results:
+0.000137 
+-0.156845 
+
+--- Tile 7 ---
+Description: Tile 7
+left_addr=256, right_addr=448, B=2, C=1, V=32
+Result shape: torch.Size([2, 1])
+Min: -1.026611, Max: 0.263718
+Mean: -0.381447
+Results:
+0.263718 
+-1.026611 
+
