@@ -1,13 +1,16 @@
 // ------------------------------------------------------------------
-// Testbench for Engine Top Module (MS2.0 FIFO Interface)
+// Testbench for Engine Top Module (MS2.0 with Integrated Tile BRAM)
 //
 // Purpose: Complete testbench for engine_top with direct FIFO interface
 // Features:
-//  - Instantiates engine_top (DUT)
+//  - Instantiates engine_top (DUT with integrated tile_bram in compute_engine)
 //  - Instantiates tb_memory_model (GDDR6 emulation)
-//  - Uses tb_ucode_gen_pkg for command generation
-//  - Test sequence: FETCH -> FETCH -> DISPATCH -> WAIT_DISPATCH -> TILE -> WAIT_TILE
+//  - Test sequence: FETCH → DISPATCH → WAIT_DISPATCH → TILE → WAIT_TILE
 //  - Result verification with FP16 output checking
+//
+// Architecture (Three-Level Memory Hierarchy):
+//  GDDR6 model → [FETCH] → dispatcher_bram (L2) → [DISPATCH] →
+//    tile_bram (L1, inside compute_engine) → [TILE] → result_fifo
 //
 // Test Flow:
 //  1. Reset system
@@ -16,8 +19,8 @@
 //  4. Read results from result_fifo
 //  5. Verify FP16 format and values
 //
-// Author: MS2.0 FIFO Architecture Integration
-// Date: Sun Oct 12 2025
+// Author: MS2.0 FIFO Architecture Integration + Tile BRAM Integration
+// Date: Mon Oct 27 2025
 // ------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -187,17 +190,18 @@ module tb_engine_top;
         string name;
     } test_config_t;
 
+    // Test configurations matching test_gemm.cpp (10 tests)
     test_config_t test_configs[] = '{
-        '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},   // Simplest case first
-        '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},   // Small symmetric
-        '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},   // Medium symmetric
-        '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}, // Max vector length
-        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},  // Larger test
-        '{B: 2, C: 2, V: 64,  name: "B2_C2_V64"},  // High V
-        '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},  // Larger B,C
-        '{B: 1, C: 128, V: 1, name: "B1_C128_V1"}, // Max columns
-        '{B: 128, C: 1, V: 1, name: "B128_C1_V1"}  // Max batch
-        // '{B: 16, C: 16, V: 8, name: "B16_C16_V8"} // Commented: very large
+        '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},
+        '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},
+        '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},
+        '{B: 2, C: 2, V: 64,  name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},
+        '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8, name: "B16_C16_V8"},
+        '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
+        '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
+        '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
     };
 
     // ===================================================================

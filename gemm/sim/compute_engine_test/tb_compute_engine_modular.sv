@@ -1,21 +1,24 @@
 // ------------------------------------------------------------------
-// Testbench for compute_engine_modular.sv
+// Testbench for compute_engine_modular.sv (with integrated tile_bram)
 //
-// Purpose: Verify complete compute engine with dual BRAM and FP16 output
+// Purpose: Verify complete compute engine with integrated tile_bram and FP16 output
 // Tests:
 //  1. Simple case: B=1, C=1, V=1 (single NV dot product)
 //  2. Small V loop: B=1, C=1, V=4 (accumulation test)
 //  3. Multiple outputs: B=2, C=2, V=2 (full BCV test)
-//  4. Real data with validation: Various B/C/V configurations
+//  4-8. Real data with validation: Various B/C/V configurations
 //
 // Key Features:
-//  - Dual BRAM interface modeling (left/right parallel reads)
-//  - Exponent interface modeling (separate read ports)
+//  - Simulates DISPATCH operation (writes data to tile_bram write ports)
+//  - Four parallel tile_bram write paths (mantissa + exponent, left + right)
 //  - FP16 result validation against golden references
 //  - Golden reference loading from hex files
 //
-// Author: Compute Engine Modular Testing
-// Date: Fri Oct 24 2025
+// Architecture:
+//  testbench BRAM models → [DISPATCH] → DUT tile_bram → [TILE] → results
+//
+// Author: Compute Engine Modular Testing + Tile BRAM Integration
+// Date: Mon Oct 27 2025
 // ------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -40,21 +43,23 @@ module tb_compute_engine_modular;
     logic        main_loop_over_left; // 1 bit: Main loop dimension selector
     logic        tile_done;
 
-    // Dual BRAM mantissa interfaces
-    logic [10:0]  bram_left_rd_addr;
-    logic [255:0] bram_left_rd_data;
-    logic         bram_left_rd_en;
+    // Tile BRAM Write Interface (simulating DISPATCH operation)
+    // Four parallel write ports - all can write in same cycle
+    logic [8:0]    man_left_wr_addr;
+    logic [255:0]  man_left_wr_data;
+    logic          man_left_wr_en;
 
-    logic [10:0]  bram_right_rd_addr;
-    logic [255:0] bram_right_rd_data;
-    logic         bram_right_rd_en;
+    logic [8:0]    man_right_wr_addr;
+    logic [255:0]  man_right_wr_data;
+    logic          man_right_wr_en;
 
-    // Exponent interfaces
-    logic [8:0] left_exp_rd_addr;
-    logic [7:0] left_exp_rd_data;
+    logic [8:0]    left_exp_wr_addr;
+    logic [7:0]    left_exp_wr_data;
+    logic          left_exp_wr_en;
 
-    logic [8:0] right_exp_rd_addr;
-    logic [7:0] right_exp_rd_data;
+    logic [8:0]    right_exp_wr_addr;
+    logic [7:0]    right_exp_wr_data;
+    logic          right_exp_wr_en;
 
     // Result interface (FP16)
     logic [15:0] result_data;
@@ -84,7 +89,7 @@ module tb_compute_engine_modular;
     logic [15:0] golden_fp16 [0:16383];   // Golden reference
 
     // ===================================================================
-    // DUT Instantiation
+    // DUT Instantiation (with integrated tile_bram)
     // ===================================================================
     compute_engine_modular dut (
         .i_clk                  (clk),
@@ -102,21 +107,22 @@ module tb_compute_engine_modular;
         .i_main_loop_over_left  (main_loop_over_left),
         .o_tile_done            (tile_done),
 
-        // Dual BRAM mantissa interface
-        .o_bram_left_rd_addr    (bram_left_rd_addr),
-        .i_bram_left_rd_data    (bram_left_rd_data),
-        .o_bram_left_rd_en      (bram_left_rd_en),
+        // Tile BRAM Write Interface (simulating DISPATCH operation)
+        .i_man_left_wr_addr     (man_left_wr_addr),
+        .i_man_left_wr_data     (man_left_wr_data),
+        .i_man_left_wr_en       (man_left_wr_en),
 
-        .o_bram_right_rd_addr   (bram_right_rd_addr),
-        .i_bram_right_rd_data   (bram_right_rd_data),
-        .o_bram_right_rd_en     (bram_right_rd_en),
+        .i_man_right_wr_addr    (man_right_wr_addr),
+        .i_man_right_wr_data    (man_right_wr_data),
+        .i_man_right_wr_en      (man_right_wr_en),
 
-        // Exponent interface
-        .o_left_exp_rd_addr     (left_exp_rd_addr),
-        .i_left_exp_rd_data     (left_exp_rd_data),
+        .i_left_exp_wr_addr     (left_exp_wr_addr),
+        .i_left_exp_wr_data     (left_exp_wr_data),
+        .i_left_exp_wr_en       (left_exp_wr_en),
 
-        .o_right_exp_rd_addr    (right_exp_rd_addr),
-        .i_right_exp_rd_data    (right_exp_rd_data),
+        .i_right_exp_wr_addr    (right_exp_wr_addr),
+        .i_right_exp_wr_data    (right_exp_wr_data),
+        .i_right_exp_wr_en      (right_exp_wr_en),
 
         // Result interface (FP16)
         .o_result_data          (result_data),
@@ -138,28 +144,14 @@ module tb_compute_engine_modular;
     end
 
     // ===================================================================
-    // BRAM Mantissa Models (1-cycle read latency)
+    // Write Enable Initialization
     // ===================================================================
-    logic [255:0] bram_left_mantissa_reg;
-    logic [255:0] bram_right_mantissa_reg;
-
-    always_ff @(posedge clk) begin
-        if (bram_left_rd_en) begin
-            bram_left_mantissa_reg <= bram_left_mantissa[bram_left_rd_addr];
-        end
-        if (bram_right_rd_en) begin
-            bram_right_mantissa_reg <= bram_right_mantissa[bram_right_rd_addr];
-        end
+    initial begin
+        man_left_wr_en = 1'b0;
+        man_right_wr_en = 1'b0;
+        left_exp_wr_en = 1'b0;
+        right_exp_wr_en = 1'b0;
     end
-
-    assign bram_left_rd_data = bram_left_mantissa_reg;
-    assign bram_right_rd_data = bram_right_mantissa_reg;
-
-    // ===================================================================
-    // Exponent Models (combinational read for simplicity)
-    // ===================================================================
-    assign left_exp_rd_data = bram_left_exponent[left_exp_rd_addr];
-    assign right_exp_rd_data = bram_right_exponent[right_exp_rd_addr];
 
     // ===================================================================
     // Result FIFO Backpressure Model (simple, no backpressure)
@@ -196,6 +188,50 @@ module tb_compute_engine_modular;
             bram_left_mantissa[i] = {32{8'sd1}};
             bram_right_mantissa[i] = {32{8'sd1}};
         end
+    endtask
+
+    // ===================================================================
+    // Helper Task: Simulate DISPATCH - Write Data to Tile BRAM
+    // ===================================================================
+    task dispatch_to_tile_bram(input integer num_lines);
+        integer i;
+
+        $display("  Dispatching %0d lines to tile_bram...", num_lines);
+
+        // Write data in parallel (mantissa + exponent, left + right)
+        // Four parallel writes per cycle, simulating DISPATCH operation
+        for (i = 0; i < num_lines; i++) begin
+            @(posedge clk);
+
+            // Left mantissa write
+            man_left_wr_addr <= i[8:0];
+            man_left_wr_data <= bram_left_mantissa[i];
+            man_left_wr_en <= 1'b1;
+
+            // Right mantissa write
+            man_right_wr_addr <= i[8:0];
+            man_right_wr_data <= bram_right_mantissa[i];
+            man_right_wr_en <= 1'b1;
+
+            // Left exponent write
+            left_exp_wr_addr <= i[8:0];
+            left_exp_wr_data <= bram_left_exponent[i];
+            left_exp_wr_en <= 1'b1;
+
+            // Right exponent write
+            right_exp_wr_addr <= i[8:0];
+            right_exp_wr_data <= bram_right_exponent[i];
+            right_exp_wr_en <= 1'b1;
+        end
+
+        // Disable all write enables
+        @(posedge clk);
+        man_left_wr_en <= 1'b0;
+        man_right_wr_en <= 1'b0;
+        left_exp_wr_en <= 1'b0;
+        right_exp_wr_en <= 1'b0;
+
+        $display("  DISPATCH complete: %0d lines written", num_lines);
     endtask
 
     // ===================================================================
@@ -449,91 +485,17 @@ module tb_compute_engine_modular;
 
         $display("\n========================================");
         $display("Compute Engine Modular Testbench");
+        $display("Running 10 Test Configurations (matching test_gemm.cpp)");
         $display("========================================\n");
 
         // ===============================================================
-        // Test 1: Simple Case - B=1, C=1, V=1
+        // Test 1/10: B1_C1_V1
         // ===============================================================
         test_num = 1;
-        $display("[TEST %0d] Simple case: B=1, C=1, V=1", test_num);
-
-        init_bram_simple();
-        results_collected = 0;
-
-        send_tile_command(8'd1, 8'd1, 8'd1);
-        wait_tile_done(10000);
-
-        $display("  Results collected: %0d", results_collected);
-        if (results_collected == 1) begin
-            $display("  Expected: 1 result (1×1 output)");
-            $display("  Result FP16=0x%04x", results_fp16[0]);
-            // Simple validation: result should be non-zero for all-1s input
-            if (results_fp16[0] != 16'h0000) begin
-                $display("  [PASS]\n");
-            end else begin
-                $display("  [FAIL] Expected non-zero result\n");
-                test_passed = 0;
-            end
-        end else begin
-            $display("  [FAIL] Expected 1 result, got %0d\n", results_collected);
-            test_passed = 0;
-        end
-
-        // ===============================================================
-        // Test 2: V Loop Test - B=1, C=1, V=4
-        // ===============================================================
-        test_num = 2;
-        $display("[TEST %0d] V loop test: B=1, C=1, V=4", test_num);
-        $display("  Testing V-loop accumulation");
-
-        init_bram_simple();
-        results_collected = 0;
-
-        send_tile_command(8'd1, 8'd1, 8'd4);
-        wait_tile_done(20000);
-
-        $display("  Results collected: %0d", results_collected);
-        if (results_collected == 1) begin
-            $display("  Expected: 1 result (accumulation of 4 NV dots)");
-            $display("  Result FP16=0x%04x", results_fp16[0]);
-            $display("  [INFO] V-loop accumulation validated\n");
-        end else begin
-            $display("  [FAIL] Expected 1 result, got %0d\n", results_collected);
-            test_passed = 0;
-        end
-
-        // ===============================================================
-        // Test 3: Multiple Outputs - B=2, C=2, V=2
-        // ===============================================================
-        test_num = 3;
-        $display("[TEST %0d] Multiple outputs: B=2, C=2, V=2", test_num);
-        $display("  Testing full BCV loop with 4 outputs");
-
-        init_bram_simple();
-        results_collected = 0;
-
-        send_tile_command(8'd2, 8'd2, 8'd2);
-        wait_tile_done(30000);
-
-        $display("  Results collected: %0d", results_collected);
-        if (results_collected == 4) begin
-            $display("  Expected: 4 results (2×2 output matrix)");
-            for (int i = 0; i < 4; i++) begin
-                $display("    Output[%0d]: FP16=0x%04x", i, results_fp16[i]);
-            end
-            $display("  [PASS]\n");
-        end else begin
-            $display("  [FAIL] Expected 4 results, got %0d\n", results_collected);
-            test_passed = 0;
-        end
-
-        // ===============================================================
-        // Test 4: Real Data - B=1, C=1, V=1
-        // ===============================================================
-        test_num = 4;
-        $display("[TEST %0d] Real data: B=1, C=1, V=1", test_num);
+        $display("[TEST %0d/10] B1_C1_V1", test_num);
 
         load_bram_from_hex();
+        dispatch_to_tile_bram(512);
         load_golden_reference("../../../hex/golden_B1_C1_V1.hex", 1);
         results_collected = 0;
 
@@ -543,12 +505,29 @@ module tb_compute_engine_modular;
         validate_fp16_results(1);
 
         // ===============================================================
-        // Test 5: Real Data - B=4, C=4, V=4
+        // Test 2/10: B2_C2_V2
         // ===============================================================
-        test_num = 5;
-        $display("[TEST %0d] Real data: B=4, C=4, V=4", test_num);
+        test_num = 2;
+        $display("[TEST %0d/10] B2_C2_V2", test_num);
 
         load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B2_C2_V2.hex", 4);
+        results_collected = 0;
+
+        send_tile_command(8'd2, 8'd2, 8'd2);
+        wait_tile_done(30000);
+
+        validate_fp16_results(4);
+
+        // ===============================================================
+        // Test 3/10: B4_C4_V4
+        // ===============================================================
+        test_num = 3;
+        $display("[TEST %0d/10] B4_C4_V4", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
         load_golden_reference("../../../hex/golden_B4_C4_V4.hex", 16);
         results_collected = 0;
 
@@ -558,42 +537,13 @@ module tb_compute_engine_modular;
         validate_fp16_results(16);
 
         // ===============================================================
-        // Test 6: Real Data - B=1, C=1, V=128 (LARGE V TEST)
+        // Test 4/10: B2_C2_V64
         // ===============================================================
-        test_num = 6;
-        $display("[TEST %0d] Real data: B=1, C=1, V=128 (LARGE V)", test_num);
+        test_num = 4;
+        $display("[TEST %0d/10] B2_C2_V64", test_num);
 
         load_bram_from_hex();
-        load_golden_reference("../../../hex/golden_B1_C1_V128.hex", 1);
-        results_collected = 0;
-
-        send_tile_command(8'd1, 8'd1, 8'd128);
-        wait_tile_done(100000);
-
-        validate_fp16_results(1);
-
-        // ===============================================================
-        // Test 7: Real Data - B=4, C=4, V=32 (LARGE V TEST)
-        // ===============================================================
-        test_num = 7;
-        $display("[TEST %0d] Real data: B=4, C=4, V=32 (LARGE V)", test_num);
-
-        load_bram_from_hex();
-        load_golden_reference("../../../hex/golden_B4_C4_V32.hex", 16);
-        results_collected = 0;
-
-        send_tile_command(8'd4, 8'd4, 8'd32);
-        wait_tile_done(200000);
-
-        validate_fp16_results(16);
-
-        // ===============================================================
-        // Test 8: Real Data - B=2, C=2, V=64 (LARGE V TEST)
-        // ===============================================================
-        test_num = 8;
-        $display("[TEST %0d] Real data: B=2, C=2, V=64 (LARGE V)", test_num);
-
-        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
         load_golden_reference("../../../hex/golden_B2_C2_V64.hex", 4);
         results_collected = 0;
 
@@ -603,12 +553,108 @@ module tb_compute_engine_modular;
         validate_fp16_results(4);
 
         // ===============================================================
+        // Test 5/10: B4_C4_V32
+        // ===============================================================
+        test_num = 5;
+        $display("[TEST %0d/10] B4_C4_V32", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B4_C4_V32.hex", 16);
+        results_collected = 0;
+
+        send_tile_command(8'd4, 8'd4, 8'd32);
+        wait_tile_done(200000);
+
+        validate_fp16_results(16);
+
+        // ===============================================================
+        // Test 6/10: B8_C8_V16
+        // ===============================================================
+        test_num = 6;
+        $display("[TEST %0d/10] B8_C8_V16", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B8_C8_V16.hex", 64);
+        results_collected = 0;
+
+        send_tile_command(8'd8, 8'd8, 8'd16);
+        wait_tile_done(300000);
+
+        validate_fp16_results(64);
+
+        // ===============================================================
+        // Test 7/10: B16_C16_V8
+        // ===============================================================
+        test_num = 7;
+        $display("[TEST %0d/10] B16_C16_V8", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B16_C16_V8.hex", 256);
+        results_collected = 0;
+
+        send_tile_command(8'd16, 8'd16, 8'd8);
+        wait_tile_done(500000);
+
+        validate_fp16_results(256);
+
+        // ===============================================================
+        // Test 8/10: B1_C128_V1
+        // ===============================================================
+        test_num = 8;
+        $display("[TEST %0d/10] B1_C128_V1", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B1_C128_V1.hex", 128);
+        results_collected = 0;
+
+        send_tile_command(8'd1, 8'd128, 8'd1);
+        wait_tile_done(200000);
+
+        validate_fp16_results(128);
+
+        // ===============================================================
+        // Test 9/10: B128_C1_V1
+        // ===============================================================
+        test_num = 9;
+        $display("[TEST %0d/10] B128_C1_V1", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B128_C1_V1.hex", 128);
+        results_collected = 0;
+
+        send_tile_command(8'd128, 8'd1, 8'd1);
+        wait_tile_done(200000);
+
+        validate_fp16_results(128);
+
+        // ===============================================================
+        // Test 10/10: B1_C1_V128
+        // ===============================================================
+        test_num = 10;
+        $display("[TEST %0d/10] B1_C1_V128", test_num);
+
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+        load_golden_reference("../../../hex/golden_B1_C1_V128.hex", 1);
+        results_collected = 0;
+
+        send_tile_command(8'd1, 8'd1, 8'd128);
+        wait_tile_done(100000);
+
+        validate_fp16_results(1);
+
+        // ===============================================================
         // Test Summary
         // ===============================================================
         $display("========================================");
         $display("TEST SUMMARY");
         $display("========================================");
-        $display("Total tests: %0d", test_num);
+        $display("Total tests: 10/10 (matching test_gemm.cpp)");
         if (test_passed) begin
             $display("STATUS: ALL TESTS PASSED");
         end else begin

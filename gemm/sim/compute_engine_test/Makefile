@@ -77,6 +77,7 @@ compile: create_library
 		$(GEMM_RTL)/gfp8_nv_dot.sv \
 		$(GEMM_RTL)/gfp8_bcv_controller.sv \
 		$(GEMM_RTL)/gfp8_to_fp16.sv \
+		$(GEMM_RTL)/tile_bram.sv \
 		$(GEMM_RTL)/compute_engine_modular.sv \
 		tb_compute_engine_modular.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: RTL compilation failed. See $(LOG_FILE)" && exit 1)
