@@ -32,7 +32,8 @@ import gemm_pkg::*;
 #(
     parameter [8:0] GDDR6_PAGE_ID = 9'd2,   // GDDR6 Channel page ID
     parameter TGT_DATA_WIDTH = 256,         // Target data width (256-bit AXI)
-    parameter AXI_ADDR_WIDTH = 42           // AXI address width (42-bit for GDDR6)
+    parameter AXI_ADDR_WIDTH = 42,          // AXI address width (42-bit for GDDR6)
+    parameter int NUM_TILES = 2             // Number of parallel compute tiles (2-24)
 )
 (
     // Clock and Reset
@@ -114,7 +115,7 @@ import gemm_pkg::*;
 
     // Master Control -> Compute Engine
     // Master Control -> Compute Engine (spec-compliant)
-    logic        mc_ce_tile_en;
+    logic [23:0] mc_ce_tile_en;          // Per-tile enable (24 tiles max)
     logic [15:0] mc_ce_tile_left_addr;       // 16 bits: Left matrix start address
     logic [15:0] mc_ce_tile_right_addr;      // 16 bits: Right matrix start address
     logic [7:0]  mc_ce_tile_left_ugd_len;    // 8 bits: Left UGD vectors (Batch dimension)
@@ -165,6 +166,9 @@ import gemm_pkg::*;
     // DISPATCH operation read control
     logic [8:0]    dc_disp_rd_addr;      // 9-bit: dispatcher_bram is 512 deep
     logic          dc_disp_rd_en;
+
+    // Multi-tile DISPATCH control (NEW: Per-tile write enables)
+    logic [23:0]   dc_tile_wr_en;        // Per-tile write enable array [0:23]
 
     // Compute Engine -> Result FIFO
     logic [15:0]   ce_result_data;     // FP16 results
@@ -366,7 +370,10 @@ import gemm_pkg::*;
 
         // DISPATCH copy read control
         .o_disp_rd_addr     (dc_disp_rd_addr),
-        .o_disp_rd_en       (dc_disp_rd_en)
+        .o_disp_rd_en       (dc_disp_rd_en),
+
+        // Multi-tile write enable array (NEW: Per-tile dispatch control)
+        .o_tile_wr_en       (dc_tile_wr_en)
     );
 
     // ------------------------------------------------------------------
@@ -375,53 +382,222 @@ import gemm_pkg::*;
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
-    // Compute Engine - Modular GFP8 matrix multiplication with FP16 output
-    // NOW WITH INTEGRATED TILE BRAM (Oct 27, 2025)
+    // Compute Engine Array - Multi-tile parallel execution
+    // NOW WITH GENERATE LOOP for NUM_TILES instances (Oct 28, 2025)
     // ------------------------------------------------------------------
-    compute_engine_modular u_compute_engine (
-        .i_clk              (i_clk),
-        .i_reset_n          (i_reset_n),
+    // Per-tile signals (arrays)
+    logic [15:0]   ce_result_data_arr [NUM_TILES];    // Per-tile result data
+    logic          ce_result_valid_arr [NUM_TILES];   // Per-tile result valid
+    logic          ce_tile_done_arr [NUM_TILES];      // Per-tile done signals
+    logic [3:0]    ce_state_arr [NUM_TILES];          // Per-tile state
+    logic [15:0]   result_count_arr [NUM_TILES];      // Per-tile result count
 
-        // Master Control Interface (spec-compliant)
-        .i_tile_en                    (mc_ce_tile_en),
-        .i_tile_left_addr             (mc_ce_tile_left_addr),
-        .i_tile_right_addr            (mc_ce_tile_right_addr),
-        .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
-        .i_tile_right_ugd_len         (mc_ce_tile_right_ugd_len),
-        .i_tile_vec_len               (mc_ce_tile_vec_len),
-        .i_tile_left_man_4b           (mc_ce_tile_left_man_4b),
-        .i_tile_right_man_4b          (mc_ce_tile_right_man_4b),
-        .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
-        .o_tile_done                  (ce_mc_tile_done),
+    generate
+        for (genvar tile_id = 0; tile_id < NUM_TILES; tile_id++) begin : gen_compute_tiles
+            compute_engine_modular u_compute_engine (
+                .i_clk              (i_clk),
+                .i_reset_n          (i_reset_n),
 
-        // Tile BRAM Write Interface (from dispatcher_control via DISPATCH command)
-        // Four parallel write ports - all can write in same cycle
-        .i_man_left_wr_addr      (dc_tile_man_left_wr_addr),
-        .i_man_left_wr_en        (dc_tile_man_left_wr_en),
-        .i_man_left_wr_data      (dc_tile_man_left_wr_data),
+                // Master Control Interface (SELECTIVE per-tile enable)
+                .i_tile_en                    (mc_ce_tile_en[tile_id]),
+                .i_tile_left_addr             (mc_ce_tile_left_addr),
+                .i_tile_right_addr            (mc_ce_tile_right_addr),
+                .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
+                .i_tile_right_ugd_len         (mc_ce_tile_right_ugd_len),
+                .i_tile_vec_len               (mc_ce_tile_vec_len),
+                .i_tile_left_man_4b           (mc_ce_tile_left_man_4b),
+                .i_tile_right_man_4b          (mc_ce_tile_right_man_4b),
+                .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
+                .o_tile_done                  (ce_tile_done_arr[tile_id]),
 
-        .i_man_right_wr_addr     (dc_tile_man_right_wr_addr),
-        .i_man_right_wr_en       (dc_tile_man_right_wr_en),
-        .i_man_right_wr_data     (dc_tile_man_right_wr_data),
+                // Tile BRAM Write Interface (SELECTIVE per-tile write enables)
+                // Combine global write enable with per-tile enable from dispatcher
+                .i_man_left_wr_addr      (dc_tile_man_left_wr_addr),
+                .i_man_left_wr_en        (dc_tile_man_left_wr_en && dc_tile_wr_en[tile_id]),
+                .i_man_left_wr_data      (dc_tile_man_left_wr_data),
 
-        .i_left_exp_wr_addr      (dc_tile_left_exp_wr_addr),
-        .i_left_exp_wr_en        (dc_tile_left_exp_wr_en),
-        .i_left_exp_wr_data      (dc_tile_left_exp_wr_data),
+                .i_man_right_wr_addr     (dc_tile_man_right_wr_addr),
+                .i_man_right_wr_en       (dc_tile_man_right_wr_en && dc_tile_wr_en[tile_id]),
+                .i_man_right_wr_data     (dc_tile_man_right_wr_data),
 
-        .i_right_exp_wr_addr     (dc_tile_right_exp_wr_addr),
-        .i_right_exp_wr_en       (dc_tile_right_exp_wr_en),
-        .i_right_exp_wr_data     (dc_tile_right_exp_wr_data),
+                .i_left_exp_wr_addr      (dc_tile_left_exp_wr_addr),
+                .i_left_exp_wr_en        (dc_tile_left_exp_wr_en && dc_tile_wr_en[tile_id]),
+                .i_left_exp_wr_data      (dc_tile_left_exp_wr_data),
 
-        // Result FIFO Write Interface
-        .o_result_data      (ce_result_data),
-        .o_result_valid     (ce_result_valid),
-        .i_result_full      (result_fifo_full),
-        .i_result_afull     (result_fifo_afull),
+                .i_right_exp_wr_addr     (dc_tile_right_exp_wr_addr),
+                .i_right_exp_wr_en       (dc_tile_right_exp_wr_en && dc_tile_wr_en[tile_id]),
+                .i_right_exp_wr_data     (dc_tile_right_exp_wr_data),
 
-        // Debug
-        .o_ce_state         (ce_state),
-        .o_result_count     (result_count)
-    );
+                // Result FIFO Write Interface (per-tile outputs)
+                .o_result_data      (ce_result_data_arr[tile_id]),
+                .o_result_valid     (ce_result_valid_arr[tile_id]),
+                .i_result_full      (result_fifo_full),
+                .i_result_afull     (result_fifo_afull),
+
+                // Debug
+                .o_ce_state         (ce_state_arr[tile_id]),
+                .o_result_count     (result_count_arr[tile_id])
+            );
+        end
+    endgenerate
+
+    // DEBUG: Monitor write enable gating for first few cycles
+    logic [7:0] debug_cycle_cnt = 0;
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            debug_cycle_cnt <= 0;
+        end else begin
+            // Track first 10 cycles of any write enable activity
+            if ((dc_tile_man_left_wr_en || dc_tile_man_right_wr_en ||
+                 dc_tile_left_exp_wr_en || dc_tile_right_exp_wr_en) && debug_cycle_cnt < 10) begin
+                debug_cycle_cnt <= debug_cycle_cnt + 1;
+
+                $display("[ENG_WR_EN] @%0t cycle=%0d, dc_tile_wr_en=0x%06x",
+                         $time, debug_cycle_cnt, dc_tile_wr_en);
+
+                for (int i = 0; i < NUM_TILES; i++) begin
+                    $display("[ENG_WR_EN] @%0t   tile[%0d]: wr_en_bit=%0b, man_left=%0b->%0b, man_right=%0b->%0b, exp_left=%0b->%0b, exp_right=%0b->%0b",
+                             $time, i, dc_tile_wr_en[i],
+                             dc_tile_man_left_wr_en, dc_tile_man_left_wr_en && dc_tile_wr_en[i],
+                             dc_tile_man_right_wr_en, dc_tile_man_right_wr_en && dc_tile_wr_en[i],
+                             dc_tile_left_exp_wr_en, dc_tile_left_exp_wr_en && dc_tile_wr_en[i],
+                             dc_tile_right_exp_wr_en, dc_tile_right_exp_wr_en && dc_tile_wr_en[i]);
+                end
+            end
+
+            // Reset counter if no activity for a while
+            if (!dc_tile_man_left_wr_en && !dc_tile_man_right_wr_en &&
+                !dc_tile_left_exp_wr_en && !dc_tile_right_exp_wr_en) begin
+                if (debug_cycle_cnt >= 10) begin
+                    debug_cycle_cnt <= 0;  // Reset for next DISPATCH
+                end
+            end
+        end
+    end
+
+    // Aggregate tile_done signals (only check ENABLED tiles)
+    always_comb begin
+        ce_mc_tile_done = 1'b1;
+        for (int i = 0; i < NUM_TILES; i++) begin
+            if (mc_ce_tile_en[i]) begin  // Only check tiles that were enabled
+                ce_mc_tile_done = ce_mc_tile_done && ce_tile_done_arr[i];
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Result Arbiter - Row-Interleaved Result Collection
+    // Collects results from tiles in row-major order for transparency
+    // (per SINGLE_ROW_REFERENCE.md: results appear as single matrix)
+    // ------------------------------------------------------------------
+    typedef enum logic [2:0] {
+        ARB_IDLE,
+        ARB_COLLECT,
+        ARB_NEXT_TILE,
+        ARB_NEXT_ROW,
+        ARB_DONE
+    } arb_state_t;
+
+    arb_state_t arb_state_reg;
+
+    // Arbiter control registers
+    logic [7:0]  arb_left_ugd_len_reg;      // Number of rows (B)
+    logic [7:0]  arb_right_ugd_len_reg;     // Results per tile per row
+    logic [4:0]  arb_current_tile_reg;      // Current tile being read (0 to NUM_TILES-1)
+    logic [7:0]  arb_current_row_reg;       // Current row (0 to B-1)
+    logic [23:0] arb_col_en_reg;            // Captured col_en from MATMUL start
+    logic [7:0]  arb_result_cnt_reg;        // Results collected from current tile in current row
+
+    // Result arbiter state machine
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            arb_state_reg <= ARB_IDLE;
+            arb_left_ugd_len_reg <= 8'd0;
+            arb_right_ugd_len_reg <= 8'd0;
+            arb_col_en_reg <= 24'd0;
+            arb_current_tile_reg <= 5'd0;
+            arb_current_row_reg <= 8'd0;
+            arb_result_cnt_reg <= 8'd0;
+        end else begin
+            case (arb_state_reg)
+                ARB_IDLE: begin
+                    // Wait for MATMUL command to start result collection
+                    if (|mc_ce_tile_en) begin  // Start when ANY tile enabled
+                        // Capture matrix dimensions AND tile enable mask
+                        arb_left_ugd_len_reg <= mc_ce_tile_left_ugd_len;    // B (rows)
+                        arb_right_ugd_len_reg <= mc_ce_tile_right_ugd_len;  // C per tile (cols per tile)
+                        arb_col_en_reg <= mc_ce_tile_en;                    // Capture which tiles are enabled
+                        arb_current_tile_reg <= 5'd0;
+                        arb_current_row_reg <= 8'd0;
+                        arb_result_cnt_reg <= 8'd0;
+                        arb_state_reg <= ARB_COLLECT;
+                    end
+                end
+
+                ARB_COLLECT: begin
+                    // Collect results from current tile (for current row)
+                    // Skip disabled tiles immediately (use CAPTURED col_en, not live signal)
+                    if (!arb_col_en_reg[arb_current_tile_reg]) begin
+                        // This tile was not enabled at MATMUL start, skip to next tile
+                        arb_state_reg <= ARB_NEXT_TILE;
+                    end else if (ce_result_valid_arr[arb_current_tile_reg] && !result_fifo_full) begin
+                        // Result transferred to FIFO
+                        arb_result_cnt_reg <= arb_result_cnt_reg + 1;
+
+                        if (arb_result_cnt_reg == arb_right_ugd_len_reg - 1) begin
+                            // Collected all results from current tile for this row
+                            arb_state_reg <= ARB_NEXT_TILE;
+                        end
+                    end
+                end
+
+                ARB_NEXT_TILE: begin
+                    arb_result_cnt_reg <= 8'd0;
+                    arb_current_tile_reg <= arb_current_tile_reg + 1;
+
+                    if (arb_current_tile_reg == NUM_TILES - 1) begin
+                        // All physical tiles checked (enabled or not)
+                        arb_state_reg <= ARB_NEXT_ROW;
+                    end else begin
+                        // More tiles to check for this row
+                        arb_state_reg <= ARB_COLLECT;
+                    end
+                end
+
+                ARB_NEXT_ROW: begin
+                    arb_current_tile_reg <= 5'd0;
+                    arb_current_row_reg <= arb_current_row_reg + 1;
+
+                    if (arb_current_row_reg == arb_left_ugd_len_reg - 1) begin
+                        // All rows complete
+                        arb_state_reg <= ARB_DONE;
+                    end else begin
+                        // More rows to collect
+                        arb_state_reg <= ARB_COLLECT;
+                    end
+                end
+
+                ARB_DONE: begin
+                    // Wait for next MATMUL command
+                    // Stay in DONE until new tile_en (state will reset via IDLE)
+                    if (|mc_ce_tile_en) begin  // New MATMUL when ANY tile enabled
+                        arb_state_reg <= ARB_IDLE;  // Will start new collection next cycle
+                    end
+                end
+
+                default: arb_state_reg <= ARB_IDLE;
+            endcase
+        end
+    end
+
+    // Mux result data/valid based on current tile being read
+    assign ce_result_data = ce_result_data_arr[arb_current_tile_reg];
+    assign ce_result_valid = (arb_state_reg == ARB_COLLECT) ?
+                             ce_result_valid_arr[arb_current_tile_reg] : 1'b0;
+
+    // Debug outputs: Use tile 0 for state monitoring
+    assign ce_state = ce_state_arr[0];
+    assign result_count = result_count_arr[0];
 
     // ------------------------------------------------------------------
     // Result FIFO - Buffers FP16 computation results

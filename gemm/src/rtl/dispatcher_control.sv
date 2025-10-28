@@ -115,6 +115,9 @@ import gemm_pkg::*;
     output logic                         o_tile_exp_right_wr_en,
     output logic [EXP_WIDTH-1:0]         o_tile_exp_right_wr_data,
 
+    // Multi-tile write enable array (per-tile dispatch control)
+    output logic [23:0]                  o_tile_wr_en,
+
     // ====================================================================
     // AXI-4 Initiator Interface for DDR access
     // ====================================================================
@@ -489,6 +492,10 @@ import gemm_pkg::*;
     logic       man_wr_valid_pipe;   // Valid signal for mantissa write
     logic       exp_wr_valid_pipe;   // Valid signal for exponent write
 
+    // Multi-tile write enable pipeline (1-stage to avoid blocking first write)
+    logic [4:0] physical_tile_id_pipe;   // Physical tile ID (0-23) for future round-robin
+    logic [23:0] tile_wr_en_pipe;        // One-hot tile write enable mask
+
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             man_rd_addr_pipe <= '0;
@@ -498,6 +505,8 @@ import gemm_pkg::*;
             copy_active_pipe <= 1'b0;
             man_wr_valid_pipe <= 1'b0;
             exp_wr_valid_pipe <= 1'b0;
+            physical_tile_id_pipe <= '0;
+            tile_wr_en_pipe <= '0;
         end else begin
             // Pipeline the addresses for 1-cycle BRAM read latency
             // Simplified: Direct counter addressing (for single-tile dispatch)
@@ -512,6 +521,16 @@ import gemm_pkg::*;
             // Valid signals: HIGH when actively copying (before lines_to_copy complete)
             man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_man_done_reg && (disp_man_cnt_reg < disp_lines_to_copy_reg);
             exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_exp_done_reg && (disp_exp_cnt_reg < disp_lines_to_copy_reg);
+
+            // Multi-tile write enable pipeline
+            // For single-tile dispatch: Just use col_en mask
+            // For multi-tile dispatch: This will be enhanced to track current tile in round-robin
+            physical_tile_id_pipe <= disp_current_tile_idx_reg;
+            if (state_reg == ST_DISP_BUSY) begin
+                tile_wr_en_pipe <= disp_col_en_reg;  // Simple: Use col_en mask directly
+            end else begin
+                tile_wr_en_pipe <= '0;
+            end
         end
     end
 
@@ -531,24 +550,28 @@ import gemm_pkg::*;
         end
     end
 
+    // Tile BRAM write outputs (1-stage pipeline)
     // Left mantissa write (ONLY when disp_right_reg=0)
-    assign o_tile_man_left_wr_addr = man_wr_addr_pipe[8:0];         // NEW: Use destination address
-    assign o_tile_man_left_wr_data = o_disp_man_left_rd_data;       // From left BRAM read port
+    assign o_tile_man_left_wr_addr = man_wr_addr_pipe[8:0];
+    assign o_tile_man_left_wr_data = o_disp_man_left_rd_data;        // From left BRAM read port
     assign o_tile_man_left_wr_en   = man_wr_valid_pipe && !disp_right_pipe;  // Selective write
 
     // Right mantissa write (ONLY when disp_right_reg=1)
-    assign o_tile_man_right_wr_addr = man_wr_addr_pipe[8:0];        // NEW: Use destination address
-    assign o_tile_man_right_wr_data = o_disp_man_right_rd_data;     // From right BRAM read port
+    assign o_tile_man_right_wr_addr = man_wr_addr_pipe[8:0];
+    assign o_tile_man_right_wr_data = o_disp_man_right_rd_data;      // From right BRAM read port
     assign o_tile_man_right_wr_en   = man_wr_valid_pipe && disp_right_pipe;   // Selective write
 
     // Tile BRAM exponent writes (selective based on disp_right_reg)
-    assign o_tile_exp_left_wr_addr  = exp_wr_addr_pipe[8:0];        // NEW: Use destination address
-    assign o_tile_exp_left_wr_data  = o_disp_exp_left_rd_data;      // From left_exp_bram
+    assign o_tile_exp_left_wr_addr  = exp_wr_addr_pipe[8:0];
+    assign o_tile_exp_left_wr_data  = o_disp_exp_left_rd_data;       // From left_exp_bram
     assign o_tile_exp_left_wr_en    = exp_wr_valid_pipe && !disp_right_pipe;  // Selective write
 
-    assign o_tile_exp_right_wr_addr = exp_wr_addr_pipe[8:0];        // NEW: Use destination address
-    assign o_tile_exp_right_wr_data = o_disp_exp_right_rd_data;     // From right_exp_bram
+    assign o_tile_exp_right_wr_addr = exp_wr_addr_pipe[8:0];
+    assign o_tile_exp_right_wr_data = o_disp_exp_right_rd_data;      // From right_exp_bram
     assign o_tile_exp_right_wr_en   = exp_wr_valid_pipe && disp_right_pipe;   // Selective write
+
+    // Multi-tile write enable output (one-hot encoding of current tile)
+    assign o_tile_wr_en = tile_wr_en_pipe;
 
     // DISPATCH read address outputs (for engine_top muxing to internal dispatcher_bram)
     // Selective read addressing based on disp_right_reg

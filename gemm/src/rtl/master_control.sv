@@ -55,7 +55,7 @@ import gemm_pkg::*;
     input  logic                          i_dc_disp_done,
 
     // Compute Engine Interface (TILE command)
-    output logic                          o_ce_tile_en,
+    output logic [23:0]                   o_ce_tile_en,           // Per-tile enable (24 tiles max)
     // Compute Engine TILE Interface (spec-compliant per SINGLE_ROW_REFERENCE.md)
     output logic [15:0] o_ce_tile_left_addr,          // 16 bits: Left matrix start address
     output logic [15:0] o_ce_tile_right_addr,         // 16 bits: Right matrix start address
@@ -125,7 +125,8 @@ import gemm_pkg::*;
     logic cmd_fifo_ren_reg;
     logic dc_fetch_en_reg;
     logic dc_disp_en_reg;
-    logic ce_tile_en_reg;
+    logic [23:0] ce_tile_en_reg;       // Per-tile enable (gated by col_en)
+    logic [23:0] ce_col_en_reg;        // Column enable mask from MATMUL command
     logic ce_tile_params_set;  // Delayed enable for proper address setup
 
     // ===================================================================
@@ -452,7 +453,8 @@ import gemm_pkg::*;
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
-            ce_tile_en_reg <= 1'b0;
+            ce_tile_en_reg <= '0;
+            ce_col_en_reg  <= '0;
             ce_tile_params_set <= 1'b0;
             o_ce_tile_left_addr  <= '0;
             o_ce_tile_right_addr <= '0;
@@ -465,8 +467,8 @@ import gemm_pkg::*;
         end else begin
             // MS2.0 ASYNC MODEL: Clear ce_tile_en when compute engine signals completion
             // (Not tied to specific state - works with async MATMUL trigger)
-            if (ce_tile_en_reg && i_ce_tile_done) begin
-                ce_tile_en_reg <= 1'b0;
+            if (|ce_tile_en_reg && i_ce_tile_done) begin  // Check if ANY tile enabled
+                ce_tile_en_reg <= '0;
                 $display("[MC] @%0t CE_DONE: Clearing ce_tile_en after tile completion", $time);
             end
 
@@ -495,17 +497,18 @@ import gemm_pkg::*;
                     o_ce_tile_left_man_4b       <= tile_cmd.left_4b;
                     o_ce_tile_right_man_4b      <= tile_cmd.right_4b;
                     o_ce_tile_main_loop_over_left <= tile_cmd.main_loop_left;
+                    ce_col_en_reg               <= tile_cmd.col_en;        // Store column enable mask
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
 
-                    $display("[MC] @%0t EXEC_TILE Cycle 1: Setting params B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d, col_en=0x%04x",
+                    $display("[MC] @%0t EXEC_TILE Cycle 1: Setting params B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d, col_en=0x%06x",
                              $time, tile_cmd.left_ugd_len, tile_cmd.right_ugd_len, tile_cmd.vec_len,
                              tile_cmd.left_addr, tile_cmd.right_addr, tile_cmd.col_en);
                 end
-                // Cycle 2: Assert enable after parameters are stable (will be high for 1 cycle)
+                // Cycle 2: Assert per-tile enables (gated by col_en mask)
                 else begin
-                    ce_tile_en_reg <= 1'b1;
-                    $display("[MC] @%0t EXEC_TILE Cycle 2: Asserting ce_tile_en (left=%0d, right=%0d)",
-                             $time, o_ce_tile_left_addr, o_ce_tile_right_addr);
+                    ce_tile_en_reg <= ce_col_en_reg;  // Enable only tiles specified by col_en
+                    $display("[MC] @%0t EXEC_TILE Cycle 2: Asserting ce_tile_en=0x%06x (left=%0d, right=%0d)",
+                             $time, ce_col_en_reg, o_ce_tile_left_addr, o_ce_tile_right_addr);
                 end
             end
         end
@@ -645,7 +648,7 @@ import gemm_pkg::*;
         // Check only one module enable active at a time
         property one_enable_active;
             @(posedge i_clk) disable iff (~i_reset_n)
-            $onehot0({dc_fetch_en_reg, dc_disp_en_reg, ce_tile_en_reg});
+            $onehot0({dc_fetch_en_reg, dc_disp_en_reg, |ce_tile_en_reg});  // Check if ANY tile enabled
         endproperty
         assert property (one_enable_active) else
             $error("[MASTER_CONTROL] Multiple module enables active simultaneously!");

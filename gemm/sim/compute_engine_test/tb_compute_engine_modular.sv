@@ -97,14 +97,14 @@ module tb_compute_engine_modular;
 
         // TILE command (spec-compliant per SINGLE_ROW_REFERENCE.md)
         .i_tile_en              (tile_en),
-        .i_left_addr            (left_addr),       // 16 bits
-        .i_right_addr           (right_addr),      // 16 bits
-        .i_left_ugd_len         (left_ugd_len),    // 8 bits: dim_b (Batch)
-        .i_right_ugd_len        (right_ugd_len),   // 8 bits: dim_c (Column)
-        .i_vec_len              (vec_len),         // 8 bits: dim_v (Vector size)
-        .i_left_man_4b          (left_man_4b),
-        .i_right_man_4b         (right_man_4b),
-        .i_main_loop_over_left  (main_loop_over_left),
+        .i_tile_left_addr            (left_addr),       // 16 bits
+        .i_tile_right_addr           (right_addr),      // 16 bits
+        .i_tile_left_ugd_len         (left_ugd_len),    // 8 bits: dim_b (Batch)
+        .i_tile_right_ugd_len        (right_ugd_len),   // 8 bits: dim_c (Column)
+        .i_tile_vec_len              (vec_len),         // 8 bits: dim_v (Vector size)
+        .i_tile_left_man_4b          (left_man_4b),
+        .i_tile_right_man_4b         (right_man_4b),
+        .i_tile_main_loop_over_left  (main_loop_over_left),
         .o_tile_done            (tile_done),
 
         // Tile BRAM Write Interface (simulating DISPATCH operation)

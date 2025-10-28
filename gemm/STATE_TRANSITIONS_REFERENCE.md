@@ -18,19 +18,21 @@ IDLE -> READ_HDR -> READ_PL1 -> READ_PL2 -> READ_PL3 -> DECODE -> EXEC_DISP -> C
 
 **Trigger**: `dc_disp_en_reg = 1` (pulse) when `i_dc_state == IDLE`
 **Behavior**: Returns IMMEDIATELY after trigger, does NOT wait for completion
-**Background**: DC executes DISPATCH operation asynchronously (~512 cycles in DISP_BUSY state)
+**Background**: DC executes DISPATCH operation asynchronously (duration varies based on parameters)
 **ID Tracking**: `pending_disp_id_reg` stores command ID for WAIT_DISPATCH barrier
 
 **Key Design**: This enables pipelined command execution - MC can process next commands while DC copies data
 
-**Duration**: 512 cycles (single address counter, four parallel paths)
+**Duration**: Varies based on man_nv_cnt and ugd_vec_size parameters
 
 **Architecture** (per SINGLE_ROW_REFERENCE.md):
 - Four separate BRAMs: exp_left, man_left, exp_right, man_right
-- All four paths read/write in PARALLEL in same clock cycle
-- Single address counter [0-511] drives all four read addresses simultaneously
-- Single write address [0-511] drives all four write addresses simultaneously
-- Total bandwidth: 4 × 256-bit + 4 × 8-bit per cycle
+- `disp_right` flag selects which side to dispatch (0=left, 1=right)
+- `broadcast` flag controls distribution mode (0=distribute, 1=broadcast)
+- Two paths (exp + man) for selected side read/write in PARALLEL in same clock cycle
+- Single address counter drives both read addresses for the selected side
+- Single write address drives both write addresses for the selected side
+- Bandwidth per DISPATCH: 2 × 256-bit + 2 × 8-bit per cycle (one side at a time)
 
 ### WAIT_DISPATCH Barrier (0xF3) - Synchronization Point
 ```
@@ -96,19 +98,21 @@ IDLE -> DISP_BUSY -> DISP_DONE -> IDLE
 ```
 
 **Trigger**: `i_disp_en == 1`
-**Architecture**: Four parallel data paths (per SINGLE_ROW_REFERENCE.md)
-- exp_left_aligned[0-511] → tile_bram.exp_left[0-511]
-- man_left[0-511] → tile_bram.man_left[0-511]
-- exp_right_aligned[0-511] → tile_bram.exp_right[0-511]
-- man_right[0-511] → tile_bram.man_right[0-511]
+**Architecture**: Selective two-path operation (per SINGLE_ROW_REFERENCE.md)
+- `disp_right=0`: exp_left_aligned[0-511] → tile_bram.exp_left[0-511]
+                  man_left[0-511] → tile_bram.man_left[0-511]
+- `disp_right=1`: exp_right_aligned[0-511] → tile_bram.exp_right[0-511]
+                  man_right[0-511] → tile_bram.man_right[0-511]
 
 **Copy Mechanism**:
-- Single address counter [0-511] drives all four paths simultaneously
-- All four BRAMs write in PARALLEL in same clock cycle
-- Total bandwidth: 4 × 256-bit + 4 × 8-bit per cycle
+- `broadcast=1`: Same data to all enabled tiles (for activations)
+- `broadcast=0`: Different data to each tile round-robin (for weights)
+- Single address counter drives both read addresses for the selected side
+- Two BRAMs (exp + man) for selected side write in PARALLEL in same clock cycle
+- Bandwidth per cycle: 2 × 256-bit + 2 × 8-bit (one side only)
 
-**Done Signal**: `o_disp_done = 1` when counter reaches 511
-**Duration**: ~512 cycles
+**Done Signal**: `o_disp_done = 1` when all man_nv_cnt data dispatched to all enabled tiles
+**Duration**: Varies based on man_nv_cnt, ugd_vec_size, number of enabled tiles, and broadcast mode
 
 ---
 
@@ -159,8 +163,9 @@ MC:                   Returns IMMEDIATELY to CMD_COMPLETE (no blocking!)
 
 DC:                   Starts DISP_BUSY in BACKGROUND
                                   │
-                                  │ (~512 cycles: parallel 4-path copy)
-                                  │ Counter [0-511] drives all 4 BRAMs simultaneously
+                                  │ (varies: selective 2-path copy based on disp_right flag)
+                                  │ Counter drives 2 BRAMs (exp + man) for selected side simultaneously
+                                  │ Distribution controlled by broadcast flag (broadcast or distribute to tiles)
                                   │
 DC: state DISP_BUSY → DISP_DONE → IDLE
                                   ▼

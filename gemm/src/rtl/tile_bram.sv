@@ -130,9 +130,17 @@ module tile_bram #(
     always_ff @(posedge i_clk) begin
         if (i_exp_left_wr_en) begin
             exp_left[i_exp_left_wr_addr] <= i_exp_left_wr_data;
+            `ifdef SIMULATION
+            $display("[TILE_WR] @%0t exp_left[%0d] = 0x%02x",
+                     $time, i_exp_left_wr_addr, i_exp_left_wr_data);
+            `endif
         end
         if (i_exp_right_wr_en) begin
             exp_right[i_exp_right_wr_addr] <= i_exp_right_wr_data;
+            `ifdef SIMULATION
+            $display("[TILE_WR] @%0t exp_right[%0d] = 0x%02x",
+                     $time, i_exp_right_wr_addr, i_exp_right_wr_data);
+            `endif
         end
     end
 
@@ -176,6 +184,10 @@ module tile_bram #(
     always_ff @(posedge i_clk) begin
         if (i_exp_left_rd_en) begin
             exp_left_rd_data_reg <= exp_left[i_exp_left_rd_addr];
+            `ifdef SIMULATION
+            $display("[TILE_RD] @%0t exp_left[%0d] → 0x%02x",
+                     $time, i_exp_left_rd_addr, exp_left[i_exp_left_rd_addr]);
+            `endif
         end
     end
     assign o_exp_left_rd_data = exp_left_rd_data_reg;
@@ -184,6 +196,10 @@ module tile_bram #(
     always_ff @(posedge i_clk) begin
         if (i_exp_right_rd_en) begin
             exp_right_rd_data_reg <= exp_right[i_exp_right_rd_addr];
+            `ifdef SIMULATION
+            $display("[TILE_RD] @%0t exp_right[%0d] → 0x%02x",
+                     $time, i_exp_right_rd_addr, exp_right[i_exp_right_rd_addr]);
+            `endif
         end
     end
     assign o_exp_right_rd_data = exp_right_rd_data_reg;

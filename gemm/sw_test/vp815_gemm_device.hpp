@@ -100,19 +100,20 @@ public:
     // cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_DISPATCH}
     // cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
     // cmd[2] = {16'b0, tile_addr[15:0]}
-    // cmd[3] = {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b}
+    // cmd[3] = {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
     uint8_t dispatch(uint8_t man_nv_cnt, uint8_t ugd_vec_size, uint16_t tile_addr,
-                     uint16_t col_en = 0x0001, uint8_t col_start = 0,
+                     bool disp_right, uint32_t col_en = 0x0001, uint8_t col_start = 0,
                      bool broadcast = false, bool man_4b = false) {
         uint8_t id = next_cmd_id();
         uint32_t w0 = build_word0(OPC_DISPATCH, id);
         uint32_t w1 = (static_cast<uint32_t>(man_nv_cnt) << 16) |
                       static_cast<uint32_t>(ugd_vec_size);
         uint32_t w2 = static_cast<uint32_t>(tile_addr & 0xFFFF);
-        uint32_t w3 = (static_cast<uint32_t>(col_en) << 16) |
-                      (static_cast<uint32_t>(col_start & 0x3F) << 2) |
-                      (broadcast ? 2u : 0u) |
-                      (man_4b ? 1u : 0u);
+        uint32_t w3 = ((col_en & 0xFFFFFF) << 8) |              // col_en[23:0] at bits [31:8]
+                      ((col_start & 0x1F) << 3) |                // col_start[4:0] at bits [7:3]
+                      (disp_right ? 4u : 0u) |                   // disp_right at bit 2
+                      (broadcast ? 2u : 0u) |                    // broadcast at bit 1
+                      (man_4b ? 1u : 0u);                        // man_4b at bit 0
         issue_command(w0, w1, w2, w3);
         return id;
     }

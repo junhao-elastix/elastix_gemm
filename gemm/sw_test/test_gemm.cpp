@@ -295,19 +295,32 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);  // Left matrix
         gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true); // Right matrix (fetch_right=true)
 
-        // DISPATCH command (NEW 4-WORD FORMAT)
+        // DISPATCH LEFT command (disp_right=false for left matrix)
         // man_nv_cnt=128 (full dispatcher BRAM), ugd_vec_size=V, tile_addr=0
-        // Hardware broadcasts LEFT buffers and distributes RIGHT buffers
-        uint8_t disp_id = gemm_device.dispatch(
+        uint8_t disp_left_id = gemm_device.dispatch(
             128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
             V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
             0,      // tile_addr: Start at tile_bram[0]
+            false,  // disp_right: LEFT matrix (disp_right=0)
             0x0001, // col_en: Enable tile 0 only
             0,      // col_start: Start from tile 0
-            false,  // broadcast: Reserved (hardware always broadcasts LEFT, distributes RIGHT)
+            false,  // broadcast: Distribute mode
             false   // man_4b: 8-bit mantissas
         );
-        gemm_device.waitDispatch(disp_id);
+        gemm_device.waitDispatch(disp_left_id);
+
+        // DISPATCH RIGHT command (disp_right=true for right matrix)
+        uint8_t disp_right_id = gemm_device.dispatch(
+            128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
+            V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
+            0,      // tile_addr: Start at tile_bram[0]
+            true,   // disp_right: RIGHT matrix (disp_right=1)
+            0x0001, // col_en: Enable tile 0 only
+            0,      // col_start: Start from tile 0
+            false,  // broadcast: Distribute mode
+            false   // man_4b: 8-bit mantissas
+        );
+        gemm_device.waitDispatch(disp_right_id);
 
         // MATMUL command - AMD-compatible signature
         // Pass B, C, V directly as leftUgdLen, rightUgdLen, vecLen

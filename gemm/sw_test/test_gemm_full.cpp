@@ -767,33 +767,53 @@ bool run_single_test(VP815& device, const TestConfig& config, int stress_factor,
         for (int stress_iter = 0; stress_iter < stress_factor; stress_iter++) {
             
             // ====================================================================
-            // Step 6: Issue DISPATCH command (configure vector dispatch)
+            // Step 6: Issue DISPATCH LEFT command (disp_right=0)
             // ====================================================================
 
             // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_DISPATCH}
             //                cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
             //                cmd[2] = {16'b0, tile_addr[15:0]}
-            //                cmd[3] = {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b}
+            //                cmd[3] = {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
 
-            uint8_t disp_id = 3;  // Command ID for dispatch
-            uint32_t cmd_disp_word0 = (0x00 << 24) | (16 << 16) | (disp_id << 8) | OPCODE_DISPATCH;
-            uint32_t cmd_disp_word1 = (128 << 16) | VLOOP_SIZE;  // man_nv_cnt=128, ugd_vec_size=V
-            uint32_t cmd_disp_word2 = 0;  // tile_addr=0
-            uint32_t cmd_disp_word3 = (0x0001 << 16) | 0;  // col_en=1, col_start=0, no flags
+            uint8_t disp_left_id = 3;  // Command ID for left dispatch
+            uint32_t cmd_disp_left_word0 = (0x00 << 24) | (16 << 16) | (disp_left_id << 8) | OPCODE_DISPATCH;
+            uint32_t cmd_disp_left_word1 = (128 << 16) | VLOOP_SIZE;  // man_nv_cnt=128, ugd_vec_size=V
+            uint32_t cmd_disp_left_word2 = 0;  // tile_addr=0
+            uint32_t cmd_disp_left_word3 = (0x0001 << 8) | 0;  // col_en[23:0]=1, disp_right=0 (LEFT), no other flags
 
-            issueCommand(device, cmd_disp_word0, cmd_disp_word1, cmd_disp_word2, cmd_disp_word3);
+            issueCommand(device, cmd_disp_left_word0, cmd_disp_left_word1, cmd_disp_left_word2, cmd_disp_left_word3);
 
             // ====================================================================
-            // Step 7: Issue WAIT_DISPATCH command
+            // Step 7: Issue WAIT_DISPATCH command (wait for left dispatch)
             // ====================================================================
 
             // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_WAIT_DISPATCH}
             //                cmd[1] = {24'd0, wait_id[7:0]}
             //                cmd[2] = 32'h00000000
             //                cmd[3] = 32'h00000000
-            uint32_t cmd_wait_disp_word0 = (0x00 << 24) | (16 << 16) | (4 << 8) | OPCODE_WAIT_DISPATCH;
-            uint32_t cmd_wait_disp_word1 = disp_id;  // Wait for dispatch id=3
-            issueCommand(device, cmd_wait_disp_word0, cmd_wait_disp_word1, 0, 0);
+            uint32_t cmd_wait_disp_left_word0 = (0x00 << 24) | (16 << 16) | (4 << 8) | OPCODE_WAIT_DISPATCH;
+            uint32_t cmd_wait_disp_left_word1 = disp_left_id;  // Wait for dispatch id=3
+            issueCommand(device, cmd_wait_disp_left_word0, cmd_wait_disp_left_word1, 0, 0);
+
+            // ====================================================================
+            // Step 6b: Issue DISPATCH RIGHT command (disp_right=1)
+            // ====================================================================
+
+            uint8_t disp_right_id = 5;  // Command ID for right dispatch
+            uint32_t cmd_disp_right_word0 = (0x00 << 24) | (16 << 16) | (disp_right_id << 8) | OPCODE_DISPATCH;
+            uint32_t cmd_disp_right_word1 = (128 << 16) | VLOOP_SIZE;  // man_nv_cnt=128, ugd_vec_size=V
+            uint32_t cmd_disp_right_word2 = 0;  // tile_addr=0
+            uint32_t cmd_disp_right_word3 = (0x0001 << 8) | (1 << 2);  // col_en[23:0]=1, disp_right=1 (RIGHT), no other flags
+
+            issueCommand(device, cmd_disp_right_word0, cmd_disp_right_word1, cmd_disp_right_word2, cmd_disp_right_word3);
+
+            // ====================================================================
+            // Step 7b: Issue WAIT_DISPATCH command (wait for right dispatch)
+            // ====================================================================
+
+            uint32_t cmd_wait_disp_right_word0 = (0x00 << 24) | (16 << 16) | (6 << 8) | OPCODE_WAIT_DISPATCH;
+            uint32_t cmd_wait_disp_right_word1 = disp_right_id;  // Wait for dispatch id=5
+            issueCommand(device, cmd_wait_disp_right_word0, cmd_wait_disp_right_word1, 0, 0);
 
             // ====================================================================
             // Step 8: Issue MATMUL command

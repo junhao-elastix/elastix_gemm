@@ -187,21 +187,31 @@ module tb_engine_top;
         int B;
         int C;
         int V;
+        logic [23:0] col_en;  // Column enable mask (NEW: for multi-tile testing)
         string name;
     } test_config_t;
 
-    // Test configurations matching test_gemm.cpp (10 tests)
+    // Test configurations matching test_gemm.cpp
+    // Single-tile tests (10 tests with col_en=0x000001)
+    // Multi-tile tests (4 new tests with col_en=0x000003 for 2 tiles)
     test_config_t test_configs[] = '{
-        '{B: 1, C: 1, V: 1,   name: "B1_C1_V1"},
-        '{B: 2, C: 2, V: 2,   name: "B2_C2_V2"},
-        '{B: 4, C: 4, V: 4,   name: "B4_C4_V4"},
-        '{B: 2, C: 2, V: 64,  name: "B2_C2_V64"},
-        '{B: 4, C: 4, V: 32,  name: "B4_C4_V32"},
-        '{B: 8, C: 8, V: 16,  name: "B8_C8_V16"},
-        '{B: 16, C: 16, V: 8, name: "B16_C16_V8"},
-        '{B: 1, C: 128, V: 1, name: "B1_C128_V1"},
-        '{B: 128, C: 1, V: 1, name: "B128_C1_V1"},
-        '{B: 1, C: 1, V: 128, name: "B1_C1_V128"}
+        // Single-tile regression tests (existing)
+        '{B: 1, C: 1, V: 1,   col_en: 24'h000001, name: "B1_C1_V1"},
+        '{B: 2, C: 2, V: 2,   col_en: 24'h000001, name: "B2_C2_V2"},
+        '{B: 4, C: 4, V: 4,   col_en: 24'h000001, name: "B4_C4_V4"},
+        '{B: 2, C: 2, V: 64,  col_en: 24'h000001, name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h000001, name: "B4_C4_V32"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000001, name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8, col_en: 24'h000001, name: "B16_C16_V8"},
+        '{B: 1, C: 128, V: 1, col_en: 24'h000001, name: "B1_C128_V1"},
+        '{B: 128, C: 1, V: 1, col_en: 24'h000001, name: "B128_C1_V1"},
+        '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"},
+
+        // Multi-tile tests (NEW: 2-tile with col_en=0x000003)
+        '{B: 2, C: 4, V: 16,  col_en: 24'h000003, name: "B2_C4_V16_2T"},
+        '{B: 4, C: 8, V: 8,   col_en: 24'h000003, name: "B4_C8_V8_2T"},
+        '{B: 8, C: 32, V: 2,  col_en: 24'h000003, name: "B8_C32_V2_2T"},
+        '{B: 16, C: 16, V: 4, col_en: 24'h000003, name: "B16_C16_V4_2T"}
     };
 
     // ===================================================================
@@ -227,6 +237,7 @@ module tb_engine_top;
                 test_configs[i].B,
                 test_configs[i].C,
                 test_configs[i].V,
+                test_configs[i].col_en,
                 test_configs[i].name
             );
             repeat (100) @(posedge clk);  // Delay between tests
@@ -256,6 +267,7 @@ module tb_engine_top;
         input int config_B,
         input int config_C,
         input int config_V,
+        input logic [23:0] config_col_en,
         input string test_name
     );
         logic [31:0] cmd_sequence [0:511];
@@ -291,8 +303,8 @@ module tb_engine_top;
         $display("[TB] Loaded %0d golden results from %s", idx, golden_filename);
 
         // Generate command sequence
-        build_test_sequence(config_B, config_C, config_V, cmd_sequence, num_commands);
-        $display("[TB] Generated %0d commands", num_commands);
+        build_test_sequence(config_B, config_C, config_V, config_col_en, cmd_sequence, num_commands);
+        $display("[TB] Generated %0d commands for col_en=0x%06x", num_commands, config_col_en);
 
         // Submit commands to FIFO
         // Write all commands continuously (one word per cycle)
@@ -382,6 +394,7 @@ module tb_engine_top;
         input int B,
         input int C,
         input int V,
+        input logic [23:0] col_en,
         output logic [31:0] cmd_seq [0:511],
         output integer num_cmds
     );
@@ -394,6 +407,9 @@ module tb_engine_top;
         
         integer idx = 0;
 
+        // ===================================================================
+        // LEFT MATRIX FETCH AND DISPATCH (disp_right=0)
+        // ===================================================================
         // FETCH left matrix (start_addr = 0, fetch_right = 0)
         generate_fetch_command(0, 0, 528, 1'b0, fetch_left_cmd);
         $display("[TB] FETCH LEFT: cmd[0]=0x%08x, cmd[1]=0x%08x, cmd[2]=0x%08x, cmd[3]=0x%08x",
@@ -403,8 +419,38 @@ module tb_engine_top;
         cmd_seq[idx++] = fetch_left_cmd[2];
         cmd_seq[idx++] = fetch_left_cmd[3];
 
+        // DISPATCH LEFT: dispatcher_bram (left) → tile_bram (left)
+        // Multi-tile: Use BROADCAST mode for left matrix (activations replicated to all tiles)
+        generate_disp_command(
+            1,              // id
+            128,            // man_nv_cnt: Total NVs in dispatcher_bram (full capacity)
+            V,              // ugd_vec_size: NVs per UGD vector (matches test V parameter)
+            16'd0,          // tile_addr: Start of tile BRAM
+            1'b0,           // man_4b: 8-bit mantissa mode
+            col_en,         // col_en: Column enable mask (parameterized)
+            5'd0,           // col_start: Distribution starts at column 0
+            1'b0,           // disp_right: LEFT dispatch (0=left)
+            1'b1,           // broadcast: BROADCAST mode for left (activations)
+            disp_cmd
+        );
+        $display("[TB] DISPATCH LEFT: disp_right=0, broadcast=1, col_en=0x%06x", col_en);
+        cmd_seq[idx++] = disp_cmd[0];
+        cmd_seq[idx++] = disp_cmd[1];
+        cmd_seq[idx++] = disp_cmd[2];
+        cmd_seq[idx++] = disp_cmd[3];
+
+        // WAIT_DISPATCH (wait for left dispatch to complete)
+        generate_wait_disp_command(2, 1, wait_disp_cmd);
+        cmd_seq[idx++] = wait_disp_cmd[0];
+        cmd_seq[idx++] = wait_disp_cmd[1];
+        cmd_seq[idx++] = wait_disp_cmd[2];
+        cmd_seq[idx++] = wait_disp_cmd[3];
+
+        // ===================================================================
+        // RIGHT MATRIX FETCH AND DISPATCH (disp_right=1)
+        // ===================================================================
         // FETCH right matrix (start_addr = 528, fetch_right = 1)
-        generate_fetch_command(1, 528, 528, 1'b1, fetch_right_cmd);
+        generate_fetch_command(3, 528, 528, 1'b1, fetch_right_cmd);
         $display("[TB] FETCH RIGHT: cmd[0]=0x%08x, cmd[1]=0x%08x, cmd[2]=0x%08x, cmd[3]=0x%08x",
                  fetch_right_cmd[0], fetch_right_cmd[1], fetch_right_cmd[2], fetch_right_cmd[3]);
         cmd_seq[idx++] = fetch_right_cmd[0];
@@ -412,46 +458,50 @@ module tb_engine_top;
         cmd_seq[idx++] = fetch_right_cmd[2];
         cmd_seq[idx++] = fetch_right_cmd[3];
 
-        // DISPATCH triggers DISP_COPY: dispatcher_bram → tile_bram
-        // man_nv_cnt = 128 (full dispatcher_bram capacity: 128 NVs × 4 lines = 512 mantissa lines)
-        // V parameter tells compute engine how many groups to USE, not how many to DISPATCH
+        // DISPATCH RIGHT: dispatcher_bram (right) → tile_bram (right)
+        // Multi-tile: Use DISTRIBUTE mode for right matrix (weights sharded across tiles)
         generate_disp_command(
-            2,              // id
-            128,            // man_nv_cnt: Total NVs in dispatcher_bram (always full capacity)
+            4,              // id
+            128,            // man_nv_cnt: Total NVs in dispatcher_bram (full capacity)
             V,              // ugd_vec_size: NVs per UGD vector (matches test V parameter)
-            16'd0,          // tile_addr: Start of tile BRAM
+            16'd0,          // tile_addr: Start of tile BRAM (same as left, different BRAM)
             1'b0,           // man_4b: 8-bit mantissa mode
-            16'h0001,       // col_en: Single-tile mode (only tile 0 enabled)
-            6'd0,           // col_start: Distribution starts at column 0
-            1'b0,           // broadcast: Reserved (tied to 0)
+            col_en,         // col_en: Column enable mask (parameterized)
+            5'd0,           // col_start: Distribution starts at column 0
+            1'b1,           // disp_right: RIGHT dispatch (1=right)
+            1'b0,           // broadcast: DISTRIBUTE mode for right (weights)
             disp_cmd
         );
+        $display("[TB] DISPATCH RIGHT: disp_right=1, broadcast=0, col_en=0x%06x", col_en);
         cmd_seq[idx++] = disp_cmd[0];
         cmd_seq[idx++] = disp_cmd[1];
         cmd_seq[idx++] = disp_cmd[2];
         cmd_seq[idx++] = disp_cmd[3];
 
-        // WAIT_DISPATCH
-        generate_wait_disp_command(3, 2, wait_disp_cmd);
+        // WAIT_DISPATCH (wait for right dispatch to complete)
+        generate_wait_disp_command(5, 4, wait_disp_cmd);
         cmd_seq[idx++] = wait_disp_cmd[0];
         cmd_seq[idx++] = wait_disp_cmd[1];
         cmd_seq[idx++] = wait_disp_cmd[2];
         cmd_seq[idx++] = wait_disp_cmd[3];
 
-        // TILE (matrix multiply)
+        // ===================================================================
+        // MATRIX MULTIPLY
+        // ===================================================================
+        // TILE (matrix multiply) - Both left and right matrices now in tile_bram
         // tile_bram structure: Separate address spaces (like dispatcher_bram)
         //   - man_left:  [0:511] × 256-bit
         //   - man_right: [0:511] × 256-bit
         //   - exp_left:  [0:511] × 8-bit
         //   - exp_right: [0:511] × 8-bit
         generate_tile_command(
-            4,              // id
+            6,              // id (updated from 4)
             0,              // left_addr: Start of left matrix (separate address space)
             0,              // right_addr: Start of right matrix (separate address space)
             B,              // dim_b: Batch dimension
             C,              // dim_c: Column dimension
             V,              // dim_v: Vector size
-            16'h0001,       // col_en: Single-tile mode (only tile 0 enabled)
+            24'h000001,     // col_en: Single-tile mode (24-bit, only tile 0 enabled) - UPDATED
             1'b0,           // left_4b: 8-bit mantissa
             1'b0,           // right_4b: 8-bit mantissa
             1'b0,           // main_loop_left: Main loop over right dimension
@@ -463,7 +513,7 @@ module tb_engine_top;
         cmd_seq[idx++] = tile_cmd[3];
 
         // WAIT_TILE
-        generate_wait_tile_command(5, 4, wait_tile_cmd);
+        generate_wait_tile_command(7, 6, wait_tile_cmd);
         cmd_seq[idx++] = wait_tile_cmd[0];
         cmd_seq[idx++] = wait_tile_cmd[1];
         cmd_seq[idx++] = wait_tile_cmd[2];
@@ -498,25 +548,28 @@ module tb_engine_top;
 
     task automatic generate_disp_command(
         input logic [7:0] id,
-        input logic [7:0] man_nv_cnt,      // NEW: Total NVs to dispatch
-        input logic [7:0] ugd_vec_size,    // NEW: NVs per UGD vector
-        input logic [15:0] tile_addr,      // Expanded to 16 bits
-        input logic man_4b,
-        input logic [15:0] col_en,         // NEW: Column enable mask
-        input logic [5:0] col_start,       // NEW: Distribution start column
-        input logic broadcast,             // NEW: Reserved (tied to 0)
+        input logic [7:0] man_nv_cnt,      // Total NVs to dispatch
+        input logic [7:0] ugd_vec_size,    // NVs per UGD vector
+        input logic [15:0] tile_addr,      // Tile destination address
+        input logic man_4b,                // Mantissa width (0=8-bit, 1=4-bit)
+        input logic [23:0] col_en,         // UPDATED: Column enable mask (24 tiles max)
+        input logic [4:0] col_start,       // UPDATED: Distribution start column (5 bits)
+        input logic disp_right,            // NEW: Dispatch side (0=left, 1=right)
+        input logic broadcast,             // Distribution mode (0=distribute, 1=broadcast)
         output logic [31:0] cmd [0:3]
     );
-        // SPEC-COMPLIANT DISPATCH command (SINGLE_ROW_REFERENCE.md)
+        // SPEC-COMPLIANT DISPATCH command (SINGLE_ROW_REFERENCE.md + gemm_pkg.sv cmd_disp_s)
         // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
         // Word 1: {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
         // Word 2: {16'b0, tile_addr[15:0]}
-        // Word 3: {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b}
+        // Word 3: {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
 
         cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_disp};
-        cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]};   // Word 1
-        cmd[2] = {16'b0, tile_addr[15:0]};                            // Word 2
-        cmd[3] = {col_en[15:0], 8'b0, col_start[5:0], broadcast, man_4b};  // Word 3
+        cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]};    // Word 1
+        cmd[2] = {16'b0, tile_addr[15:0]};                             // Word 2
+        cmd[3] = {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b};  // Word 3 - UPDATED
+        $display("[TB_CMD] DISP: id=%0d, cmd[3]=0x%08x (col_en=0x%06x, col_start=%0d, disp_right=%0b, broadcast=%0b, man_4b=%0b)",
+                 id, cmd[3], col_en, col_start, disp_right, broadcast, man_4b);
     endtask
 
     task automatic generate_wait_disp_command(
@@ -543,13 +596,13 @@ module tb_engine_top;
         input int dim_b,
         input int dim_c,
         input int dim_v,
-        input logic [15:0] col_en,           // Column enable mask (single-tile: 0x0001)
+        input logic [23:0] col_en,           // UPDATED: Column enable mask (24 tiles max) - was 16 bits
         input logic left_4b,                 // Left mantissa width (0=8b, 1=4b)
         input logic right_4b,                // Right mantissa width (0=8b, 1=4b)
         input logic main_loop_left,          // Main loop dimension (0=right, 1=left)
         output logic [31:0] cmd [0:3]
     );
-        // SPEC-COMPLIANT MATMUL command (SINGLE_ROW_REFERENCE.md)
+        // SPEC-COMPLIANT MATMUL command (SINGLE_ROW_REFERENCE.md + gemm_pkg.sv cmd_tile_s)
         // Uses updated cmd_tile_s structure from gemm_pkg.sv
 
         // Convert addresses to 16-bit (spec-compliant)
@@ -561,16 +614,16 @@ module tb_engine_top;
         logic [7:0] right_ugd_len = dim_c[7:0];   // Column dimension
         logic [7:0] vec_len       = dim_v[7:0];   // Vector size (NVs per UGD vector)
 
-        // Pack according to cmd_tile_s structure:
+        // Pack according to cmd_tile_s structure (gemm_pkg.sv):
         // Word 0: {reserved[7:0], len[7:0], id[7:0], opcode[7:0]}
         // Word 1: {left_addr[15:0], right_addr[15:0]}
         // Word 2: {reserved2[7:0], left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
-        // Word 3: {col_en[15:0], reserved[12:0], left_4b, right_4b, main_loop_left}
+        // Word 3: {col_en[23:0], reserved[4:0], left_4b, right_4b, main_loop_left} - UPDATED
 
         cmd[0] = (32'h00 << 24) | (32'd16 << 16) | ({24'h0, id} << 8) | {24'h0, e_cmd_op_tile};
         cmd[1] = {left_addr_16, right_addr_16};                                 // Addresses
         cmd[2] = {8'b0, left_ugd_len, right_ugd_len, vec_len};                 // Dimensions
-        cmd[3] = {col_en, 13'b0, left_4b, right_4b, main_loop_left};          // Flags + col_en
+        cmd[3] = {col_en, 5'b0, left_4b, right_4b, main_loop_left};           // Word 3 - UPDATED to 24-bit col_en + 5-bit reserved
     endtask
 
     task automatic generate_wait_tile_command(
