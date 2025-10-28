@@ -56,14 +56,14 @@ import gemm_pkg::*;
     // Compute Engine Interface (TILE command)
     output logic                          o_ce_tile_en,
     // Compute Engine TILE Interface (spec-compliant per SINGLE_ROW_REFERENCE.md)
-    output logic [15:0] o_ce_left_addr,          // 16 bits: Left matrix start address
-    output logic [15:0] o_ce_right_addr,         // 16 bits: Right matrix start address
-    output logic [7:0]  o_ce_left_ugd_len,       // 8 bits: Left UGD vectors (Batch dimension)
-    output logic [7:0]  o_ce_right_ugd_len,      // 8 bits: Right UGD vectors (Column dimension)
-    output logic [7:0]  o_ce_vec_len,            // 8 bits: UGD vector size (Vector count)
-    output logic        o_ce_left_man_4b,
-    output logic        o_ce_right_man_4b,
-    output logic        o_ce_main_loop_over_left,
+    output logic [15:0] o_ce_tile_left_addr,          // 16 bits: Left matrix start address
+    output logic [15:0] o_ce_tile_right_addr,         // 16 bits: Right matrix start address
+    output logic [7:0]  o_ce_tile_left_ugd_len,       // 8 bits: Left UGD vectors (Batch dimension)
+    output logic [7:0]  o_ce_tile_right_ugd_len,      // 8 bits: Right UGD vectors (Column dimension)
+    output logic [7:0]  o_ce_tile_vec_len,            // 8 bits: UGD vector size (Vector count)
+    output logic        o_ce_tile_left_man_4b,
+    output logic        o_ce_tile_right_man_4b,
+    output logic        o_ce_tile_main_loop_over_left,
     input  logic        i_ce_tile_done,
 
     // Debug
@@ -451,14 +451,14 @@ import gemm_pkg::*;
         if (~i_reset_n) begin
             ce_tile_en_reg <= 1'b0;
             ce_tile_params_set <= 1'b0;
-            o_ce_left_addr  <= '0;
-            o_ce_right_addr <= '0;
-            o_ce_left_ugd_len  <= '0;
-            o_ce_right_ugd_len <= '0;
-            o_ce_vec_len    <= '0;
-            o_ce_left_man_4b  <= 1'b0;
-            o_ce_right_man_4b <= 1'b0;
-            o_ce_main_loop_over_left <= 1'b0;
+            o_ce_tile_left_addr  <= '0;
+            o_ce_tile_right_addr <= '0;
+            o_ce_tile_left_ugd_len  <= '0;
+            o_ce_tile_right_ugd_len <= '0;
+            o_ce_tile_vec_len    <= '0;
+            o_ce_tile_left_man_4b  <= 1'b0;
+            o_ce_tile_right_man_4b <= 1'b0;
+            o_ce_tile_main_loop_over_left <= 1'b0;
         end else begin
             // MS2.0 ASYNC MODEL: Clear ce_tile_en when compute engine signals completion
             // (Not tied to specific state - works with async MATMUL trigger)
@@ -484,14 +484,14 @@ import gemm_pkg::*;
                 // Cycle 1: Set all parameters
                 if (!ce_tile_params_set) begin
                     // Assign TILE command parameters
-                    o_ce_left_addr         <= tile_cmd.left_addr;
-                    o_ce_right_addr        <= tile_cmd.right_addr;
-                    o_ce_left_ugd_len      <= tile_cmd.left_ugd_len;   // Batch dimension
-                    o_ce_right_ugd_len     <= tile_cmd.right_ugd_len;  // Column dimension
-                    o_ce_vec_len           <= tile_cmd.vec_len;        // Vector count
-                    o_ce_left_man_4b       <= tile_cmd.left_4b;
-                    o_ce_right_man_4b      <= tile_cmd.right_4b;
-                    o_ce_main_loop_over_left <= tile_cmd.main_loop_left;
+                    o_ce_tile_left_addr         <= tile_cmd.left_addr;
+                    o_ce_tile_right_addr        <= tile_cmd.right_addr;
+                    o_ce_tile_left_ugd_len      <= tile_cmd.left_ugd_len;   // Batch dimension
+                    o_ce_tile_right_ugd_len     <= tile_cmd.right_ugd_len;  // Column dimension
+                    o_ce_tile_vec_len           <= tile_cmd.vec_len;        // Vector count
+                    o_ce_tile_left_man_4b       <= tile_cmd.left_4b;
+                    o_ce_tile_right_man_4b      <= tile_cmd.right_4b;
+                    o_ce_tile_main_loop_over_left <= tile_cmd.main_loop_left;
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
 
                     $display("[MC] @%0t EXEC_TILE Cycle 1: Setting params B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d, col_en=0x%04x",
@@ -502,7 +502,7 @@ import gemm_pkg::*;
                 else begin
                     ce_tile_en_reg <= 1'b1;
                     $display("[MC] @%0t EXEC_TILE Cycle 2: Asserting ce_tile_en (left=%0d, right=%0d)",
-                             $time, o_ce_left_addr, o_ce_right_addr);
+                             $time, o_ce_tile_left_addr, o_ce_tile_right_addr);
                 end
             end
         end
@@ -683,7 +683,7 @@ import gemm_pkg::*;
 
             if (state_reg == ST_EXEC_TILE) begin
                 $display("[MASTER_CONTROL] TILE: L_addr=%0d, R_addr=%0d, vec_len=%0d",
-                         o_ce_left_addr, o_ce_right_addr, o_ce_vec_len);
+                         o_ce_tile_left_addr, o_ce_tile_right_addr, o_ce_tile_vec_len);
             end
         end
     `endif
@@ -694,7 +694,7 @@ import gemm_pkg::*;
     assign o_mc_state_next = state_next;
     assign o_cmd_op_debug = cmd_op_reg;
     assign o_mc_sees_count = i_cmd_fifo_count;
-    assign o_mc_tile_dimensions = {o_ce_left_ugd_len, o_ce_right_ugd_len, o_ce_vec_len, 8'h00};
+    assign o_mc_tile_dimensions = {o_ce_tile_left_ugd_len, o_ce_tile_right_ugd_len, o_ce_tile_vec_len, 8'h00};
     assign o_mc_payload_word1 = payload_word1_reg;
     assign o_mc_payload_word2 = payload_word2_reg;
     assign o_mc_payload_word3 = payload_word3_reg;

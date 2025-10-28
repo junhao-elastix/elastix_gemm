@@ -22,9 +22,13 @@
 module dispatcher_control
 import gemm_pkg::*;
 #(
-    parameter TGT_DATA_WIDTH = 256,    // Target data width (256-bit AXI)
-    parameter AXI_ADDR_WIDTH = 42,     // AXI address width (42-bit for GDDR6 NoC: {Page[9], Line[26], Pad[2], Byte[5]})
-    parameter BRAM_DEPTH = 2048,       // Increased from 528 to support both left+right matrices (1056 total, rounded to power of 2)
+    parameter MAN_WIDTH = 256,         // Mantissa data width
+    parameter EXP_WIDTH = 8,           // Exponent data width
+    parameter BRAM_DEPTH = 512,        // Dispatcher BRAM depth (matches dispatcher_bram hardcoded value)
+    parameter TILE_DEPTH = 512,        // Tile BRAM depth per side
+    parameter AXI_ADDR_WIDTH = 42,     // AXI address width (GDDR6 NoC: {Page[9], Line[26], Pad[2], Byte[5]})
+    parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),  // 9-bit for 512 depth
+    parameter TILE_ADDR_WIDTH = $clog2(TILE_DEPTH),  // 9-bit for 512 depth
     parameter [8:0] GDDR6_PAGE_ID = 9'd2  // GDDR6 Page ID for NoC routing (Channel 1 default)
 )
 (
@@ -52,61 +56,63 @@ import gemm_pkg::*;
     output logic                         o_disp_done,
 
     // ====================================================================
-    // Dual BRAM Read Ports (for Compute Engine - parallel access)
+    // Dispatcher BRAM Read Ports (to Compute Engine - parallel access)
     // ====================================================================
-    // Port B: Left matrix mantissa read
-    input  logic [10:0]                  i_bram_rd_addr_left,
-    output logic [TGT_DATA_WIDTH-1:0]    o_bram_rd_data_left,
-    input  logic                         i_bram_rd_en_left,
-    
-    // Port C: Right matrix mantissa read
-    input  logic [10:0]                  i_bram_rd_addr_right,
-    output logic [TGT_DATA_WIDTH-1:0]    o_bram_rd_data_right,
-    input  logic                         i_bram_rd_en_right,
-    
-    // ====================================================================
-    // Exponent BRAM Write Ports (for post-fetch unpacking)
-    // ====================================================================
-    output logic [8:0]                   o_left_exp_wr_addr,
-    output logic [7:0]                   o_left_exp_wr_data,
-    output logic                         o_left_exp_wr_en,
-    
-    output logic [8:0]                   o_right_exp_wr_addr,
-    output logic [7:0]                   o_right_exp_wr_data,
-    output logic                         o_right_exp_wr_en,
+    // Left matrix mantissa read
+    input  logic [BRAM_ADDR_WIDTH-1:0]   i_disp_man_left_rd_addr,
+    input  logic                         i_disp_man_left_rd_en,
+    output logic [MAN_WIDTH-1:0]         o_disp_man_left_rd_data,
+
+    // Right matrix mantissa read
+    input  logic [BRAM_ADDR_WIDTH-1:0]   i_disp_man_right_rd_addr,
+    input  logic                         i_disp_man_right_rd_en,
+    output logic [MAN_WIDTH-1:0]         o_disp_man_right_rd_data,
 
     // ====================================================================
-    // Exponent BRAM Read Ports (from Compute Engine)
+    // Dispatcher BRAM Exponent Write Ports (for post-fetch unpacking)
     // ====================================================================
-    input  logic [8:0]                   i_left_exp_rd_addr,
-    output logic [7:0]                   o_left_exp_rd_data,
-    
-    input  logic [8:0]                   i_right_exp_rd_addr,
-    output logic [7:0]                   o_right_exp_rd_data,
+    output logic [TILE_ADDR_WIDTH-1:0]   o_disp_exp_left_wr_addr,
+    output logic                         o_disp_exp_left_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_disp_exp_left_wr_data,
+
+    output logic [TILE_ADDR_WIDTH-1:0]   o_disp_exp_right_wr_addr,
+    output logic                         o_disp_exp_right_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_disp_exp_right_wr_data,
+
+    // ====================================================================
+    // Dispatcher BRAM Exponent Read Ports (to Compute Engine)
+    // ====================================================================
+    input  logic [TILE_ADDR_WIDTH-1:0]   i_disp_exp_left_rd_addr,
+    input  logic                         i_disp_exp_left_rd_en,
+    output logic [EXP_WIDTH-1:0]         o_disp_exp_left_rd_data,
+
+    input  logic [TILE_ADDR_WIDTH-1:0]   i_disp_exp_right_rd_addr,
+    input  logic                         i_disp_exp_right_rd_en,
+    output logic [EXP_WIDTH-1:0]         o_disp_exp_right_rd_data,
 
     // ====================================================================
     // Tile BRAM Write Ports (for DISPATCH copy operation)
     // FOUR PARALLEL OUTPUTS - All driven by same counter [0-511]
     // ====================================================================
     // Left mantissa write
-    output logic [8:0]                   o_tile_man_left_wr_addr,    // 9-bit: [0:511]
-    output logic [TGT_DATA_WIDTH-1:0]    o_tile_man_left_wr_data,
+    output logic [TILE_ADDR_WIDTH-1:0]   o_tile_man_left_wr_addr,
     output logic                         o_tile_man_left_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_tile_man_left_wr_data,
 
     // Right mantissa write
-    output logic [8:0]                   o_tile_man_right_wr_addr,   // 9-bit: [0:511]
-    output logic [TGT_DATA_WIDTH-1:0]    o_tile_man_right_wr_data,
+    output logic [TILE_ADDR_WIDTH-1:0]   o_tile_man_right_wr_addr,
     output logic                         o_tile_man_right_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_tile_man_right_wr_data,
 
     // Left exponent write
-    output logic [8:0]                   o_tile_left_exp_wr_addr,
-    output logic [7:0]                   o_tile_left_exp_wr_data,
-    output logic                         o_tile_left_exp_wr_en,
+    output logic [TILE_ADDR_WIDTH-1:0]   o_tile_exp_left_wr_addr,
+    output logic                         o_tile_exp_left_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_tile_exp_left_wr_data,
 
     // Right exponent write
-    output logic [8:0]                   o_tile_right_exp_wr_addr,
-    output logic [7:0]                   o_tile_right_exp_wr_data,
-    output logic                         o_tile_right_exp_wr_en,
+    output logic [TILE_ADDR_WIDTH-1:0]   o_tile_exp_right_wr_addr,
+    output logic                         o_tile_exp_right_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_tile_exp_right_wr_data,
 
     // ====================================================================
     // AXI-4 Initiator Interface for DDR access
@@ -117,12 +123,12 @@ import gemm_pkg::*;
     // Debug Interface
     // ====================================================================
     output logic [3:0]                   o_dc_state,
-    output logic [9:0]                   o_bram_wr_count,
-    output logic [10:0]                  o_bram_wr_addr,    // Debug: BRAM write address (for gemm)
-    output logic                         o_bram_wr_en,      // Debug: BRAM write enable (for gemm)
+    output logic [9:0]                   o_disp_wr_count,
+    output logic [10:0]                  o_disp_wr_addr,    // Debug: BRAM write address (for gemm)
+    output logic                         o_disp_wr_en,      // Debug: BRAM write enable (for gemm)
 
     // DISPATCH operation read address (for engine_top to mux to BRAM read port)
-    output logic [10:0]                  o_disp_rd_addr,
+    output logic [8:0]                   o_disp_rd_addr,
     output logic                         o_disp_rd_en       // Active during ST_DISP_BUSY
 );
 
@@ -155,7 +161,7 @@ import gemm_pkg::*;
 
     // BRAM control signals
     logic [10:0] bram_wr_addr_reg;  // Increased from 10 to 11 bits for 2048-entry BRAM
-    logic [TGT_DATA_WIDTH-1:0] bram_wr_data_reg;
+    logic [MAN_WIDTH-1:0] bram_wr_data_reg;
     logic        bram_wr_en_reg;
     logic        bram_wr_target_reg;  // 0=left, 1=right
 
@@ -184,14 +190,14 @@ import gemm_pkg::*;
     // DISPATCH operation control
     logic [7:0] disp_man_nv_cnt_reg;     // Stored man_nv_cnt parameter
     logic [9:0] disp_lines_to_copy_reg;  // man_nv_cnt × 4 (total lines to copy)
-    logic [9:0] disp_man_cnt_reg;        // Mantissa lines dispatched counter (0-511) - parallel 4-path
+    logic [8:0] disp_man_cnt_reg;        // Mantissa lines dispatched counter (0-511) - parallel 4-path
     logic [9:0] disp_exp_cnt_reg;        // Exponent entries dispatched counter (0-511)
     logic       disp_man_done_reg;       // Mantissa dispatch complete flag
     logic       disp_exp_done_reg;       // Exponent dispatch complete flag
 
     // Parallel unpacking signals (for 3-buffer architecture)
     logic [3:0]  unpack_exp_packed_rd_addr_reg; // 0-15: which exp_packed line to read
-    logic [TGT_DATA_WIDTH-1:0] exp_packed_rd_data_wire; // Data from exp_packed BRAM
+    logic [MAN_WIDTH-1:0] exp_packed_rd_data_wire; // Data from exp_packed BRAM
 
     // ===================================================================
     // State Transition Logic
@@ -444,27 +450,27 @@ import gemm_pkg::*;
 
     // Left mantissa write
     assign o_tile_man_left_wr_addr = man_rd_addr_pipe[8:0];         // Address [0-511]
-    assign o_tile_man_left_wr_data = o_bram_rd_data_left;           // From left BRAM read port
+    assign o_tile_man_left_wr_data = o_disp_man_left_rd_data;           // From left BRAM read port
     assign o_tile_man_left_wr_en   = man_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
     // Right mantissa write (SAME address, SAME cycle as left)
     assign o_tile_man_right_wr_addr = man_rd_addr_pipe[8:0];        // SAME address as left
-    assign o_tile_man_right_wr_data = o_bram_rd_data_right;         // From right BRAM read port
+    assign o_tile_man_right_wr_data = o_disp_man_right_rd_data;         // From right BRAM read port
     assign o_tile_man_right_wr_en   = man_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
     // Tile BRAM exponent writes (read from both left/right exp_bram)
-    assign o_tile_left_exp_wr_addr  = exp_rd_addr_pipe[8:0];
-    assign o_tile_left_exp_wr_data  = o_left_exp_rd_data;   // From left_exp_bram
-    assign o_tile_left_exp_wr_en    = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
+    assign o_tile_exp_left_wr_addr  = exp_rd_addr_pipe[8:0];
+    assign o_tile_exp_left_wr_data  = o_disp_exp_left_rd_data;   // From left_exp_bram
+    assign o_tile_exp_left_wr_en    = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
-    assign o_tile_right_exp_wr_addr = exp_rd_addr_pipe[8:0];
-    assign o_tile_right_exp_wr_data = o_right_exp_rd_data;  // From right_exp_bram
-    assign o_tile_right_exp_wr_en   = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
+    assign o_tile_exp_right_wr_addr = exp_rd_addr_pipe[8:0];
+    assign o_tile_exp_right_wr_data = o_disp_exp_right_rd_data;  // From right_exp_bram
+    assign o_tile_exp_right_wr_en   = exp_wr_valid_pipe;  // FIX: Use pipelined valid signal
 
     // DISPATCH read address outputs (for engine_top muxing to internal dispatcher_bram)
     // With parallel addressing: counter [0-511] drives BOTH left and right BRAM read ports
     // Both ports read from SAME address simultaneously
-    assign o_disp_rd_addr = {1'b0, disp_man_cnt_reg[9:0]};  // 11-bit with address [0-511]
+    assign o_disp_rd_addr = disp_man_cnt_reg;  // 9-bit address [0-511]
     assign o_disp_rd_en   = (state_reg == ST_DISP_BUSY) && !disp_man_done_reg;
 
     // ===================================================================
@@ -510,33 +516,33 @@ import gemm_pkg::*;
     
     // Exponent write enables (active during unpacking, skip first 1 cycle for BRAM latency)
     // Write continuously from unpack_idx 1-512 (unpack_wr_idx 0-511)
-    assign o_left_exp_wr_en = (state_reg == ST_FETCH_READ_MAN) && 
+    assign o_disp_exp_left_wr_en = (state_reg == ST_FETCH_READ_MAN) && 
                               (fetch_target_reg == 1'b0) &&
                               (unpack_idx_reg >= 10'd1) &&
                               (unpack_idx_reg <= 10'd512);
     
-    assign o_right_exp_wr_en = (state_reg == ST_FETCH_READ_MAN) && 
+    assign o_disp_exp_right_wr_en = (state_reg == ST_FETCH_READ_MAN) && 
                                (fetch_target_reg == 1'b1) &&
                                (unpack_idx_reg >= 10'd1) &&
                                (unpack_idx_reg <= 10'd512);
     
     // Exponent write addresses
-    assign o_left_exp_wr_addr = unpack_wr_idx[8:0];
-    assign o_right_exp_wr_addr = unpack_wr_idx[8:0];
+    assign o_disp_exp_left_wr_addr = unpack_wr_idx[8:0];
+    assign o_disp_exp_right_wr_addr = unpack_wr_idx[8:0];
     
     // Exponent write data
-    assign o_left_exp_wr_data = current_exp_byte;
-    assign o_right_exp_wr_data = current_exp_byte;
+    assign o_disp_exp_left_wr_data = current_exp_byte;
+    assign o_disp_exp_right_wr_data = current_exp_byte;
 
     `ifdef SIMULATION
     always @(posedge i_clk) begin
-        if (o_left_exp_wr_en) begin
+        if (o_disp_exp_left_wr_en) begin
             $display("[DISP_UNPACK] @%0t LEFT exp write: addr=%0d, data=0x%02x, packed_rd_addr=%0d, byte_offset=%0d, unpack_wr_idx=%0d",
-                     $time, o_left_exp_wr_addr, o_left_exp_wr_data, unpack_exp_packed_rd_addr_reg, exp_byte_offset, unpack_wr_idx);
+                     $time, o_disp_exp_left_wr_addr, o_disp_exp_left_wr_data, unpack_exp_packed_rd_addr_reg, exp_byte_offset, unpack_wr_idx);
         end
-        if (o_right_exp_wr_en) begin
+        if (o_disp_exp_right_wr_en) begin
             $display("[DISP_UNPACK] @%0t RIGHT exp write: addr=%0d, data=0x%02x, packed_rd_addr=%0d, byte_offset=%0d, unpack_wr_idx=%0d, fetch_target_reg=%0d, exp_packed_rd_data_wire first 4 bytes=%02x %02x %02x %02x",
-                     $time, o_right_exp_wr_addr, o_right_exp_wr_data, unpack_exp_packed_rd_addr_reg, exp_byte_offset, unpack_wr_idx, fetch_target_reg,
+                     $time, o_disp_exp_right_wr_addr, o_disp_exp_right_wr_data, unpack_exp_packed_rd_addr_reg, exp_byte_offset, unpack_wr_idx, fetch_target_reg,
                      exp_packed_rd_data_wire[7:0], exp_packed_rd_data_wire[15:8], exp_packed_rd_data_wire[23:16], exp_packed_rd_data_wire[31:24]);
         end
     end
@@ -581,45 +587,50 @@ import gemm_pkg::*;
     // BRAM Module Instantiation (Dual Read Ports)
     // ===================================================================
     dispatcher_bram #(
-        .DATA_WIDTH          (TGT_DATA_WIDTH),
+        .MAN_WIDTH           (MAN_WIDTH),
+        .EXP_WIDTH           (EXP_WIDTH),
         .EXP_PACKED_DEPTH    (16),
-        .EXP_ALIGNED_DEPTH   (512),
-        .MANTISSA_DEPTH      (512),
-        .ADDR_WIDTH          (11)
+        .BRAM_DEPTH          (512),
+        .WR_ADDR_WIDTH       (11),
+        .RD_ADDR_WIDTH       (TILE_ADDR_WIDTH)
+        // EXP_PACKED_ADDR_WIDTH auto-calculated to 4
     ) u_dispatcher_bram (
-        // Single clock for all ports
+        // Clock and reset
         .i_clk              (i_clk),
-        
+        .i_reset_n          (i_reset_n),
+
         // Write ports (from DDR fetch)
         .i_wr_data          (bram_wr_data_reg),
         .i_wr_addr          (bram_wr_addr_reg),
         .i_wr_en            (bram_wr_en_reg),
         .i_wr_target        (bram_wr_target_reg),  // 0=left, 1=right
-        
+
         // Exponent aligned write ports (from unpacking logic)
-        .i_left_exp_aligned_wr_addr  (o_left_exp_wr_addr),
-        .i_left_exp_aligned_wr_data  (o_left_exp_wr_data),
-        .i_left_exp_aligned_wr_en    (o_left_exp_wr_en),
-        
-        .i_right_exp_aligned_wr_addr (o_right_exp_wr_addr),
-        .i_right_exp_aligned_wr_data (o_right_exp_wr_data),
-        .i_right_exp_aligned_wr_en   (o_right_exp_wr_en),
-    
+        .i_exp_left_wr_addr  (o_disp_exp_left_wr_addr),
+        .i_exp_left_wr_en    (o_disp_exp_left_wr_en),
+        .i_exp_left_wr_data  (o_disp_exp_left_wr_data),
+
+        .i_exp_right_wr_addr (o_disp_exp_right_wr_addr),
+        .i_exp_right_wr_en   (o_disp_exp_right_wr_en),
+        .i_exp_right_wr_data (o_disp_exp_right_wr_data),
+
         // Read ports (to CE) - mantissas
-        .i_rd_addr_left     (i_bram_rd_addr_left),  // Use full 11-bit address
-        .i_rd_en_left       (i_bram_rd_en_left),
-        .o_rd_data_left     (o_bram_rd_data_left),
-        
-        .i_rd_addr_right    (i_bram_rd_addr_right), // Use full 11-bit address
-        .i_rd_en_right      (i_bram_rd_en_right),
-        .o_rd_data_right    (o_bram_rd_data_right),
-        
+        .i_man_left_rd_addr  (i_disp_man_left_rd_addr),
+        .i_man_left_rd_en    (i_disp_man_left_rd_en),
+        .o_man_left_rd_data  (o_disp_man_left_rd_data),
+
+        .i_man_right_rd_addr (i_disp_man_right_rd_addr),
+        .i_man_right_rd_en   (i_disp_man_right_rd_en),
+        .o_man_right_rd_data (o_disp_man_right_rd_data),
+
         // Read ports (to CE) - exponents
-        .i_left_exp_rd_addr  (i_left_exp_rd_addr),
-        .o_left_exp_rd_data  (o_left_exp_rd_data),
-        
-        .i_right_exp_rd_addr (i_right_exp_rd_addr),
-        .o_right_exp_rd_data (o_right_exp_rd_data),
+        .i_exp_left_rd_addr  (i_disp_exp_left_rd_addr),
+        .i_exp_left_rd_en    (i_disp_exp_left_rd_en),
+        .o_exp_left_rd_data  (o_disp_exp_left_rd_data),
+
+        .i_exp_right_rd_addr (i_disp_exp_right_rd_addr),
+        .i_exp_right_rd_en   (i_disp_exp_right_rd_en),
+        .o_exp_right_rd_data (o_disp_exp_right_rd_data),
         
         // Exp packed read interface (for unpacking logic)
         .i_exp_packed_rd_addr    (unpack_exp_packed_rd_addr_reg),
@@ -716,9 +727,9 @@ import gemm_pkg::*;
     // Debug Outputs
     // ===================================================================
     assign o_dc_state = state_reg;
-    assign o_bram_wr_count = current_line_reg;
-    assign o_bram_wr_addr = bram_wr_addr_reg;   // Debug output (for gemm)
-    assign o_bram_wr_en = bram_wr_en_reg;       // Debug output (for gemm)
+    assign o_disp_wr_count = current_line_reg;
+    assign o_disp_wr_addr = bram_wr_addr_reg;   // Debug output (for gemm)
+    assign o_disp_wr_en = bram_wr_en_reg;       // Debug output (for gemm)
 
     // ===================================================================
     // Assertions (for simulation only)
@@ -726,22 +737,22 @@ import gemm_pkg::*;
 
     `ifdef SIM
         // Check BRAM write overflow
-        property no_bram_overflow;
+        property no_disp_overflow;
             @(posedge i_clk) disable iff (~i_reset_n)
             (bram_wr_en_reg) |-> (bram_wr_addr_reg < BRAM_DEPTH);
         endproperty
-        assert property (no_bram_overflow) else
+        assert property (no_disp_overflow) else
             $error("[DISPATCHER_CONTROL] BRAM write address overflow: %0d >= %0d",
                    bram_wr_addr_reg, BRAM_DEPTH);
 
         // Check BRAM read overflow
-        property no_bram_read_overflow;
+        property no_disp_read_overflow;
             @(posedge i_clk) disable iff (~i_reset_n)
-            (i_bram_rd_en) |-> (i_bram_rd_addr < BRAM_DEPTH);
+            (i_disp_rd_en) |-> (i_disp_rd_addr < BRAM_DEPTH);
         endproperty
-        assert property (no_bram_read_overflow) else
+        assert property (no_disp_read_overflow) else
             $error("[DISPATCHER_CONTROL] BRAM read address overflow: %0d >= %0d",
-                   i_bram_rd_addr, BRAM_DEPTH);
+                   i_disp_rd_addr, BRAM_DEPTH);
 
         // Check AXI burst alignment
         property axi_burst_aligned;

@@ -1,26 +1,29 @@
 // ------------------------------------------------------------------
-// Modular Compute Engine with Dual BRAM Interface (MS2.0)
+// Modular Compute Engine with Integrated Tile BRAM (MS2.0)
 //
-// Purpose: Refactored GEMM compute engine using hierarchical modules
+// Purpose: Refactored GEMM compute engine with private L1 cache
 // Architecture:
+//  - tile_bram: Private L1 memory (4 separate buffers)
 //  - gfp8_bcv_controller: BCV loop orchestration with dual BRAM reads
 //  - gfp8_nv_dot: 128-element Native Vector dot product
 //  - gfp8_group_dot: 32-element group dot product (4 instances)
 //  - gfp8_to_fp16: GFP8 to IEEE 754 FP16 conversion
 //
 // Key Features:
-//  - **Dual BRAM read interface**: Parallel reads from left/right BRAMs
+//  - **Integrated tile_bram**: Private L1 cache per compute tile
+//  - **DISPATCH write interface**: Exposes tile_bram write ports
+//  - **Internal read connections**: tile_bram → bcv_controller
 //  - V-loop accumulation with exponent alignment
 //  - Runtime configurable dimensions (B, C, V)
-//  - FP16 output (converted to FP24 for compatibility)
+//  - FP16 output
 //
 // Performance:
 //  - Per V iteration: 15 cycles (11 fill + 3 compute + 1 accum)
 //  - Total per output: 15xV + 1 cycles
 //  - ~42% faster than single BRAM due to parallel reads
 //
-// Author: Modular refactoring
-// Date: Thu Oct 9 23:20 PDT 2025
+// Author: Modular refactoring + Tile BRAM integration
+// Date: Mon Oct 27 2025
 // ------------------------------------------------------------------
 
 module compute_engine_modular
@@ -35,35 +38,40 @@ import gemm_pkg::*;
     // Per SINGLE_ROW_REFERENCE.md specification
     // ====================================================================
     input  logic        i_tile_en,
-    input  logic [15:0] i_left_addr,      // 16 bits: Left matrix start address
-    input  logic [15:0] i_right_addr,     // 16 bits: Right matrix start address
-    input  logic [7:0]  i_left_ugd_len,   // 8 bits: Left UGD vectors (Batch dimension)
-    input  logic [7:0]  i_right_ugd_len,  // 8 bits: Right UGD vectors (Column dimension)
-    input  logic [7:0]  i_vec_len,        // 8 bits: UGD vector size (Vector count)
-    input  logic        i_left_man_4b,
-    input  logic        i_right_man_4b,
-    input  logic        i_main_loop_over_left,
+    input  logic [15:0] i_tile_left_addr,      // 16 bits: Left matrix start address
+    input  logic [15:0] i_tile_right_addr,     // 16 bits: Right matrix start address
+    input  logic [7:0]  i_tile_left_ugd_len,   // 8 bits: Left UGD vectors (Batch dimension)
+    input  logic [7:0]  i_tile_right_ugd_len,  // 8 bits: Right UGD vectors (Column dimension)
+    input  logic [7:0]  i_tile_vec_len,        // 8 bits: UGD vector size (Vector count)
+    input  logic        i_tile_left_man_4b,
+    input  logic        i_tile_right_man_4b,
+    input  logic        i_tile_main_loop_over_left,
     output logic        o_tile_done,
 
     // ====================================================================
-    // Dual BRAM Mantissa Read Interface (from tile_bram)
+    // Tile BRAM Write Interface (from dispatcher_control via DISPATCH)
+    // Four parallel write ports - All can write in same cycle
+    // Per SINGLE_ROW_REFERENCE.md: DISPATCH copies dispatcher_bram → tile_bram
     // ====================================================================
-    output logic [10:0]                   o_bram_left_rd_addr,
-    input  logic [255:0]                  i_bram_left_rd_data,
-    output logic                          o_bram_left_rd_en,
-    
-    output logic [10:0]                   o_bram_right_rd_addr,
-    input  logic [255:0]                  i_bram_right_rd_data,
-    output logic                          o_bram_right_rd_en,
-    
-    // ====================================================================
-    // Exponent Read Interface (from tile_bram exp ports)
-    // ====================================================================
-    output logic [8:0]                    o_left_exp_rd_addr,
-    input  logic [7:0]                    i_left_exp_rd_data,
-    
-    output logic [8:0]                    o_right_exp_rd_addr,
-    input  logic [7:0]                    i_right_exp_rd_data,
+    // Left mantissa write port (addr, en, data order per BRAM standard)
+    input  logic [8:0]    i_man_left_wr_addr,      // 9-bit: [0:511]
+    input  logic          i_man_left_wr_en,
+    input  logic [255:0]  i_man_left_wr_data,
+
+    // Right mantissa write port (addr, en, data order per BRAM standard)
+    input  logic [8:0]    i_man_right_wr_addr,     // 9-bit: [0:511]
+    input  logic          i_man_right_wr_en,
+    input  logic [255:0]  i_man_right_wr_data,
+
+    // Left exponent write port (addr, en, data order per BRAM standard)
+    input  logic [8:0]    i_left_exp_wr_addr,
+    input  logic          i_left_exp_wr_en,
+    input  logic [7:0]    i_left_exp_wr_data,
+
+    // Right exponent write port (addr, en, data order per BRAM standard)
+    input  logic [8:0]    i_right_exp_wr_addr,
+    input  logic          i_right_exp_wr_en,
+    input  logic [7:0]    i_right_exp_wr_data,
 
     // ====================================================================
     // Result FIFO Write Interface
@@ -81,13 +89,33 @@ import gemm_pkg::*;
 );
 
     // ===================================================================
+    // Internal Tile BRAM Read Signals (tile_bram → bcv_controller)
+    // All four BRAMs have identical structure: 9-bit address + enable
+    // ===================================================================
+    logic [8:0]    tile_bram_left_rd_addr;
+    logic [255:0]  tile_bram_left_rd_data;
+    logic          tile_bram_left_rd_en;
+
+    logic [8:0]    tile_bram_right_rd_addr;
+    logic [255:0]  tile_bram_right_rd_data;
+    logic          tile_bram_right_rd_en;
+
+    logic [8:0]    tile_bram_left_exp_rd_addr;
+    logic [7:0]    tile_bram_left_exp_rd_data;
+    logic          tile_bram_left_exp_rd_en;
+
+    logic [8:0]    tile_bram_right_exp_rd_addr;
+    logic [7:0]    tile_bram_right_exp_rd_data;
+    logic          tile_bram_right_exp_rd_en;
+
+    // ===================================================================
     // BCV Controller Signals
     // ===================================================================
     logic signed [31:0] bcv_result_mantissa;
     logic signed [7:0]  bcv_result_exponent;
     logic               bcv_result_valid;
     logic               bcv_tile_done;
-    
+
     // ===================================================================
     // FP16 Converter Signals
     // ===================================================================
@@ -110,7 +138,56 @@ import gemm_pkg::*;
     end
     
     assign o_result_count = result_count;
-    
+
+    // ===================================================================
+    // Tile BRAM Instance - Private L1 Cache
+    // Per SINGLE_ROW_REFERENCE.md: Each compute tile has private tile_bram
+    // ===================================================================
+    tile_bram #(
+        .MAN_WIDTH       (256),
+        .EXP_WIDTH       (8),
+        .BRAM_DEPTH      (512)    // 512 lines per side (left/right)
+    ) u_tile_bram (
+        .i_clk           (i_clk),
+        .i_reset_n       (i_reset_n),
+
+        // Write ports (from dispatcher_control via DISPATCH command)
+        // Four parallel write paths - all can write in same cycle
+        .i_man_left_wr_addr   (i_man_left_wr_addr),
+        .i_man_left_wr_en     (i_man_left_wr_en),
+        .i_man_left_wr_data   (i_man_left_wr_data),
+
+        .i_man_right_wr_addr  (i_man_right_wr_addr),
+        .i_man_right_wr_en    (i_man_right_wr_en),
+        .i_man_right_wr_data  (i_man_right_wr_data),
+
+        .i_exp_left_wr_addr   (i_left_exp_wr_addr),
+        .i_exp_left_wr_en     (i_left_exp_wr_en),
+        .i_exp_left_wr_data   (i_left_exp_wr_data),
+
+        .i_exp_right_wr_addr  (i_right_exp_wr_addr),
+        .i_exp_right_wr_en    (i_right_exp_wr_en),
+        .i_exp_right_wr_data  (i_right_exp_wr_data),
+
+        // Read ports (internal connection to bcv_controller)
+        // Dual-port mantissa reads + exponent reads
+        .i_man_left_rd_addr   (tile_bram_left_rd_addr),
+        .o_man_left_rd_data   (tile_bram_left_rd_data),
+        .i_man_left_rd_en     (tile_bram_left_rd_en),
+
+        .i_man_right_rd_addr  (tile_bram_right_rd_addr),
+        .o_man_right_rd_data  (tile_bram_right_rd_data),
+        .i_man_right_rd_en    (tile_bram_right_rd_en),
+
+        .i_exp_left_rd_addr   (tile_bram_left_exp_rd_addr),
+        .o_exp_left_rd_data   (tile_bram_left_exp_rd_data),
+        .i_exp_left_rd_en     (tile_bram_left_exp_rd_en),
+
+        .i_exp_right_rd_addr  (tile_bram_right_exp_rd_addr),
+        .o_exp_right_rd_data  (tile_bram_right_exp_rd_data),
+        .i_exp_right_rd_en    (tile_bram_right_exp_rd_en)
+    );
+
     // ===================================================================
     // State Machine
     // ===================================================================
@@ -131,7 +208,7 @@ import gemm_pkg::*;
                     if (i_tile_en) begin
                         state_reg <= ST_COMP_BUSY;
                         $display("[CE_DEBUG] @%t Tile command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
-                                 $time, i_left_addr, i_right_addr, i_left_ugd_len, i_right_ugd_len, i_vec_len);
+                                 $time, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
                     end
                 end
                 ST_COMP_BUSY: begin
@@ -148,7 +225,7 @@ import gemm_pkg::*;
     assign o_tile_done = bcv_tile_done;
     
     // ===================================================================
-    // BCV Controller Instance
+    // BCV Controller Instance - Reads from Internal Tile BRAM
     // ===================================================================
     gfp8_bcv_controller u_bcv_controller (
         .i_clk              (i_clk),
@@ -156,29 +233,31 @@ import gemm_pkg::*;
 
         // TILE command parameters
         .i_tile_en          (i_tile_en),
-        .i_dim_b            (i_left_ugd_len),   // Batch dimension (left UGD vectors)
-        .i_dim_c            (i_right_ugd_len),  // Column dimension (right UGD vectors)
-        .i_dim_v            (i_vec_len),        // Vector count (UGD vector size)
-        .i_left_base_addr   (i_left_addr),
-        .i_right_base_addr  (i_right_addr),
+        .i_dim_b            (i_tile_left_ugd_len),   // Batch dimension (left UGD vectors)
+        .i_dim_c            (i_tile_right_ugd_len),  // Column dimension (right UGD vectors)
+        .i_dim_v            (i_tile_vec_len),        // Vector count (UGD vector size)
+        .i_left_base_addr   (i_tile_left_addr),
+        .i_right_base_addr  (i_tile_right_addr),
         .o_tile_done        (bcv_tile_done),
-        
-        // Dual BRAM mantissa interface - parallel reads
-        .o_mem_left_rd_addr (o_bram_left_rd_addr),
-        .o_mem_left_rd_en   (o_bram_left_rd_en),
-        .i_mem_left_rd_data (i_bram_left_rd_data),
-        
-        .o_mem_right_rd_addr(o_bram_right_rd_addr),
-        .o_mem_right_rd_en  (o_bram_right_rd_en),
-        .i_mem_right_rd_data(i_bram_right_rd_data),
-        
-        // Exponent interface - separate read ports
-        .o_left_exp_rd_addr (o_left_exp_rd_addr),
-        .i_left_exp_rd_data (i_left_exp_rd_data),
-        
-        .o_right_exp_rd_addr(o_right_exp_rd_addr),
-        .i_right_exp_rd_data(i_right_exp_rd_data),
-        
+
+        // Dual BRAM mantissa interface - INTERNAL connection to tile_bram
+        .o_man_left_rd_addr (tile_bram_left_rd_addr),
+        .o_man_left_rd_en   (tile_bram_left_rd_en),
+        .i_man_left_rd_data (tile_bram_left_rd_data),
+
+        .o_man_right_rd_addr(tile_bram_right_rd_addr),
+        .o_man_right_rd_en  (tile_bram_right_rd_en),
+        .i_man_right_rd_data(tile_bram_right_rd_data),
+
+        // Exponent interface - INTERNAL connection to tile_bram
+        .o_exp_left_rd_addr (tile_bram_left_exp_rd_addr),
+        .o_exp_left_rd_en   (tile_bram_left_exp_rd_en),
+        .i_exp_left_rd_data (tile_bram_left_exp_rd_data),
+
+        .o_exp_right_rd_addr(tile_bram_right_exp_rd_addr),
+        .o_exp_right_rd_en  (tile_bram_right_exp_rd_en),
+        .i_exp_right_rd_data(tile_bram_right_exp_rd_data),
+
         // GFP8 result
         .o_result_mantissa  (bcv_result_mantissa),
         .o_result_exponent  (bcv_result_exponent),

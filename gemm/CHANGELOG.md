@@ -1,5 +1,376 @@
 # CHANGELOG - Elastix GEMM Project
 
+## [2025-10-27 18:43] - BRAM Interface Optimization & Address Width Corrections
+
+**Timestamp**: Mon Oct 27 18:43:17 PDT 2025
+**Status**: [COMPLETE] **PERFORMANCE OPTIMIZATION** - Parallel BRAM reads + address width fixes, all tests passing (10/10 simulation, 10/10 hardware)
+
+### Summary
+
+Completed comprehensive BRAM interface cleanup and critical performance optimization in gfp8_bcv_controller. Implemented parallel exponent+mantissa reads with correct 2-cycle latency, achieving 3× faster buffer fill. Fixed address width mismatch (11-bit → 9-bit) to match 512-line tile_bram architecture. All changes validated in both simulation and hardware.
+
+### Performance Improvements
+
+**Buffer Fill Timing**:
+- **Before**: 24 cycles (4 exp × 3 cycles + 4 man × 3 cycles, sequential reads)
+- **After**: 8 cycles (4 groups × 2 cycles, parallel exp+man reads)
+- **Speedup**: 3× faster buffer fill per Native Vector
+
+**Simulation Results**:
+- Total execution time: **1.87× faster** (1,476,955ns → 789,435ns)
+- Per-output latency: 13 cycles per V (was 15 cycles)
+
+**Hardware Validation**:
+- Bitstream ID: 0x10271817 (Build: 10/27 18:17)
+- All 10/10 GEMM tests passing on hardware
+- Device health verified (ADM Status: 0x3, LTSSM: 0x11)
+
+### Architecture Changes
+
+#### 1. BRAM Read Optimization (gfp8_bcv_controller.sv)
+
+**Problem**: Sequential exp/man reads with 3-cycle holds (unnecessary)
+- Exponents and mantissas read sequentially (not using separate BRAM ports)
+- Each address held for 3 cycles (but ACX_BRAM72K only needs 2-cycle latency)
+
+**Solution**: Parallel reads with correct latency
+- Read exp[g] + man[g] **simultaneously** for each group (using separate BRAM ports)
+- 2-cycle holds to match actual BRAM latency (1 cycle addr reg + 1 cycle data)
+
+**Code Changes** (lines 267-335):
+```systemverilog
+// BEFORE: Sequential reads
+if (fill_cycle == 0-2)   exp[0]
+if (fill_cycle == 3-5)   exp[1]
+...
+if (fill_cycle == 12-14) man[0]
+if (fill_cycle == 15-17) man[1]
+
+// AFTER: Parallel reads
+if (fill_cycle == 0-1) { exp[0] + man[0] }  // Parallel!
+if (fill_cycle == 2-3) { exp[1] + man[1] }  // Parallel!
+if (fill_cycle == 4-5) { exp[2] + man[2] }  // Parallel!
+if (fill_cycle == 6-7) { exp[3] + man[3] }  // Parallel!
+```
+
+#### 2. Address Width Corrections (gfp8_bcv_controller.sv)
+
+**Problem**: Mismatched address widths
+- Module used **11-bit** addresses (i_left_base_addr, o_man_left_rd_addr, etc.)
+- tile_bram is only **512 lines** deep (requires **9-bit** addresses)
+- Tools were silently truncating 11-bit → 9-bit (dangerous!)
+
+**Solution**: Corrected all addresses to 9-bit
+- Interface ports: `i_left_base_addr[8:0]`, `o_man_left_rd_addr[8:0]` (was [10:0])
+- Internal signals: `left_base_reg[8:0]`, `left_addr_next[8:0]` (was [10:0])
+- Address arithmetic: `{7'd0, g_idx}` (was `{11'd0, g_idx}`)
+- Bit slicing: `left_base_reg[8:2]` (was `[10:2]`)
+
+**Files Modified**:
+1. **src/rtl/gfp8_bcv_controller.sv**:
+   - Lines 37-38: Input base addresses 11-bit → 9-bit
+   - Lines 42, 46: Output addresses 11-bit → 9-bit
+   - Line 88: Base address registers 11-bit → 9-bit
+   - Line 224: Next-state address signals 11-bit → 9-bit
+   - Lines 246-247: Line address variables 11-bit → 9-bit
+   - Lines 252-253: Bit extraction [10:2] → [8:2]
+   - Lines 273, 291, 307, 323: Address arithmetic updated
+   - Lines 342, 344: Reset values 11'd0 → 9'd0
+   - Lines 14-23: Module documentation updated
+
+### BRAM Interface Standardization (Completed Earlier)
+
+**Unified Naming Convention Applied**:
+- 5-slot naming: `{i/o}_{exp/man}_{left/right}_{rd/wr}_{data/addr/en}`
+- Extended for dispatcher_control: `{i/o}_{bram/tile}_{exp/man}_{left/right}_{rd/wr}_{data/addr/en}`
+
+**Standardized Port Order**: addr, en, data (consistent for both reads and writes)
+
+**Modules Updated**:
+1. **dispatcher_bram.sv** - L2 cache interface (reset signal, `logic` convention, parameterization)
+2. **dispatcher_control.sv** - Full parameterization (MAN_WIDTH, EXP_WIDTH, depths)
+3. **tile_bram.sv** - L1 cache interface (uniform 9-bit addresses, enable signals)
+4. **compute_engine_modular.sv** - Updated instantiations
+5. **gfp8_bcv_controller.sv** - Renamed BRAM interfaces
+6. **engine_top.sv** - All instantiation connections corrected
+
+### Validation Results
+
+**Simulation** (both testbenches):
+- ✅ compute_engine_test: 10/10 tests passing
+- ✅ vector_system_test: 10/10 tests passing
+- ✅ Execution time: 789,435 ns (1.87× faster than before optimization)
+
+**Hardware** (FPGA VectorPath 815):
+- ✅ Device health: All registers accessible
+- ✅ BRAM test: PASS (DMA round-trip verified)
+- ✅ GDDR6 test: PASS (all 8 channels trained, ADM Status: 0x3)
+- ✅ GEMM full test: **10/10 tests passing**
+  - Test configurations: B1_C1_V{1,128}, B2_C2_V{2,64}, B4_C4_V{4,32}, B8_C8_V16, B16_C16_V8, B1_C128_V1, B128_C1_V1
+  - Average test time: 190 μs per test
+  - Total suite time: 1,902 μs
+
+### Key Insights
+
+1. **BRAM Latency**: ACX_BRAM72K has 1-cycle internal latency + 1-cycle registered interface = **2 cycles total** (not 3)
+2. **Parallel Ports**: Separate exp/man BRAM ports enable simultaneous reads (was underutilized)
+3. **Address Matching**: Critical to match address widths exactly to BRAM depth - tools may silently truncate without warnings
+4. **Cycle-Counting FSM**: For low-level controllers, hard-coded cycle counts are acceptable and simpler than flag-based state machines
+
+### Next Steps
+
+- Monitor hardware performance in production workloads
+- Consider similar optimizations for dispatcher_control (if applicable)
+- Document BRAM latency requirements in design guidelines
+
+---
+
+## [2025-10-27 16:19] - Tile BRAM Integration into Compute Engine
+
+**Timestamp**: Mon Oct 27 16:19:54 PDT 2025
+**Status**: [COMPLETE] **RTL REFACTORING** - Integrated tile_bram.sv inside compute_engine_modular.sv, all simulations passing (8/8 compute_engine_test, 9/9 vector_system_test)
+
+### Summary
+
+Successfully completed architectural refactoring to integrate tile_bram as a private L1 cache inside compute_engine_modular. This implements the three-level memory hierarchy specified in SINGLE_ROW_REFERENCE.md and STATE_TRANSITIONS_REFERENCE.md, enabling future multi-tile parallelism.
+
+### Architecture Changes
+
+**Before** (tile_bram at engine_top level):
+```
+engine_top:
+  - dispatcher_control (manages L2)
+  - tile_bram (L1, shared instance)
+  - compute_engine (reads from external tile_bram)
+```
+
+**After** (tile_bram integrated):
+```
+engine_top:
+  - dispatcher_control (manages L2)
+  - compute_engine:
+      - tile_bram (L1, private instance)
+      - bcv_controller (reads from internal tile_bram)
+```
+
+**Data Flow** (Three-Level Hierarchy):
+```
+GDDR6 (L3) → [FETCH] → dispatcher_bram (L2, shared) →
+  [DISPATCH] → tile_bram (L1, private) → [TILE] → results
+```
+
+### Files Modified
+
+**1. src/rtl/compute_engine_modular.sv** (302 lines)
+- **Added**: tile_bram module instantiation (lines 143-184)
+- **Added**: 8 tile_bram write port inputs (4 parallel paths):
+  - `i_man_left_wr_addr/data/en` (9-bit addr, 256-bit data)
+  - `i_man_right_wr_addr/data/en` (9-bit addr, 256-bit data)
+  - `i_left_exp_wr_addr/data/en` (9-bit addr, 8-bit data)
+  - `i_right_exp_wr_addr/data/en` (9-bit addr, 8-bit data)
+- **Removed**: External BRAM read interface (12 ports removed)
+- **Added**: Internal tile_bram read signals (12 signals, lines 94-106)
+- **Changed**: bcv_controller connections to internal tile_bram (lines 239-252)
+- **Updated**: Header documentation to reflect integrated architecture
+
+**2. src/rtl/engine_top.sv** (537 lines)
+- **Removed**: Standalone tile_bram instantiation (lines 399-439 deleted, replaced with 3-line comment)
+- **Updated**: compute_engine instantiation (lines 421-437):
+  - Removed 12 BRAM read port connections
+  - Added 8 tile_bram write port connections from dispatcher_control
+- **Simplified**: BRAM read mux logic (lines 285-293):
+  - Now dispatcher-only (DISPATCH operation reads from dispatcher_bram)
+  - Removed compute engine read mux branches (CE reads from internal tile_bram)
+- **Removed**: Obsolete signal declarations:
+  - `ce_dc_bram_rd_addr_left/right` (compute engine BRAM read addresses)
+  - `ce_dc_bram_rd_en_left/right` (compute engine BRAM read enables)
+  - `tile_ce_bram_rd_data_left/right` (tile BRAM to compute engine data)
+  - `ce_dc_left/right_exp_rd_addr` (compute engine exponent read addresses)
+  - `tile_ce_left/right_exp_rd_data` (tile BRAM exponent read data)
+- **Updated**: Header comments to document three-level memory hierarchy
+
+**3. src/rtl/tile_bram.sv** (195 lines)
+- **Removed**: Simulation initialization block (lines 95-107 deleted)
+- **Reason**: Multiple driver conflict with always_ff write logic
+- **Note**: Memory initialized via DISPATCH operation in testbenches
+
+**4. sim/compute_engine_test/tb_compute_engine_modular.sv** (668 lines)
+- **Updated**: DUT instantiation (lines 107-122):
+  - Removed 12 external BRAM read port connections
+  - Added 8 tile_bram write port connections
+- **Updated**: Signal declarations (lines 43-59):
+  - Removed BRAM read signals (bram_left_rd_addr, etc.)
+  - Added tile_bram write signals (man_left_wr_addr, etc.)
+- **Removed**: BRAM read models (external memory arrays no longer needed)
+- **Added**: `dispatch_to_tile_bram()` task (lines 193-232):
+  - Simulates DISPATCH operation
+  - Writes 4 parallel paths per cycle (mantissa + exponent, left + right)
+  - Configurable line count (128 for simple tests, 512 for real data)
+- **Updated**: All 8 test cases to call `dispatch_to_tile_bram()` before TILE:
+  - Test 1: B=1, C=1, V=1 (line 494)
+  - Test 2: B=1, C=1, V=4 (line 524)
+  - Test 3: B=2, C=2, V=2 (line 548)
+  - Tests 4-8: Real data tests (lines 573, 589, 605, 621, 637)
+- **Updated**: Header documentation (lines 1-22)
+
+**5. sim/vector_system_test/tb_engine_top.sv** (707 lines)
+- **Updated**: Header documentation to reflect integrated tile_bram architecture
+- **No functional changes**: Testbench uses top-level FIFO interface (unchanged)
+
+**6. sim/compute_engine_test/Makefile** (195 lines)
+- **Added**: `$(GEMM_RTL)/tile_bram.sv` to compilation list (line 80)
+- **Reason**: tile_bram now instantiated inside compute_engine_modular
+
+**7. sim/vector_system_test/Makefile** (already included tile_bram.sv)
+
+### Verification Results
+
+**Simulation Status**: ✅ **ALL TESTS PASSING**
+
+**compute_engine_test** (8/8 tests passed):
+```
+Test 1: B=1, C=1, V=1 (simple case) - PASS
+Test 2: B=1, C=1, V=4 (V-loop accumulation) - PASS
+Test 3: B=2, C=2, V=2 (full BCV loop) - PASS
+Test 4: B=1, C=1, V=1 (real data) - PASS
+Test 5: B=4, C=4, V=4 (real data) - PASS
+Test 6: B=1, C=1, V=128 (max V) - PASS
+Test 7: B=4, C=4, V=32 (large V) - PASS
+Test 8: B=2, C=2, V=64 (large V) - PASS
+```
+
+**vector_system_test** (9/9 tests passed):
+```
+Test 1/9: B1_C1_V1 - PASS
+Test 2/9: B2_C2_V2 - PASS
+Test 3/9: B4_C4_V4 - PASS
+Test 4/9: B1_C1_V128 - PASS
+Test 5/9: B4_C4_V32 - PASS
+Test 6/9: B2_C2_V64 - PASS
+Test 7/9: B8_C8_V16 - PASS
+Test 8/9: B1_C128_V1 - PASS
+Test 9/9: B128_C1_V1 - PASS
+```
+
+**Compilation**: Clean, no warnings
+**Elaboration**: All modules found and elaborated successfully
+**Simulation Time**: compute_engine_test: 352.5µs, vector_system_test: 8s
+
+### Technical Benefits
+
+**1. Cleaner Architecture**
+- tile_bram is now private to compute_engine (not exposed at top level)
+- Better encapsulation: compute_engine owns its L1 cache
+
+**2. Multi-Tile Scalability** (Future)
+- Each compute_engine instance has private tile_bram
+- Enables parallel processing: N tiles × N tile_brams
+- DISPATCH can distribute data to multiple tiles concurrently
+
+**3. Spec Compliance**
+- Matches SINGLE_ROW_REFERENCE.md three-level hierarchy exactly
+- L3 (GDDR6) → L2 (dispatcher_bram) → L1 (tile_bram) → compute
+
+**4. Simplified Interfaces**
+- engine_top no longer manages tile_bram read/write muxing
+- compute_engine fully self-contained (writes via DISPATCH, reads via TILE)
+
+### Test Coverage
+
+**Data Patterns Tested**:
+- Simple patterns (all 1s with exponent bias)
+- Real GFP8 data from hex files (left.hex, right.hex)
+- Golden FP16 reference validation
+
+**Dimension Coverage**:
+- Small (1×1×1, 2×2×2, 4×4×4)
+- Large V (V=32, 64, 128)
+- Asymmetric (1×128×1, 128×1×1)
+- Maximum batch/column (8×8×16)
+
+**Validation Method**:
+- FP16 bit-exact comparison with ±2 LSB tolerance
+- Emulator-generated golden references (Python)
+
+### Hardware Build and Validation
+
+**Build Timestamp**: Mon Oct 27 16:21:00 PDT 2025
+**Bitstream ID**: 0x10271621 (Build: 10/27 16:21)
+**Validation Timestamp**: Mon Oct 27 16:41:25 PDT 2025
+**Platform**: Achronix VectorPath 815 (AC7t1500)
+
+**Synthesis and Place & Route**: ✅ **SUCCESS**
+- Clean compilation (no errors)
+- Timing constraints met
+- Resource utilization within limits
+
+**Hardware Validation**: ✅ **ALL TESTS PASSING (20/20)**
+
+**Device Health Check** (test_registers):
+```
+✅ Device initialized successfully
+✅ Bitstream ID: 0x10271621 (Build: 10/27 16:21)
+✅ ADM Status: 0x00000003 (DMA ready)
+✅ LTSSM State: 0x00000011 (PCIe link established)
+✅ Register interface functional (read/write verified)
+```
+
+**GEMM Functionality Tests** (test_gemm): 10/10 PASSED
+```
+Test 1: B1_C1_V1     - [PASS] 1/1 matches
+Test 2: B2_C2_V2     - [PASS] 4/4 matches
+Test 3: B4_C4_V4     - [PASS] 16/16 matches
+Test 4: B2_C2_V64    - [PASS] 4/4 matches
+Test 5: B4_C4_V32    - [PASS] 16/16 matches
+Test 6: B8_C8_V16    - [PASS] 64/64 matches
+Test 7: B16_C16_V8   - [PASS] 256/256 matches
+Test 8: B1_C128_V1   - [PASS] 128/128 matches
+Test 9: B128_C1_V1   - [PASS] 128/128 matches
+Test 10: B1_C1_V128  - [PASS] 1/1 matches
+Result: 10/10 tests passed (100%)
+```
+
+**Comprehensive Validation** (test_gemm_full): 10/10 PASSED
+```
+All 10 test configurations validated with raw command interface
+Total execution time: 2589 μs
+Average per test: 258 μs
+Result: 10/10 tests passed (100%)
+```
+
+**Post-Test Device Health**: ✅ STABLE
+- Device remains healthy after all tests
+- No register hangs (no 0xffffffff readings)
+- ADM status maintained at 0x3 (DMA operational)
+
+### Hardware Validation Summary
+
+**Total Tests Run**: 20 (device health + 10 wrapper tests + 10 raw command tests)
+**Pass Rate**: 100% (20/20)
+**Functional Equivalence**: ✅ CONFIRMED - Same results as pre-refactoring
+**Performance**: No degradation detected (258 μs average per test)
+**Stability**: Excellent - device remained stable throughout testing
+
+### Conclusion
+
+The tile_bram integration refactoring has been **successfully validated on hardware**. All tests pass with identical results to the pre-refactoring implementation, confirming that:
+
+1. **Functional correctness preserved**: Three-level memory hierarchy (GDDR6 → dispatcher_bram → tile_bram) works as designed
+2. **No timing impact**: Place & route completed successfully, timing constraints met
+3. **No performance degradation**: Same execution time as before refactoring (258 μs per test)
+4. **Architecture improvement**: Cleaner design enables future multi-tile parallelism
+
+**Status**: ✅ **PRODUCTION READY** - Refactoring validated in simulation and hardware
+
+### Notes
+
+- **No functional changes to command interface** - FETCH, DISPATCH, TILE commands unchanged
+- **Hardware-proven architecture** - All 20/20 hardware tests passing
+- **Testbench architecture**: Simulates DISPATCH by writing directly to tile_bram write ports
+- **Future work**: Enable multi-tile parallelism by instantiating multiple compute_engine instances
+
+---
+
 ## [2025-10-27 15:30] - test_gemm_full.cpp Updated to 4-Word Command Format
 
 **Timestamp**: Mon Oct 27 15:30:13 PDT 2025

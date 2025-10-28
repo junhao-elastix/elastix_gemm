@@ -1,28 +1,28 @@
 // ------------------------------------------------------------------
-// MS2.0 GEMM Engine Top Module
+// MS2.0 GEMM Engine Top Module (with Integrated Tile BRAM)
 //
 // Purpose: Complete GEMM engine with direct FIFO interface for hardware
 // Contains:
 //  - Command FIFO (4096x32-bit): Buffers incoming microcode commands
 //  - Master Control (MC): Unified command processor and router
-//  - Dispatcher Control (DC): GDDR6 fetch and BRAM buffering
-//  - Compute Engine (CE): Modular GFP8 matrix multiplication
+//  - Dispatcher Control (DC): GDDR6 fetch and L2 BRAM buffering
+//  - Compute Engine (CE): Modular GFP8 matrix multiplication with private L1 tile_bram
 //  - Result FIFO (16384x16-bit): Buffers FP16 computation results
 //
-// Data Flow:
-//  Host -> cmd_fifo -> master_control ->
-//    -> dispatcher_control -> GDDR6 NAP -> dispatcher_bram (dual-read) ->
-//    -> compute_engine_modular -> result_fifo -> Host
+// Data Flow (Three-Level Memory Hierarchy):
+//  GDDR6 (L3) -> [FETCH] -> dispatcher_bram (L2) -> [DISPATCH] ->
+//    -> tile_bram (L1, inside CE) -> [MATMUL] -> result_fifo -> Host
 //
 // Key Features:
+//  - Integrated tile_bram inside compute_engine_modular (private L1 cache)
+//  - DISPATCH copies dispatcher_bram → tile_bram (four parallel write paths)
 //  - Direct FIFO interface (no CSR bridge)
-//  - Dual-port BRAM for parallel left/right matrix access
 //  - FP16 result output (no FP24 conversion)
 //  - Configurable GDDR6 page ID
 //  - Comprehensive debug/status outputs
 //
-// Author: MS2.0 FIFO Architecture Integration
-// Date: Sun Oct 12 2025
+// Author: MS2.0 FIFO Architecture Integration + Tile BRAM Integration
+// Date: Mon Oct 27 2025
 // ------------------------------------------------------------------
 
 `include "nap_interfaces.svh"
@@ -114,43 +114,34 @@ import gemm_pkg::*;
     // Master Control -> Compute Engine
     // Master Control -> Compute Engine (spec-compliant)
     logic        mc_ce_tile_en;
-    logic [15:0] mc_ce_left_addr;       // 16 bits: Left matrix start address
-    logic [15:0] mc_ce_right_addr;      // 16 bits: Right matrix start address
-    logic [7:0]  mc_ce_left_ugd_len;    // 8 bits: Left UGD vectors (Batch dimension)
-    logic [7:0]  mc_ce_right_ugd_len;   // 8 bits: Right UGD vectors (Column dimension)
-    logic [7:0]  mc_ce_vec_len;         // 8 bits: UGD vector size (Vector count)
-    logic        mc_ce_left_man_4b;
-    logic        mc_ce_right_man_4b;
-    logic        mc_ce_main_loop_over_left;
+    logic [15:0] mc_ce_tile_left_addr;       // 16 bits: Left matrix start address
+    logic [15:0] mc_ce_tile_right_addr;      // 16 bits: Right matrix start address
+    logic [7:0]  mc_ce_tile_left_ugd_len;    // 8 bits: Left UGD vectors (Batch dimension)
+    logic [7:0]  mc_ce_tile_right_ugd_len;   // 8 bits: Right UGD vectors (Column dimension)
+    logic [7:0]  mc_ce_tile_vec_len;         // 8 bits: UGD vector size (Vector count)
+    logic        mc_ce_tile_left_man_4b;
+    logic        mc_ce_tile_right_man_4b;
+    logic        mc_ce_tile_main_loop_over_left;
     logic        ce_mc_tile_done;
 
-    // Dispatcher Control BRAM -> Compute Engine (Dual Read Ports)
-    // Left matrix mantissa port
-    logic [10:0]   ce_dc_bram_rd_addr_left;
-    logic [255:0]  dc_ce_bram_rd_data_left;
-    logic          ce_dc_bram_rd_en_left;
-    
-    // Right matrix mantissa port
-    logic [10:0]   ce_dc_bram_rd_addr_right;
-    logic [255:0]  dc_ce_bram_rd_data_right;
-    logic          ce_dc_bram_rd_en_right;
-    
-    // NEW: Dispatcher Control Exponent BRAM -> Compute Engine
-    // Exponent write ports (from dispatcher unpacking)
-    logic [8:0]    dc_left_exp_wr_addr;
-    logic [7:0]    dc_left_exp_wr_data;
-    logic          dc_left_exp_wr_en;
+    // Dispatcher Control BRAM Read Ports (dispatcher_control ↔ dispatcher_bram)
+    // Mantissa read data (dual ports) - used during DISPATCH operations
+    logic [255:0]  dc_disp_man_left_rd_data;
+    logic [255:0]  dc_disp_man_right_rd_data;
 
-    logic [8:0]    dc_right_exp_wr_addr;
-    logic [7:0]    dc_right_exp_wr_data;
-    logic          dc_right_exp_wr_en;
+    // Dispatcher Control Exponent BRAM (dispatcher_control → dispatcher_bram)
+    // Exponent write ports (from unpacking logic)
+    logic [8:0]    dc_disp_exp_left_wr_addr;
+    logic [7:0]    dc_disp_exp_left_wr_data;
+    logic          dc_disp_exp_left_wr_en;
 
-    // Exponent read ports (to compute engine)
-    logic [8:0]    ce_dc_left_exp_rd_addr;
-    logic [7:0]    dc_ce_left_exp_rd_data;
+    logic [8:0]    dc_disp_exp_right_wr_addr;
+    logic [7:0]    dc_disp_exp_right_wr_data;
+    logic          dc_disp_exp_right_wr_en;
 
-    logic [8:0]    ce_dc_right_exp_rd_addr;
-    logic [7:0]    dc_ce_right_exp_rd_data;
+    // Exponent read data (dispatcher_bram → dispatcher_control during DISPATCH)
+    logic [7:0]    dc_disp_exp_left_rd_data;
+    logic [7:0]    dc_disp_exp_right_rd_data;
 
     // Dispatcher -> Tile BRAM (DISPATCH copy write ports)
     // FOUR PARALLEL WRITE PATHS - All driven by same counter [0-511]
@@ -171,14 +162,8 @@ import gemm_pkg::*;
     logic          dc_tile_right_exp_wr_en;
 
     // DISPATCH operation read control
-    logic [10:0]   dc_disp_rd_addr;
+    logic [8:0]    dc_disp_rd_addr;      // 9-bit: dispatcher_bram is 512 deep
     logic          dc_disp_rd_en;
-
-    // Tile BRAM -> Compute Engine (final data path)
-    logic [255:0]  tile_ce_bram_rd_data_left;
-    logic [255:0]  tile_ce_bram_rd_data_right;
-    logic [7:0]    tile_ce_left_exp_rd_data;
-    logic [7:0]    tile_ce_right_exp_rd_data;
 
     // Compute Engine -> Result FIFO
     logic [15:0]   ce_result_data;     // FP16 results
@@ -263,14 +248,14 @@ import gemm_pkg::*;
 
         // Compute Engine Interface (TILE command - spec-compliant)
         .o_ce_tile_en            (mc_ce_tile_en),
-        .o_ce_left_addr          (mc_ce_left_addr),
-        .o_ce_right_addr         (mc_ce_right_addr),
-        .o_ce_left_ugd_len       (mc_ce_left_ugd_len),
-        .o_ce_right_ugd_len      (mc_ce_right_ugd_len),
-        .o_ce_vec_len            (mc_ce_vec_len),
-        .o_ce_left_man_4b        (mc_ce_left_man_4b),
-        .o_ce_right_man_4b       (mc_ce_right_man_4b),
-        .o_ce_main_loop_over_left (mc_ce_main_loop_over_left),
+        .o_ce_tile_left_addr          (mc_ce_tile_left_addr),
+        .o_ce_tile_right_addr         (mc_ce_tile_right_addr),
+        .o_ce_tile_left_ugd_len       (mc_ce_tile_left_ugd_len),
+        .o_ce_tile_right_ugd_len      (mc_ce_tile_right_ugd_len),
+        .o_ce_tile_vec_len            (mc_ce_tile_vec_len),
+        .o_ce_tile_left_man_4b        (mc_ce_tile_left_man_4b),
+        .o_ce_tile_right_man_4b       (mc_ce_tile_right_man_4b),
+        .o_ce_tile_main_loop_over_left (mc_ce_tile_main_loop_over_left),
         .i_ce_tile_done          (ce_mc_tile_done),
 
         // Status/Debug
@@ -286,35 +271,21 @@ import gemm_pkg::*;
     );
 
     // ------------------------------------------------------------------
-    // BRAM Read Address Muxing (for DISPATCH copy vs. normal CE read)
+    // BRAM Read Connections (DISPATCH-only reads)
     // ------------------------------------------------------------------
-    // During DISPATCH operation (dc_disp_rd_en=1), dispatcher reads from its own internal BRAM
-    // With interleaved addressing: same address drives both left and right ports
-    // Otherwise, CE drives the read addresses for normal MATMUL operation.
-    logic [10:0] disp_bram_rd_addr_left_muxed;
-    logic        disp_bram_rd_en_left_muxed;
-    logic [10:0] disp_bram_rd_addr_right_muxed;
-    logic        disp_bram_rd_en_right_muxed;
-    logic [8:0]  disp_left_exp_rd_addr_muxed;
-    logic [8:0]  disp_right_exp_rd_addr_muxed;
-
-    // Mantissa read port muxing
-    assign disp_bram_rd_addr_left_muxed  = dc_disp_rd_en ? dc_disp_rd_addr : ce_dc_bram_rd_addr_left;
-    assign disp_bram_rd_en_left_muxed    = dc_disp_rd_en ? 1'b1 : ce_dc_bram_rd_en_left;
-    assign disp_bram_rd_addr_right_muxed = dc_disp_rd_en ? dc_disp_rd_addr : ce_dc_bram_rd_addr_right;
-    assign disp_bram_rd_en_right_muxed   = dc_disp_rd_en ? 1'b1 : ce_dc_bram_rd_en_right;
-
-    // Exponent read port muxing
-    assign disp_left_exp_rd_addr_muxed   = dc_disp_rd_en ? dc_disp_rd_addr[8:0] : ce_dc_left_exp_rd_addr;
-    assign disp_right_exp_rd_addr_muxed  = dc_disp_rd_en ? dc_disp_rd_addr[8:0] : ce_dc_right_exp_rd_addr;
+    // Only dispatcher reads from dispatcher_bram during DISPATCH operations
+    // Compute engine now has integrated tile_bram for MATMUL operations
+    // No multiplexing needed - direct connections to dc_disp_rd_* signals
 
     // ------------------------------------------------------------------
     // Dispatcher Control - GDDR6 fetch and BRAM buffering
     // ------------------------------------------------------------------
     dispatcher_control #(
-        .TGT_DATA_WIDTH     (TGT_DATA_WIDTH),
+        .MAN_WIDTH          (TGT_DATA_WIDTH),
+        .EXP_WIDTH          (8),
+        .BRAM_DEPTH         (512),            // Dispatcher BRAM depth (matches dispatcher_bram hardcoded value)
+        .TILE_DEPTH         (512),            // Tile BRAM depth per side
         .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
-        .BRAM_DEPTH         (2048),           // Dual 128x128 matrix buffer
         .GDDR6_PAGE_ID      (GDDR6_PAGE_ID)
     ) u_dispatcher_control (
         .i_clk              (i_clk),
@@ -337,56 +308,58 @@ import gemm_pkg::*;
         .i_disp_broadcast   (mc_dc_disp_broadcast),
         .o_disp_done        (dc_mc_disp_done),
 
-        // Dual BRAM Read Ports (for Compute Engine / DISPATCH copy)
-        .i_bram_rd_addr_left    (disp_bram_rd_addr_left_muxed),   // Muxed for DISPATCH copy
-        .o_bram_rd_data_left    (dc_ce_bram_rd_data_left),
-        .i_bram_rd_en_left      (disp_bram_rd_en_left_muxed),     // Muxed for DISPATCH copy
+        // Dispatcher BRAM Read Ports (dispatcher_bram → dispatcher_control during DISPATCH)
+        .i_disp_man_left_rd_addr   (dc_disp_rd_addr),
+        .i_disp_man_left_rd_en     (dc_disp_rd_en),
+        .o_disp_man_left_rd_data   (dc_disp_man_left_rd_data),
 
-        .i_bram_rd_addr_right   (disp_bram_rd_addr_right_muxed),  // Muxed for DISPATCH copy
-        .o_bram_rd_data_right   (dc_ce_bram_rd_data_right),
-        .i_bram_rd_en_right     (disp_bram_rd_en_right_muxed),    // Muxed for DISPATCH copy
-        
-        // NEW: Exponent Write Ports (from unpacking logic)
-        .o_left_exp_wr_addr     (dc_left_exp_wr_addr),
-        .o_left_exp_wr_data     (dc_left_exp_wr_data),
-        .o_left_exp_wr_en       (dc_left_exp_wr_en),
-        
-        .o_right_exp_wr_addr    (dc_right_exp_wr_addr),
-        .o_right_exp_wr_data    (dc_right_exp_wr_data),
-        .o_right_exp_wr_en      (dc_right_exp_wr_en),
-        
-        // NEW: Exponent Read Ports (MUXED: DISPATCH operation uses dc_disp_rd_addr, else CE addresses)
-        .i_left_exp_rd_addr     (disp_left_exp_rd_addr_muxed),
-        .o_left_exp_rd_data     (dc_ce_left_exp_rd_data),
+        .i_disp_man_right_rd_addr  (dc_disp_rd_addr),
+        .i_disp_man_right_rd_en    (dc_disp_rd_en),
+        .o_disp_man_right_rd_data  (dc_disp_man_right_rd_data),
 
-        .i_right_exp_rd_addr    (disp_right_exp_rd_addr_muxed),
-        .o_right_exp_rd_data    (dc_ce_right_exp_rd_data),
+        // Dispatcher BRAM Exponent Write Ports (dispatcher_control → dispatcher_bram from unpacking)
+        .o_disp_exp_left_wr_addr   (dc_disp_exp_left_wr_addr),
+        .o_disp_exp_left_wr_en     (dc_disp_exp_left_wr_en),
+        .o_disp_exp_left_wr_data   (dc_disp_exp_left_wr_data),
+
+        .o_disp_exp_right_wr_addr  (dc_disp_exp_right_wr_addr),
+        .o_disp_exp_right_wr_en    (dc_disp_exp_right_wr_en),
+        .o_disp_exp_right_wr_data  (dc_disp_exp_right_wr_data),
+
+        // Dispatcher BRAM Exponent Read Ports (dispatcher_bram → dispatcher_control during DISPATCH)
+        .i_disp_exp_left_rd_addr   (dc_disp_rd_addr),
+        .i_disp_exp_left_rd_en     (dc_disp_rd_en),
+        .o_disp_exp_left_rd_data   (dc_disp_exp_left_rd_data),
+
+        .i_disp_exp_right_rd_addr  (dc_disp_rd_addr),
+        .i_disp_exp_right_rd_en    (dc_disp_rd_en),
+        .o_disp_exp_right_rd_data  (dc_disp_exp_right_rd_data),
 
         // Tile BRAM Write Ports (for DISPATCH copy) - FOUR PARALLEL PATHS
         .o_tile_man_left_wr_addr   (dc_tile_man_left_wr_addr),
-        .o_tile_man_left_wr_data   (dc_tile_man_left_wr_data),
         .o_tile_man_left_wr_en     (dc_tile_man_left_wr_en),
+        .o_tile_man_left_wr_data   (dc_tile_man_left_wr_data),
 
         .o_tile_man_right_wr_addr  (dc_tile_man_right_wr_addr),
-        .o_tile_man_right_wr_data  (dc_tile_man_right_wr_data),
         .o_tile_man_right_wr_en    (dc_tile_man_right_wr_en),
+        .o_tile_man_right_wr_data  (dc_tile_man_right_wr_data),
 
-        .o_tile_left_exp_wr_addr   (dc_tile_left_exp_wr_addr),
-        .o_tile_left_exp_wr_data   (dc_tile_left_exp_wr_data),
-        .o_tile_left_exp_wr_en     (dc_tile_left_exp_wr_en),
+        .o_tile_exp_left_wr_addr   (dc_tile_left_exp_wr_addr),
+        .o_tile_exp_left_wr_en     (dc_tile_left_exp_wr_en),
+        .o_tile_exp_left_wr_data   (dc_tile_left_exp_wr_data),
 
-        .o_tile_right_exp_wr_addr  (dc_tile_right_exp_wr_addr),
-        .o_tile_right_exp_wr_data  (dc_tile_right_exp_wr_data),
-        .o_tile_right_exp_wr_en    (dc_tile_right_exp_wr_en),
+        .o_tile_exp_right_wr_addr  (dc_tile_right_exp_wr_addr),
+        .o_tile_exp_right_wr_en    (dc_tile_right_exp_wr_en),
+        .o_tile_exp_right_wr_data  (dc_tile_right_exp_wr_data),
 
         // AXI GDDR6 Interface
         .axi_ddr_if         (nap_axi),
 
         // Debug
         .o_dc_state         (dc_state),
-        .o_bram_wr_count    (bram_wr_count),
-        .o_bram_wr_addr     (),  // Unused
-        .o_bram_wr_en       (),  // Unused
+        .o_disp_wr_count    (bram_wr_count),
+        .o_disp_wr_addr     (),  // Unused
+        .o_disp_wr_en       (),  // Unused
 
         // DISPATCH copy read control
         .o_disp_rd_addr     (dc_disp_rd_addr),
@@ -394,84 +367,47 @@ import gemm_pkg::*;
     );
 
     // ------------------------------------------------------------------
-    // Tile BRAM - L1 memory with separate left/right architecture
+    // Tile BRAM - Now integrated inside compute_engine_modular
+    // Removed standalone instantiation (Oct 27, 2025)
     // ------------------------------------------------------------------
-    tile_bram #(
-        .DATA_WIDTH      (256),
-        .MANTISSA_DEPTH  (512),   // 512 lines per side (left/right)
-        .EXP_DEPTH       (512)
-    ) u_tile_bram (
-        .i_clk       (i_clk),
-        .i_reset_n   (i_reset_n),
-
-        // Write ports - FOUR PARALLEL PATHS
-        // All four can write in SAME cycle with counter [0-511]
-        .i_man_left_wr_addr   (dc_tile_man_left_wr_addr),
-        .i_man_left_wr_data   (dc_tile_man_left_wr_data),
-        .i_man_left_wr_en     (dc_tile_man_left_wr_en),
-
-        .i_man_right_wr_addr  (dc_tile_man_right_wr_addr),
-        .i_man_right_wr_data  (dc_tile_man_right_wr_data),
-        .i_man_right_wr_en    (dc_tile_man_right_wr_en),
-
-        .i_left_exp_wr_addr   (dc_tile_left_exp_wr_addr),
-        .i_left_exp_wr_data   (dc_tile_left_exp_wr_data),
-        .i_left_exp_wr_en     (dc_tile_left_exp_wr_en),
-
-        .i_right_exp_wr_addr  (dc_tile_right_exp_wr_addr),
-        .i_right_exp_wr_data  (dc_tile_right_exp_wr_data),
-        .i_right_exp_wr_en    (dc_tile_right_exp_wr_en),
-
-        // Read ports (to compute engine) - CE provides 11-bit, tile_bram uses [8:0]
-        .i_left_man_rd_addr  (ce_dc_bram_rd_addr_left),
-        .o_left_man_rd_data  (tile_ce_bram_rd_data_left),
-        .i_left_man_rd_en    (ce_dc_bram_rd_en_left),
-
-        .i_right_man_rd_addr (ce_dc_bram_rd_addr_right),
-        .o_right_man_rd_data (tile_ce_bram_rd_data_right),
-        .i_right_man_rd_en   (ce_dc_bram_rd_en_right),
-
-        .i_left_exp_rd_addr  (ce_dc_left_exp_rd_addr),
-        .o_left_exp_rd_data  (tile_ce_left_exp_rd_data),
-
-        .i_right_exp_rd_addr (ce_dc_right_exp_rd_addr),
-        .o_right_exp_rd_data (tile_ce_right_exp_rd_data)
-    );
 
     // ------------------------------------------------------------------
     // Compute Engine - Modular GFP8 matrix multiplication with FP16 output
+    // NOW WITH INTEGRATED TILE BRAM (Oct 27, 2025)
     // ------------------------------------------------------------------
     compute_engine_modular u_compute_engine (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
 
         // Master Control Interface (spec-compliant)
-        .i_tile_en               (mc_ce_tile_en),
-        .i_left_addr             (mc_ce_left_addr),
-        .i_right_addr            (mc_ce_right_addr),
-        .i_left_ugd_len          (mc_ce_left_ugd_len),
-        .i_right_ugd_len         (mc_ce_right_ugd_len),
-        .i_vec_len               (mc_ce_vec_len),
-        .i_left_man_4b           (mc_ce_left_man_4b),
-        .i_right_man_4b          (mc_ce_right_man_4b),
-        .i_main_loop_over_left   (mc_ce_main_loop_over_left),
-        .o_tile_done             (ce_mc_tile_done),
+        .i_tile_en                    (mc_ce_tile_en),
+        .i_tile_left_addr             (mc_ce_tile_left_addr),
+        .i_tile_right_addr            (mc_ce_tile_right_addr),
+        .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
+        .i_tile_right_ugd_len         (mc_ce_tile_right_ugd_len),
+        .i_tile_vec_len               (mc_ce_tile_vec_len),
+        .i_tile_left_man_4b           (mc_ce_tile_left_man_4b),
+        .i_tile_right_man_4b          (mc_ce_tile_right_man_4b),
+        .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
+        .o_tile_done                  (ce_mc_tile_done),
 
-        // Dual BRAM Mantissa Read Interface (from Tile BRAM - post-DISPATCH copy)
-        .o_bram_left_rd_addr    (ce_dc_bram_rd_addr_left),
-        .i_bram_left_rd_data    (tile_ce_bram_rd_data_left),    // NOW FROM TILE_BRAM!
-        .o_bram_left_rd_en      (ce_dc_bram_rd_en_left),
+        // Tile BRAM Write Interface (from dispatcher_control via DISPATCH command)
+        // Four parallel write ports - all can write in same cycle
+        .i_man_left_wr_addr      (dc_tile_man_left_wr_addr),
+        .i_man_left_wr_en        (dc_tile_man_left_wr_en),
+        .i_man_left_wr_data      (dc_tile_man_left_wr_data),
 
-        .o_bram_right_rd_addr   (ce_dc_bram_rd_addr_right),
-        .i_bram_right_rd_data   (tile_ce_bram_rd_data_right),   // NOW FROM TILE_BRAM!
-        .o_bram_right_rd_en     (ce_dc_bram_rd_en_right),
+        .i_man_right_wr_addr     (dc_tile_man_right_wr_addr),
+        .i_man_right_wr_en       (dc_tile_man_right_wr_en),
+        .i_man_right_wr_data     (dc_tile_man_right_wr_data),
 
-        // Exponent Read Interface (from Tile BRAM - post-DISPATCH copy)
-        .o_left_exp_rd_addr     (ce_dc_left_exp_rd_addr),
-        .i_left_exp_rd_data     (tile_ce_left_exp_rd_data),     // NOW FROM TILE_BRAM!
+        .i_left_exp_wr_addr      (dc_tile_left_exp_wr_addr),
+        .i_left_exp_wr_en        (dc_tile_left_exp_wr_en),
+        .i_left_exp_wr_data      (dc_tile_left_exp_wr_data),
 
-        .o_right_exp_rd_addr    (ce_dc_right_exp_rd_addr),
-        .i_right_exp_rd_data    (tile_ce_right_exp_rd_data),    // NOW FROM TILE_BRAM!
+        .i_right_exp_wr_addr     (dc_tile_right_exp_wr_addr),
+        .i_right_exp_wr_en       (dc_tile_right_exp_wr_en),
+        .i_right_exp_wr_data     (dc_tile_right_exp_wr_data),
 
         // Result FIFO Write Interface
         .o_result_data      (ce_result_data),

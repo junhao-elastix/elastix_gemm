@@ -264,6 +264,228 @@ man_right[0-511]         ↔  tile_bram_right.man[0-511]  (256-bit mantissas)
 - Left and right exponents/mantissas accessed independently
 - Supports parallel dot-product computation across groups
 
+---
+
+## BRAM Interface Naming Convention
+
+To ensure consistency across all BRAM interfaces in the hierarchy (dispatcher_bram, tile_bram, and controller modules), the following unified naming convention MUST be used:
+
+### 5-Slot Naming Pattern
+
+**Format**: `{direction}_{type}_{side}_{operation}_{signal}`
+
+**Slots Defined**:
+1. **Direction**: `i` (input) or `o` (output)
+2. **Type**: Data type or memory hierarchy level
+   - **Basic modules** (tile_bram, dispatcher_bram): `exp` (exponent, 8-bit), `man` (mantissa, 256-bit)
+   - **dispatcher_control** (hierarchical naming): `disp` (dispatcher_bram ports), `tile` (tile_bram ports)
+3. **Side**: `left` or `right` (matrix side)
+4. **Operation**: `rd` (read) or `wr` (write)
+5. **Signal**: `addr`, `en`, `data`
+
+**Note**: Command interface signals (e.g., `i_fetch_en`, `o_fetch_done`) use different naming - they are NOT part of the BRAM data path naming convention.
+
+### Port Order Standard
+
+**All BRAM interfaces follow consistent port ordering**:
+- **Read ports**: addr, en, data (output data last)
+- **Write ports**: addr, en, data (input data last)
+
+**Rationale**: Consistent ordering improves readability and reduces connection errors during instantiation.
+
+### Examples
+
+**Basic BRAM Interface** (tile_bram, dispatcher_bram):
+```systemverilog
+// Read ports - mantissa left side
+input  logic [8:0]   i_man_left_rd_addr,   // Address first
+input  logic         i_man_left_rd_en,     // Enable second
+output logic [255:0] o_man_left_rd_data    // Data last
+
+// Write ports - exponent right side
+input  logic [8:0]   i_exp_right_wr_addr,  // Address first
+input  logic         i_exp_right_wr_en,    // Enable second
+input  logic [7:0]   i_exp_right_wr_data   // Data last
+```
+
+**Extended Interface** (dispatcher_control with hierarchical naming):
+```systemverilog
+// Dispatcher BRAM exponent write ports
+output logic [8:0]   o_disp_exp_left_wr_addr,
+output logic         o_disp_exp_left_wr_en,
+output logic [7:0]   o_disp_exp_left_wr_data,
+
+// Tile BRAM mantissa write ports
+output logic [8:0]   o_tile_man_right_wr_addr,
+output logic         o_tile_man_right_wr_en,
+output logic [255:0] o_tile_man_right_wr_data
+```
+
+### Modules Using This Convention
+
+All modules in the BRAM hierarchy have been updated to follow this standard:
+
+1. **dispatcher_bram.sv** - L2 cache, dual-read ports
+2. **dispatcher_control.sv** - L2 controller with hierarchical naming
+3. **tile_bram.sv** - L1 cache, quad-port structure
+4. **compute_engine_modular.sv** - Integrates tile_bram
+5. **gfp8_bcv_controller.sv** - Reads from tile_bram
+6. **engine_top.sv** - Top-level connections
+
+### Benefits
+
+1. **Self-Documenting**: Signal names clearly indicate purpose and direction
+2. **Hierarchical Clarity**: Extended naming (disp/tile prefix in dispatcher_control) shows memory hierarchy level (L2/L1)
+3. **Type Safety**: Consistent widths prevent connection errors
+4. **Maintainability**: Easy to trace signals through hierarchy
+5. **Scalability**: Pattern extends naturally to multi-tile architectures
+
+### Address Width Standards
+
+Match address widths to actual BRAM depth:
+- **tile_bram**: 512 lines → **9-bit addresses** `[8:0]`
+- **dispatcher_bram**: 2048 lines → **11-bit addresses** `[10:0]`
+
+**Critical**: Never use wider addresses than needed - synthesis tools may silently truncate, causing subtle bugs.
+
+---
+
+## Command Interface Naming Convention
+
+Command interface signals follow a simpler pattern than BRAM data path signals, designed for control flow between major modules.
+
+### Pattern
+
+**Format**: `{direction}_{module}_{command}[_param]`
+
+**Components**:
+1. **Direction**: `i` (input) or `o` (output)
+2. **Module**: Abbreviated module identifier
+   - `cmd` - Command FIFO interface
+   - `dc` - dispatcher_control
+   - `ce` - compute_engine_modular
+   - `mc` - master_control
+3. **Command**: Operation type
+   - `fetch` - GDDR6 → dispatcher_bram transfer
+   - `disp` - Tile dispatch configuration
+   - `tile` - Compute engine MATMUL operation
+4. **Parameter** (optional): Command-specific data (e.g., `_addr`, `_len`, `_done`, `_en`)
+
+### Module Interfaces
+
+#### master_control.sv → dispatcher_control.sv
+
+**FETCH Command**:
+```systemverilog
+output logic                         o_dc_fetch_en,
+output logic [link_addr_width_gp-1:0] o_dc_fetch_addr,
+output logic [link_len_width_gp-1:0]  o_dc_fetch_len,
+output logic                         o_dc_fetch_target,
+input  logic                         i_dc_fetch_done,
+```
+
+**DISP Command**:
+```systemverilog
+output logic        o_dc_disp_en,
+output logic [15:0] o_dc_disp_tile_addr,
+output logic [7:0]  o_dc_disp_man_nv_cnt,
+input  logic        i_dc_disp_done,
+```
+
+#### master_control.sv → compute_engine_modular.sv
+
+**TILE Command**:
+```systemverilog
+output logic        o_ce_tile_en,
+output logic [15:0] o_ce_left_addr,
+output logic [15:0] o_ce_right_addr,
+output logic [7:0]  o_ce_left_ugd_len,
+output logic [7:0]  o_ce_right_ugd_len,
+output logic [7:0]  o_ce_vec_len,
+input  logic        i_ce_tile_done,
+```
+
+#### dispatcher_control.sv Interface
+
+**Simplified naming** (no module prefix at boundary, but command prefix REQUIRED):
+```systemverilog
+// FETCH command - Note: fetch_ prefix is REQUIRED even at module boundary
+input  logic                         i_fetch_en,
+input  logic [link_addr_width_gp-1:0] i_fetch_addr,
+input  logic [link_len_width_gp-1:0]  i_fetch_len,
+input  logic                         i_fetch_target,
+output logic                         o_fetch_done,
+
+// DISP command - Note: disp_ prefix is REQUIRED even at module boundary
+input  logic        i_disp_en,
+input  logic [15:0] i_disp_tile_addr,
+input  logic [7:0]  i_disp_man_nv_cnt,
+output logic        o_disp_done,
+```
+
+#### compute_engine_modular.sv Interface
+
+**Simplified naming** (no module prefix at boundary, but command prefix REQUIRED):
+```systemverilog
+// TILE command - Note: tile_ prefix is REQUIRED even at module boundary
+input  logic        i_tile_en,
+input  logic [15:0] i_tile_left_addr,
+input  logic [15:0] i_tile_right_addr,
+input  logic [7:0]  i_tile_left_ugd_len,
+input  logic [7:0]  i_tile_right_ugd_len,
+input  logic [7:0]  i_tile_vec_len,
+input  logic        i_tile_left_man_4b,
+input  logic        i_tile_right_man_4b,
+input  logic        i_tile_main_loop_over_left,
+output logic        o_tile_done,
+```
+
+### Distinction from BRAM Data Path Signals
+
+**Command signals** control operation flow between modules:
+- Examples: `o_dc_fetch_en`, `i_tile_done`, `o_disp_done`
+- Pattern: `{i/o}_{module}_{command}[_param]`
+- Purpose: Handshake and parameter passing for high-level operations
+
+**BRAM data path signals** move actual matrix data:
+- Examples: `o_disp_man_left_rd_addr`, `i_exp_right_wr_en`, `o_man_left_rd_data`
+- Pattern: `{i/o}_{type}_{side}_{op}_{signal}` (5-slot pattern)
+- Purpose: Memory read/write operations with address/enable/data
+
+**Key Rule**: Command signals use the simpler 3-4 slot pattern, BRAM signals use the 5-slot pattern with explicit type/side/operation.
+
+### Naming Rules Summary
+
+1. **At hierarchical connections** (e.g., master_control → dispatcher_control):
+   - Use BOTH module prefix AND command prefix
+   - Example: `o_dc_fetch_addr`, `o_ce_tile_left_addr`
+
+2. **At module boundaries** (e.g., dispatcher_control.sv port list):
+   - Omit module prefix (dc/ce/mc)
+   - ALWAYS keep command prefix (fetch/disp/tile)
+   - Example: `i_fetch_addr` (not `i_addr`), `i_tile_left_addr` (not `i_left_addr`)
+
+3. **Internal to a module** (e.g., signals inside engine_top.sv):
+   - Omit module prefix only if signal doesn't cross module boundaries
+   - Keep command prefix if related to a command
+
+### Benefits
+
+1. **Clear Hierarchy**: Module prefix at connections shows signal flow (master → dispatcher, master → compute)
+2. **Command Grouping**: All signals for one command share the same command prefix
+3. **Self-Documenting**: Signal names clearly indicate which command they belong to
+4. **Traceability**: Command prefix preserved across hierarchy makes signals easy to grep
+
+### Consistency Verification
+
+All command interfaces have been verified for consistency (Oct 27, 2025):
+- ✅ **master_control.sv**: Uses full prefix pattern (`o_dc_fetch_*`, `o_dc_disp_*`, `o_ce_tile_*`)
+- ✅ **dispatcher_control.sv**: Uses command prefix at boundary (`i_fetch_*`, `i_disp_*`)
+- ✅ **compute_engine_modular.sv**: Uses command prefix at boundary (`i_tile_en`, `i_tile_left_addr`, `i_tile_*`)
+- ✅ **engine_top.sv**: Instantiations updated to match new port names
+
+---
+
 ### tile_bram Organization
 
 **Key Insight**: tile_bram has IDENTICAL organization to dispatcher_bram's aligned buffers

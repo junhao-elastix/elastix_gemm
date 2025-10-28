@@ -31,87 +31,92 @@
 // ------------------------------------------------------------------
 
 module dispatcher_bram #(
-    parameter DATA_WIDTH = 256,       // 256-bit data width
-    parameter EXP_PACKED_DEPTH = 16,  // 16 lines for packed exponents
-    parameter EXP_ALIGNED_DEPTH = 512, // 512 exponents (aligned with groups)
-    parameter MANTISSA_DEPTH = 512,  // 512 lines for mantissas 
-    parameter ADDR_WIDTH = 9         // 9-bit address for writes (covers 0-511)
+    parameter MAN_WIDTH = 256,                          // Mantissa line width
+    parameter EXP_WIDTH = 8,                            // Exponent width
+    parameter EXP_PACKED_DEPTH = 16,                    // 16 lines for packed exponents
+    parameter BRAM_DEPTH = 512,                         // 512 lines for mantissas and aligned exponents
+    parameter WR_ADDR_WIDTH = 11,                       // Write address width (covers 0-527)
+    parameter RD_ADDR_WIDTH = $clog2(BRAM_DEPTH),       // Read address width (9-bit for 512)
+    parameter EXP_PACKED_ADDR_WIDTH = $clog2(EXP_PACKED_DEPTH)  // Packed exp read addr (4-bit)
 )
 (
-    input  wire                     i_clk,
-    
+    input  logic                            i_clk,
+    input  logic                            i_reset_n,
+
     // ===================================================================
     // WRITE PORTS (from dispatcher_control)
     // ===================================================================
-    
+
     // Main write port for exp_packed and mantissas
-    input  wire [DATA_WIDTH-1:0]    i_wr_data,
-    input  wire [ADDR_WIDTH-1:0]    i_wr_addr,      // [0-15]: exp_packed, [0-511]: man
-    input  wire                     i_wr_en,
-    input  wire                     i_wr_target,    // 0=left, 1=right
-    
+    input  logic [MAN_WIDTH-1:0]            i_wr_data,
+    input  logic [WR_ADDR_WIDTH-1:0]        i_wr_addr,
+    input  logic                            i_wr_en,
+    input  logic                            i_wr_target,    // 0=left, 1=right
+
     // Exponent aligned write ports (from unpacking logic in dispatcher_control)
-    input  wire [8:0]               i_left_exp_aligned_wr_addr,
-    input  wire [7:0]               i_left_exp_aligned_wr_data,
-    input  wire                     i_left_exp_aligned_wr_en,
-    
-    input  wire [8:0]               i_right_exp_aligned_wr_addr,
-    input  wire [7:0]               i_right_exp_aligned_wr_data,
-    input  wire                     i_right_exp_aligned_wr_en,
-    
+    input  logic [RD_ADDR_WIDTH-1:0]        i_exp_left_wr_addr,
+    input  logic                            i_exp_left_wr_en,
+    input  logic [EXP_WIDTH-1:0]            i_exp_left_wr_data,
+
+    input  logic [RD_ADDR_WIDTH-1:0]        i_exp_right_wr_addr,
+    input  logic                            i_exp_right_wr_en,
+    input  logic [EXP_WIDTH-1:0]            i_exp_right_wr_data,
+
     // ===================================================================
     // READ PORTS (to compute engine)
     // ===================================================================
-    
-    // Left matrix read ports
-    input  wire [8:0]               i_rd_addr_left,      // Address [0-511] - mantissa 9-bit
-    input  wire                     i_rd_en_left,
-    output wire [DATA_WIDTH-1:0]    o_rd_data_left,      // Mantissa
 
-    input  wire [8:0]               i_left_exp_rd_addr,  // Address [0-511] - exponent 9-bit
-    output wire [7:0]               o_left_exp_rd_data,  // Exponent
+    // Left matrix read ports
+    input  logic [RD_ADDR_WIDTH-1:0]        i_man_left_rd_addr,
+    input  logic                            i_man_left_rd_en,
+    output logic [MAN_WIDTH-1:0]            o_man_left_rd_data,
+
+    input  logic [RD_ADDR_WIDTH-1:0]        i_exp_left_rd_addr,
+    input  logic                            i_exp_left_rd_en,
+    output logic [EXP_WIDTH-1:0]            o_exp_left_rd_data,
 
     // Right matrix read ports
-    input  wire [8:0]               i_rd_addr_right,     // Address [0-511] - mantissa 9-bit
-    input  wire                     i_rd_en_right,
-    output wire [DATA_WIDTH-1:0]    o_rd_data_right,     // Mantissa
+    input  logic [RD_ADDR_WIDTH-1:0]        i_man_right_rd_addr,
+    input  logic                            i_man_right_rd_en,
+    output logic [MAN_WIDTH-1:0]            o_man_right_rd_data,
 
-    input  wire [8:0]               i_right_exp_rd_addr, // Address [0-511] - exponent 9-bit
-    output wire [7:0]               o_right_exp_rd_data, // Exponent
-    
+    input  logic [RD_ADDR_WIDTH-1:0]        i_exp_right_rd_addr,
+    input  logic                            i_exp_right_rd_en,
+    output logic [EXP_WIDTH-1:0]            o_exp_right_rd_data,
+
     // ===================================================================
     // UNPACKING INTERFACE (for dispatcher_control to read exp_packed)
     // ===================================================================
-    input  wire [3:0]               i_exp_packed_rd_addr, // Address [0-15]
-    input  wire                     i_exp_packed_rd_target, // 0=left, 1=right
-    output wire [DATA_WIDTH-1:0]    o_exp_packed_rd_data
+    input  logic [EXP_PACKED_ADDR_WIDTH-1:0] i_exp_packed_rd_addr,
+    input  logic                              i_exp_packed_rd_target,
+    output logic [MAN_WIDTH-1:0]              o_exp_packed_rd_data
 );
 
     // ===================================================================
     // LEFT SIDE BUFFERS
     // ===================================================================
-    
+
     // Buffer 1: Packed exponents (staging buffer)
-    logic [DATA_WIDTH-1:0] exp_left_packed [0:EXP_PACKED_DEPTH-1];
-    
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] exp_left_packed [0:EXP_PACKED_DEPTH-1];
+
     // Buffer 2: Aligned exponents (unpacked, one per group)
-    logic [7:0] exp_left_aligned [0:EXP_ALIGNED_DEPTH-1];
-    
+    (* ram_style = "block" *) logic [EXP_WIDTH-1:0] exp_left_aligned [0:BRAM_DEPTH-1];
+
     // Buffer 3: Mantissas (one group per line)
-    logic [DATA_WIDTH-1:0] man_left [0:MANTISSA_DEPTH-1];
-    
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] man_left [0:BRAM_DEPTH-1];
+
     // ===================================================================
     // RIGHT SIDE BUFFERS
     // ===================================================================
-    
+
     // Buffer 1: Packed exponents (staging buffer)
-    logic [DATA_WIDTH-1:0] exp_right_packed [0:EXP_PACKED_DEPTH-1];
-    
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] exp_right_packed [0:EXP_PACKED_DEPTH-1];
+
     // Buffer 2: Aligned exponents (unpacked, one per group)
-    logic [7:0] exp_right_aligned [0:EXP_ALIGNED_DEPTH-1];
-    
+    (* ram_style = "block" *) logic [EXP_WIDTH-1:0] exp_right_aligned [0:BRAM_DEPTH-1];
+
     // Buffer 3: Mantissas (one group per line)
-    logic [DATA_WIDTH-1:0] man_right [0:MANTISSA_DEPTH-1];
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] man_right [0:BRAM_DEPTH-1];
     
     // ===================================================================
     // SIMULATION INITIALIZATION (prevent X-states)
@@ -123,11 +128,9 @@ module dispatcher_bram #(
             exp_left_packed[init_i] = '0;
             exp_right_packed[init_i] = '0;
         end
-        for (init_i = 0; init_i < EXP_ALIGNED_DEPTH; init_i = init_i + 1) begin
+        for (init_i = 0; init_i < BRAM_DEPTH; init_i = init_i + 1) begin
             exp_left_aligned[init_i] = '0;
             exp_right_aligned[init_i] = '0;
-        end
-        for (init_i = 0; init_i < MANTISSA_DEPTH; init_i = init_i + 1) begin
             man_left[init_i] = '0;
             man_right[init_i] = '0;
         end
@@ -183,53 +186,57 @@ module dispatcher_bram #(
     
     // Exponent aligned write logic (from unpacking in dispatcher_control)
     always_ff @(posedge i_clk) begin
-        if (i_left_exp_aligned_wr_en) begin
-            exp_left_aligned[i_left_exp_aligned_wr_addr] <= i_left_exp_aligned_wr_data;
+        if (i_exp_left_wr_en) begin
+            exp_left_aligned[i_exp_left_wr_addr] <= i_exp_left_wr_data;
         end
-        if (i_right_exp_aligned_wr_en) begin
-            exp_right_aligned[i_right_exp_aligned_wr_addr] <= i_right_exp_aligned_wr_data;
+        if (i_exp_right_wr_en) begin
+            exp_right_aligned[i_exp_right_wr_addr] <= i_exp_right_wr_data;
         end
     end
-    
+
     // ===================================================================
     // READ LOGIC - MANTISSAS
     // ===================================================================
-    
+
     // Left mantissa read (registered)
-    logic [DATA_WIDTH-1:0] rd_data_left_reg;
+    logic [MAN_WIDTH-1:0] man_left_rd_data_reg;
     always_ff @(posedge i_clk) begin
-        if (i_rd_en_left) begin
-            rd_data_left_reg <= man_left[i_rd_addr_left];
+        if (i_man_left_rd_en) begin
+            man_left_rd_data_reg <= man_left[i_man_left_rd_addr];
         end
     end
-    assign o_rd_data_left = rd_data_left_reg;
-    
+    assign o_man_left_rd_data = man_left_rd_data_reg;
+
     // Right mantissa read (registered)
-    logic [DATA_WIDTH-1:0] rd_data_right_reg;
+    logic [MAN_WIDTH-1:0] man_right_rd_data_reg;
     always_ff @(posedge i_clk) begin
-        if (i_rd_en_right) begin
-            rd_data_right_reg <= man_right[i_rd_addr_right];
+        if (i_man_right_rd_en) begin
+            man_right_rd_data_reg <= man_right[i_man_right_rd_addr];
         end
     end
-    assign o_rd_data_right = rd_data_right_reg;
-    
+    assign o_man_right_rd_data = man_right_rd_data_reg;
+
     // ===================================================================
     // READ LOGIC - EXPONENTS (ALIGNED)
     // ===================================================================
-    
-    // Left exponent read (registered)
-    logic [7:0] left_exp_rd_data_reg;
+
+    // Left exponent read (registered with enable)
+    logic [EXP_WIDTH-1:0] exp_left_rd_data_reg;
     always_ff @(posedge i_clk) begin
-        left_exp_rd_data_reg <= exp_left_aligned[i_left_exp_rd_addr];
+        if (i_exp_left_rd_en) begin
+            exp_left_rd_data_reg <= exp_left_aligned[i_exp_left_rd_addr];
+        end
     end
-    assign o_left_exp_rd_data = left_exp_rd_data_reg;
-    
-    // Right exponent read (registered)
-    logic [7:0] right_exp_rd_data_reg;
+    assign o_exp_left_rd_data = exp_left_rd_data_reg;
+
+    // Right exponent read (registered with enable)
+    logic [EXP_WIDTH-1:0] exp_right_rd_data_reg;
     always_ff @(posedge i_clk) begin
-        right_exp_rd_data_reg <= exp_right_aligned[i_right_exp_rd_addr];
+        if (i_exp_right_rd_en) begin
+            exp_right_rd_data_reg <= exp_right_aligned[i_exp_right_rd_addr];
+        end
     end
-    assign o_right_exp_rd_data = right_exp_rd_data_reg;
+    assign o_exp_right_rd_data = exp_right_rd_data_reg;
     
     // ===================================================================
     // READ LOGIC - PACKED EXPONENTS (for unpacking)
@@ -237,7 +244,7 @@ module dispatcher_bram #(
     
     // Read packed exponents (COMBINATIONAL to avoid stale data between FETCHes)
     // Using combinational read eliminates the problem of stale data from previous FETCH
-    logic [DATA_WIDTH-1:0] exp_packed_rd_data_comb;
+    logic [MAN_WIDTH-1:0] exp_packed_rd_data_comb;
     always_comb begin
         if (i_exp_packed_rd_target == 1'b0) begin
             exp_packed_rd_data_comb = exp_left_packed[i_exp_packed_rd_addr];
