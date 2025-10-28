@@ -44,13 +44,14 @@ import gemm_pkg::*;
     input  logic                         i_dc_fetch_done,
 
     output logic                          o_dc_disp_en,
-    output logic [15:0]                   o_dc_disp_tile_addr,  // Updated to 16-bit per spec
-    output logic [7:0]                    o_dc_disp_man_nv_cnt,   // NEW: Total NVs to dispatch
-    output logic [7:0]                    o_dc_disp_ugd_vec_size, // NEW: NVs per UGD vector
-    output logic                          o_dc_disp_man_4b,       // Renamed from man_4b_8b_n
-    output logic [15:0]                   o_dc_disp_col_en,       // NEW: Column enable mask
-    output logic [5:0]                    o_dc_disp_col_start,    // NEW: Distribution start column
-    output logic                          o_dc_disp_broadcast,    // NEW: Broadcast mode (reserved)
+    output logic [15:0]                   o_dc_disp_tile_addr,    // Tile destination address
+    output logic [7:0]                    o_dc_disp_man_nv_cnt,   // Total NVs to dispatch
+    output logic [7:0]                    o_dc_disp_ugd_vec_size, // NVs per UGD vector
+    output logic                          o_dc_disp_man_4b,       // Mantissa width (0=8-bit, 1=4-bit)
+    output logic [23:0]                   o_dc_disp_col_en,       // Column enable mask (24 tiles max)
+    output logic [4:0]                    o_dc_disp_col_start,    // Distribution start column
+    output logic                          o_dc_disp_right,        // Dispatch side (0=left, 1=right)
+    output logic                          o_dc_disp_broadcast,    // Distribution mode (0=distribute, 1=broadcast)
     input  logic                          i_dc_disp_done,
 
     // Compute Engine Interface (TILE command)
@@ -374,6 +375,7 @@ import gemm_pkg::*;
             o_dc_disp_man_4b <= 1'b0;
             o_dc_disp_col_en <= '0;
             o_dc_disp_col_start <= '0;
+            o_dc_disp_right <= 1'b0;
             o_dc_disp_broadcast <= 1'b0;
         end else begin
             // Clear enables when transitioning out of EXEC states
@@ -415,12 +417,12 @@ import gemm_pkg::*;
                 end
 
                 ST_EXEC_DISP: begin
-                    // Parse cmd_disp_s structure (SPEC-COMPLIANT, 119-bit):
+                    // Parse cmd_disp_s structure (SPEC-COMPLIANT per SINGLE_ROW_REFERENCE.md):
                     // Word1: {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
                     // Word2: {reserved2[15:0], tile_addr[15:0]}
-                    // Word3: {col_en[15:0], reserved[7:0], col_start[5:0], broadcast, man_4b}
+                    // Word3: {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
                     cmd_disp_s disp_cmd;
-                    disp_cmd = {payload_word3_reg[23:0], payload_word2_reg, payload_word1_reg};
+                    disp_cmd = {payload_word3_reg[31:0], payload_word2_reg, payload_word1_reg};
 
                     // ASYNC FIX: Always set enable in EXEC_DISP
                     // Clear happens in CMD_COMPLETE to avoid same-cycle conflict
@@ -434,11 +436,12 @@ import gemm_pkg::*;
                     o_dc_disp_man_4b     <= disp_cmd.man_4b;
                     o_dc_disp_col_en     <= disp_cmd.col_en;
                     o_dc_disp_col_start  <= disp_cmd.col_start;
+                    o_dc_disp_right      <= disp_cmd.disp_right;
                     o_dc_disp_broadcast  <= disp_cmd.broadcast;
 
-                    $display("[MC] @%0t EXEC_DISP: tile_addr=0x%04x, man_nv_cnt=%0d, ugd_vec_size=%0d, man_4b=%0b, col_en=0x%04x, id=%0d",
+                    $display("[MC] @%0t EXEC_DISP: tile_addr=0x%04x, man_nv_cnt=%0d, ugd_vec_size=%0d, man_4b=%0b, col_en=0x%06x, disp_right=%0b, broadcast=%0b, id=%0d",
                              $time, disp_cmd.tile_addr, disp_cmd.man_nv_cnt, disp_cmd.ugd_vec_size,
-                             disp_cmd.man_4b, disp_cmd.col_en, cmd_id_reg);
+                             disp_cmd.man_4b, disp_cmd.col_en, disp_cmd.disp_right, disp_cmd.broadcast, cmd_id_reg);
                 end
             endcase
         end

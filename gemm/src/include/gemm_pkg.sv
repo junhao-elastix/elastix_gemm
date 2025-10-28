@@ -46,9 +46,6 @@ package gemm_pkg;
     localparam tile_right_bias_gp = 15;
     localparam tile_out_bias_gp = 15;
 
-    localparam tile_mem_els_gp = 2048;  // Increased from 512 to support 128x128 matrices (528 lines each)
-    localparam tile_mem_addr_width_gp = $clog2(tile_mem_els_gp);
-
     localparam tile_out_fifo_els_gp = 256;  // Result FIFO depth (increased for large tests, was 64)
     localparam tile_out_cnt_width_gp = $clog2(tile_out_fifo_els_gp+1);
 
@@ -105,11 +102,11 @@ package gemm_pkg;
     } cmd_fetch_s;
 
     typedef struct packed {
-        logic [15:0]  col_en;         // Word3[31:16]: Column enable mask
-        logic [7:0]   reserved;       // Word3[15:8]
-        logic [5:0]   col_start;      // Word3[7:2]: Distribution start column
-        logic         broadcast;      // Word3[1]: Reserved (tied to 0)
-        logic         man_4b;         // Word3[0]: Mantissa width
+        logic [23:0]  col_en;         // Word3[31:8]: Column enable mask (24 tiles max)
+        logic [4:0]   col_start;      // Word3[7:3]: Distribution start column
+        logic         disp_right;     // Word3[2]: Dispatch side (0=left, 1=right)
+        logic         broadcast;      // Word3[1]: Distribution mode (0=distribute, 1=broadcast)
+        logic         man_4b;         // Word3[0]: Mantissa width (0=8-bit, 1=4-bit)
         logic [15:0]  reserved2;      // Word2[31:16]
         logic [15:0]  tile_addr;      // Word2[15:0]: Tile destination address
         logic [7:0]   reserved3;      // Word1[31:24]
@@ -119,11 +116,11 @@ package gemm_pkg;
     } cmd_disp_s;
 
     typedef struct packed{
-        logic [15:0]  col_en;         // Word3[31:16]: Column enable mask (NEW)
-        logic [12:0]  reserved;       // Word3[15:3]
-        logic         left_4b;        // Word3[2]: Left mantissa width (replaces cmd_flags_s)
-        logic         right_4b;       // Word3[1]: Right mantissa width
-        logic         main_loop_left; // Word3[0]: Main loop dimension
+        logic [23:0]  col_en;         // Word3[31:8]: Column enable mask (24 tiles max)
+        logic [4:0]   reserved;       // Word3[7:3]
+        logic         left_4b;        // Word3[2]: Left mantissa width (0=8-bit, 1=4-bit)
+        logic         right_4b;       // Word3[1]: Right mantissa width (0=8-bit, 1=4-bit)
+        logic         main_loop_left; // Word3[0]: Main loop dimension (0=right first, 1=left first)
         logic [7:0]   reserved2;      // Word2[31:24]
         logic [7:0]   left_ugd_len;   // Word2[23:16]: Left UGD vectors (also dim_b)
         logic [7:0]   right_ugd_len;  // Word2[15:8]: Right UGD vectors (also dim_c)

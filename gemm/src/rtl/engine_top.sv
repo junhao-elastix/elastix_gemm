@@ -106,9 +106,10 @@ import gemm_pkg::*;
     logic [7:0]                          mc_dc_disp_man_nv_cnt;   // NEW: Total NVs to dispatch
     logic [7:0]                          mc_dc_disp_ugd_vec_size; // NEW: NVs per UGD vector
     logic                                mc_dc_disp_man_4b;       // Renamed from man_4b_8b_n
-    logic [15:0]                         mc_dc_disp_col_en;       // NEW: Column enable mask
-    logic [5:0]                          mc_dc_disp_col_start;    // NEW: Distribution start column
-    logic                                mc_dc_disp_broadcast;    // NEW: Broadcast mode (reserved)
+    logic [23:0]                         mc_dc_disp_col_en;       // UPDATED: 24-bit column enable mask (was 16-bit)
+    logic [4:0]                          mc_dc_disp_col_start;    // UPDATED: 5-bit distribution start (was 6-bit)
+    logic                                mc_dc_disp_right;        // NEW: Dispatch side (0=left, 1=right)
+    logic                                mc_dc_disp_broadcast;    // NEW: Broadcast mode (0=distribute, 1=broadcast)
     logic                                dc_mc_disp_done;
 
     // Master Control -> Compute Engine
@@ -243,6 +244,7 @@ import gemm_pkg::*;
         .o_dc_disp_man_4b       (mc_dc_disp_man_4b),
         .o_dc_disp_col_en       (mc_dc_disp_col_en),
         .o_dc_disp_col_start    (mc_dc_disp_col_start),
+        .o_dc_disp_right        (mc_dc_disp_right),      // NEW: Dispatch side
         .o_dc_disp_broadcast    (mc_dc_disp_broadcast),
         .i_dc_disp_done     (dc_mc_disp_done),
 
@@ -305,6 +307,7 @@ import gemm_pkg::*;
         .i_disp_man_4b      (mc_dc_disp_man_4b),
         .i_disp_col_en      (mc_dc_disp_col_en),
         .i_disp_col_start   (mc_dc_disp_col_start),
+        .i_disp_right       (mc_dc_disp_right),      // NEW: Dispatch side
         .i_disp_broadcast   (mc_dc_disp_broadcast),
         .o_disp_done        (dc_mc_disp_done),
 

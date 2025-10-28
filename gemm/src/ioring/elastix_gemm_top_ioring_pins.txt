@@ -1,11 +1,11 @@
         Pin Assignment Report - elastix_gemm_top
         ________________________________________
 
-ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-27 19:24
+ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-28 01:41
 
 Design: elastix_gemm_top
 Device: AC7t1500
-Generated on: 2025-10-27T19:24:02.701843332
+Generated on: 2025-10-28T01:41:28.987880286
 Host: workstation-10
 
 Pin Assignment =======
