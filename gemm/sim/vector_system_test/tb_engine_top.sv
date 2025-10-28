@@ -494,14 +494,31 @@ module tb_engine_top;
         //   - man_right: [0:511] × 256-bit
         //   - exp_left:  [0:511] × 8-bit
         //   - exp_right: [0:511] × 8-bit
+        //
+        // Multi-tile MATMUL: Each enabled tile computes dim_b × dim_c_per_tile results
+        // Total results = dim_b × dim_c_per_tile × num_enabled_tiles
+        //               = dim_b × C (where C = dim_c_per_tile × num_tiles)
+        integer num_enabled_tiles;
+        integer dim_c_per_tile;
+
+        // Count enabled tiles
+        num_enabled_tiles = $countones(col_en);
+        if (num_enabled_tiles == 0) num_enabled_tiles = 1;  // Safety: at least 1 tile
+
+        // Calculate columns per tile (C is total across all tiles)
+        dim_c_per_tile = C / num_enabled_tiles;
+
+        $display("[TB] MATMUL: B=%0d, C_total=%0d, C_per_tile=%0d, num_tiles=%0d, col_en=0x%06x",
+                 B, C, dim_c_per_tile, num_enabled_tiles, col_en);
+
         generate_tile_command(
             6,              // id (updated from 4)
             0,              // left_addr: Start of left matrix (separate address space)
             0,              // right_addr: Start of right matrix (separate address space)
-            B,              // dim_b: Batch dimension
-            C,              // dim_c: Column dimension
-            V,              // dim_v: Vector size
-            24'h000001,     // col_en: Single-tile mode (24-bit, only tile 0 enabled) - UPDATED
+            B,              // dim_b: Batch dimension (rows)
+            dim_c_per_tile, // dim_c: Columns PER TILE (not total!)
+            V,              // dim_v: Vector size (inner dimension)
+            col_en,         // col_en: Use parameterized tile enable mask
             1'b0,           // left_4b: 8-bit mantissa
             1'b0,           // right_4b: 8-bit mantissa
             1'b0,           // main_loop_left: Main loop over right dimension
