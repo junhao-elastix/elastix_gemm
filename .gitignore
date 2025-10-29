@@ -1,9 +1,7 @@
 gemm/build/results/
-gemm/demo/bitstream/*.flash
-gemm/demo/bitstream/*.hex
 gemm_simple/build/results/
-gemm_simple/demo/bitstream/*.flash
-gemm_simple/demo/bitstream/*.hex
+**/*.flash
+**/*.hex
 **/*.tmp
 **/*.log
 **/*.o
