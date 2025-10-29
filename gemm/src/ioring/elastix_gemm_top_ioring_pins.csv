@@ -1,11 +1,11 @@
 "Pin Assignment Report - elastix_gemm_top"
 
-"ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-28 01:41"
+"ACE -- Achronix CAD Environment -- Version 10.3.1 -- Date 2025-10-28 20:44"
 
 "Design: elastix_gemm_top"
 "Device: AC7t1500"
-"Generated on: 2025-10-28T01:41:28.979829241"
-"Host: workstation-10"
+"Generated on: 2025-10-28T20:44:42.385621832"
+"Host: workstation-06"
 "Pin Assignment"
 "Port Name","Direction","Ball Name","Bump Name","Bank","Ball","Pad/Macro Site","Site Polarity","Clock Capable Site","Reset Capable Site","Data Capable Site","Used as Clock","Used as Reset"
 "clk_gpio0_pad","OUT","GPIO_S0_BYTE1_BIT_10","GPIO_S0_BYTE1_BIT_10","BANK_GPIO_S0_BYTE1","BL49","u_gpio_phy_h_36_top_s0.u_gpio_phy_top.gen_iob_1__u_gpio_phy_iob.gen_aux_pad_10__gen_msio_vertical_data_pad_u_msio_data_pad","P","No","No","Yes","No","No"

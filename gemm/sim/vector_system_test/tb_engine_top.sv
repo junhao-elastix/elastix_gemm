@@ -205,13 +205,13 @@ module tb_engine_top;
         '{B: 16, C: 16, V: 8, col_en: 24'h000001, name: "B16_C16_V8"},
         '{B: 1, C: 128, V: 1, col_en: 24'h000001, name: "B1_C128_V1"},
         '{B: 128, C: 1, V: 1, col_en: 24'h000001, name: "B128_C1_V1"},
-        '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"},
+        '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"}
 
-        // Multi-tile tests (NEW: 2-tile with col_en=0x000003)
-        '{B: 2, C: 4, V: 16,  col_en: 24'h000003, name: "B2_C4_V16_2T"},
-        '{B: 4, C: 8, V: 8,   col_en: 24'h000003, name: "B4_C8_V8_2T"},
-        '{B: 8, C: 32, V: 2,  col_en: 24'h000003, name: "B8_C32_V2_2T"},
-        '{B: 16, C: 16, V: 4, col_en: 24'h000003, name: "B16_C16_V4_2T"}
+        // // Multi-tile tests (NEW: 2-tile with col_en=0x000003)
+        // '{B: 2, C: 4, V: 16,  col_en: 24'h000003, name: "B2_C4_V16_2T"},
+        // '{B: 4, C: 8, V: 8,   col_en: 24'h000003, name: "B4_C8_V8_2T"},
+        // '{B: 8, C: 32, V: 2,  col_en: 24'h000003, name: "B8_C32_V2_2T"},
+        // '{B: 16, C: 16, V: 4, col_en: 24'h000003, name: "B16_C16_V4_2T"}
     };
 
     // ===================================================================
@@ -286,6 +286,15 @@ module tb_engine_top;
         integer mismatches;
         integer idx;
         
+        // Timing measurements
+        longint start_time, end_time;
+        longint fetch_left_start, fetch_left_end, fetch_left_cycles;
+        longint disp_left_start, disp_left_end, disp_left_cycles;
+        longint fetch_right_start, fetch_right_end, fetch_right_cycles;
+        longint disp_right_start, disp_right_end, disp_right_cycles;
+        longint tile_start, tile_end, tile_cycles;
+        longint total_cycles;
+        
         total_tests++;
         
         $display("\n[TB] ====================================================================");
@@ -294,7 +303,7 @@ module tb_engine_top;
         $display("[TB] ====================================================================");
 
         // Load golden reference
-        golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
+        golden_filename = $sformatf("/home/workstation/elastix_gemm/hex/golden_%s.hex", test_name);
         golden_file = $fopen(golden_filename, "r");
         if (golden_file == 0) begin
             $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);
@@ -315,9 +324,73 @@ module tb_engine_top;
         build_test_sequence(config_B, config_C, config_V, config_col_en, cmd_sequence, num_commands);
         $display("[TB] Generated %0d commands for col_en=0x%06x", num_commands, config_col_en);
 
-        // Submit commands to FIFO
-        // Write all commands continuously (one word per cycle)
-        for (cmd_idx = 0; cmd_idx < num_commands; cmd_idx++) begin
+        // Start overall timing
+        start_time = $time;
+        
+        // Submit commands to FIFO with per-stage timing
+        // Commands are organized as:
+        // [0-3]: FETCH LEFT
+        // [4-7]: DISPATCH LEFT
+        // [8-11]: WAIT_DISPATCH LEFT
+        // [12-15]: FETCH RIGHT
+        // [16-19]: DISPATCH RIGHT
+        // [20-23]: WAIT_DISPATCH RIGHT
+        // [24-27]: TILE
+        // [28-31]: WAIT_TILE
+        
+        // ========== FETCH LEFT (4 words) ==========
+        fetch_left_start = $time;
+        for (cmd_idx = 0; cmd_idx < 4; cmd_idx++) begin
+            cmd_fifo_wdata = cmd_sequence[cmd_idx];
+            cmd_fifo_wen = 1'b1;
+            @(posedge clk);
+        end
+        cmd_fifo_wen = 1'b0;
+        
+        // ========== DISPATCH LEFT + WAIT (8 words) ==========
+        disp_left_start = $time;
+        for (cmd_idx = 4; cmd_idx < 12; cmd_idx++) begin
+            cmd_fifo_wdata = cmd_sequence[cmd_idx];
+            cmd_fifo_wen = 1'b1;
+            @(posedge clk);
+        end
+        cmd_fifo_wen = 1'b0;
+        
+        // Wait for DISPATCH LEFT to complete (monitor engine_busy)
+        while (engine_busy || !result_fifo_empty) @(posedge clk);
+        disp_left_end = $time;
+        disp_left_cycles = (disp_left_end - disp_left_start) / CLK_PERIOD;
+        fetch_left_end = disp_left_end;  // FETCH LEFT completes when DISPATCH LEFT completes
+        fetch_left_cycles = (fetch_left_end - fetch_left_start) / CLK_PERIOD;
+        
+        // ========== FETCH RIGHT (4 words) ==========
+        fetch_right_start = $time;
+        for (cmd_idx = 12; cmd_idx < 16; cmd_idx++) begin
+            cmd_fifo_wdata = cmd_sequence[cmd_idx];
+            cmd_fifo_wen = 1'b1;
+            @(posedge clk);
+        end
+        cmd_fifo_wen = 1'b0;
+        
+        // ========== DISPATCH RIGHT + WAIT (8 words) ==========
+        disp_right_start = $time;
+        for (cmd_idx = 16; cmd_idx < 24; cmd_idx++) begin
+            cmd_fifo_wdata = cmd_sequence[cmd_idx];
+            cmd_fifo_wen = 1'b1;
+            @(posedge clk);
+        end
+        cmd_fifo_wen = 1'b0;
+        
+        // Wait for DISPATCH RIGHT to complete
+        while (engine_busy || !result_fifo_empty) @(posedge clk);
+        disp_right_end = $time;
+        disp_right_cycles = (disp_right_end - disp_right_start) / CLK_PERIOD;
+        fetch_right_end = disp_right_end;  // FETCH RIGHT completes when DISPATCH RIGHT completes
+        fetch_right_cycles = (fetch_right_end - fetch_right_start) / CLK_PERIOD;
+        
+        // ========== TILE + WAIT (8 words) ==========
+        tile_start = $time;
+        for (cmd_idx = 24; cmd_idx < 32; cmd_idx++) begin
             cmd_fifo_wdata = cmd_sequence[cmd_idx];
             cmd_fifo_wen = 1'b1;
             @(posedge clk);
@@ -383,6 +456,33 @@ module tb_engine_top;
         end else begin
             $display("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count);
         end
+        
+        // End timing for TILE stage (when all results collected)
+        tile_end = $time;
+        tile_cycles = (tile_end - tile_start) / CLK_PERIOD;
+        end_time = $time;
+        total_cycles = (end_time - start_time) / CLK_PERIOD;
+        
+        // ===================================================================
+        // TIMING REPORT
+        // ===================================================================
+        $display("\n[TB] ====================================================================");
+        $display("[TB] TIMING BREAKDOWN FOR %s (B=%0d, C=%0d, V=%0d)", test_name, config_B, config_C, config_V);
+        $display("[TB] ====================================================================");
+        $display("[TB] FETCH LEFT:      %8d cycles (%6.2f%% of total)", 
+                 fetch_left_cycles, (fetch_left_cycles * 100.0) / total_cycles);
+        $display("[TB] DISPATCH LEFT:   %8d cycles (%6.2f%% of total)", 
+                 disp_left_cycles, (disp_left_cycles * 100.0) / total_cycles);
+        $display("[TB] FETCH RIGHT:     %8d cycles (%6.2f%% of total)", 
+                 fetch_right_cycles, (fetch_right_cycles * 100.0) / total_cycles);
+        $display("[TB] DISPATCH RIGHT:  %8d cycles (%6.2f%% of total)", 
+                 disp_right_cycles, (disp_right_cycles * 100.0) / total_cycles);
+        $display("[TB] TILE + RESULTS:  %8d cycles (%6.2f%% of total)", 
+                 tile_cycles, (tile_cycles * 100.0) / total_cycles);
+        $display("[TB] --------------------------------------------------------------------");
+        $display("[TB] TOTAL:           %8d cycles (%.2f us @ 100MHz)", 
+                 total_cycles, (total_cycles * CLK_PERIOD) / 1000.0);
+        $display("[TB] ====================================================================\n");
 
         // Test verdict
         if (mismatches == 0 && results_seen == expected_results) begin

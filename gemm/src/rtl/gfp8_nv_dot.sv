@@ -26,10 +26,11 @@
 //  5. Sum aligned mantissas
 //  6. Register final result
 //
-// Latency: 3 clock cycles (with input register to prevent corruption)
-//  - Cycle 0: Register inputs (CRITICAL: holds inputs stable)
-//  - Cycle 1: Group dot products (gfp8_group_dot = 1 cycle)
-//  - Cycle 2: Exponent alignment + summation + register
+// Latency: 4 clock cycles (optimized - removed unnecessary pipeline stages)
+//  - Cycle 0: input_valid assertion + input capture
+//  - Cycle 1: group_dot computation
+//  - Cycle 2: Exponent alignment + summation
+//  - Cycle 3: Final output valid
 //
 // Author: Refactoring from compute_engine.sv
 // Date: Thu Oct 9 2025
@@ -57,104 +58,61 @@ module gfp8_nv_dot (
 );
 
     // ===================================================================
-    // INPUT REGISTERS (TWO stages to prevent same-cycle read issues)
+    // INPUT REGISTERS (Single stage - inputs are stable from BCV controller)
     // ===================================================================
-    // Problem 1: BCV controller reuses nv_exp/nv_man registers for next V iteration
-    // Problem 2: Combinational logic in gfp8_group_dot reads on same cycle as register write
-    // Solution: Two-stage pipeline: capture -> stable -> compute
+    // BCV controller guarantees stable inputs during ST_COMPUTE_NV state
+    // Input registers capture data when i_input_valid pulses high
     
-    // Stage 1: Capture incoming data
+    // Single capture stage
     logic [31:0]  exp_left_captured, exp_right_captured;
     logic [255:0] man_left_captured [0:3], man_right_captured [0:3];
-    
-    // Stage 2: Intermediate propagation
-    logic [31:0]  exp_left_prop, exp_right_prop;
-    logic [255:0] man_left_prop [0:3], man_right_prop [0:3];
-    
-    // Stage 3: Stable data for group_dot combinational logic (must be stable for full cycle before GROUP_DOT reads)
-    logic [31:0]  exp_left_stable, exp_right_stable;
-    logic [255:0] man_left_stable [0:3], man_right_stable [0:3];
     
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             exp_left_captured <= 32'd0;
             exp_right_captured <= 32'd0;
-            exp_left_prop <= 32'd0;
-            exp_right_prop <= 32'd0;
-            exp_left_stable <= 32'd0;
-            exp_right_stable <= 32'd0;
             for (int i = 0; i < 4; i++) begin
                 man_left_captured[i] <= 256'd0;
                 man_right_captured[i] <= 256'd0;
-                man_left_prop[i] <= 256'd0;
-                man_right_prop[i] <= 256'd0;
-                man_left_stable[i] <= 256'd0;
-                man_right_stable[i] <= 256'd0;
             end
         end else begin
-            // Stage 1: Capture new data when i_input_valid is high
+            // Capture new data when i_input_valid is high
             if (i_input_valid) begin
                 exp_left_captured <= i_exp_left;
                 exp_right_captured <= i_exp_right;
                 man_left_captured <= i_man_left;
                 man_right_captured <= i_man_right;
                 `ifdef SIMULATION
-                $display("[NV_DOT_CAPTURE] @%0t Stage 1: man_left[0]=0x%064x",
+                $display("[NV_DOT_CAPTURE] @%0t Captured: man_left[0]=0x%064x",
                          $time, i_man_left[0]);
-                $display("[NV_DOT_CAPTURE] @%0t Stage 1 bytes[0:3]: 0x%02x%02x%02x%02x",
-                         $time, i_man_left[0][7:0], i_man_left[0][15:8], 
-                         i_man_left[0][23:16], i_man_left[0][31:24]);
                 `endif
             end
-            
-            // Stage 2: Propagate captured -> prop (1 cycle delay)
-            exp_left_prop <= exp_left_captured;
-            exp_right_prop <= exp_right_captured;
-            man_left_prop <= man_left_captured;
-            man_right_prop <= man_right_captured;
-            
-            // Stage 3: Propagate prop -> stable (1 more cycle delay)
-            exp_left_stable <= exp_left_prop;
-            exp_right_stable <= exp_right_prop;
-            man_left_stable <= man_left_prop;
-            man_right_stable <= man_right_prop;
-            `ifdef SIMULATION
-            if (man_left_prop[0] != 0) begin
-                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[0]=0x%064x (from prop)",
-                         $time, man_left_prop[0]);
-                $display("[NV_DOT_STABLE_WRITE] @%0t man_left_stable[3]=0x%064x (from prop)",
-                         $time, man_left_prop[3]);
-            end
-            `endif
         end
     end
     
     // ===================================================================
-    // Unpack Byte-Aligned Exponents (from registered inputs)
+    // Unpack Byte-Aligned Exponents (from captured inputs)
     // ===================================================================
     
-    // Extract 5-bit exponents from byte-aligned registered input
+    // Extract 8-bit exponents from byte-aligned captured input
     logic [7:0] exp_left_unpacked [0:3];
     logic [7:0] exp_right_unpacked [0:3];
     
-    assign exp_left_unpacked[0] = exp_left_stable[7:0];  // Group 0
-    assign exp_left_unpacked[1] = exp_left_stable[15:8];  // Group 1
-    assign exp_left_unpacked[2] = exp_left_stable[23:16];  // Group 2
-    assign exp_left_unpacked[3] = exp_left_stable[31:24];  // Group 3
+    assign exp_left_unpacked[0] = exp_left_captured[7:0];    // Group 0
+    assign exp_left_unpacked[1] = exp_left_captured[15:8];   // Group 1
+    assign exp_left_unpacked[2] = exp_left_captured[23:16];  // Group 2
+    assign exp_left_unpacked[3] = exp_left_captured[31:24];  // Group 3
     
-    assign exp_right_unpacked[0] = exp_right_stable[7:0];
-    assign exp_right_unpacked[1] = exp_right_stable[15:8];
-    assign exp_right_unpacked[2] = exp_right_stable[23:16];
-    assign exp_right_unpacked[3] = exp_right_stable[31:24];
+    assign exp_right_unpacked[0] = exp_right_captured[7:0];
+    assign exp_right_unpacked[1] = exp_right_captured[15:8];
+    assign exp_right_unpacked[2] = exp_right_captured[23:16];
+    assign exp_right_unpacked[3] = exp_right_captured[31:24];
     
     `ifdef SIMULATION
-    always @(exp_left_stable or exp_right_stable) begin
-        if (exp_left_stable != 0 || exp_right_stable != 0) begin
-            $display("[NV_DOT_STABLE] @%0t exp_left_stable=0x%08x, exp_right_stable=0x%08x", $time, exp_left_stable, exp_right_stable);
-            $display("  exp_left_unpacked:  [0]=%0d [1]=%0d [2]=%0d [3]=%0d",
-                     exp_left_unpacked[0], exp_left_unpacked[1], exp_left_unpacked[2], exp_left_unpacked[3]);
-            $display("  exp_right_unpacked: [0]=%0d [1]=%0d [2]=%0d [3]=%0d",
-                     exp_right_unpacked[0], exp_right_unpacked[1], exp_right_unpacked[2], exp_right_unpacked[3]);
+    always @(exp_left_captured or exp_right_captured) begin
+        if (exp_left_captured != 0 || exp_right_captured != 0) begin
+            $display("[NV_DOT_UNPACK] @%0t exp_left=0x%08x, exp_right=0x%08x", 
+                     $time, exp_left_captured, exp_right_captured);
         end
     end
     `endif
@@ -179,9 +137,9 @@ module gfp8_nv_dot (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
                 .i_exp_left         (exp_left_unpacked[g]),
-                .i_man_left         (man_left_stable[g]),    // Use STABLE mantissas (2-cycle delay)
+                .i_man_left         (man_left_captured[g]),    // Use captured mantissas directly
                 .i_exp_right        (exp_right_unpacked[g]),
-                .i_man_right        (man_right_stable[g]),   // Use STABLE mantissas (2-cycle delay)
+                .i_man_right        (man_right_captured[g]),   // Use captured mantissas directly
                 .o_result_mantissa  (group_mantissa[g]),
                 .o_result_exponent  (group_exponent[g])
             );
@@ -232,7 +190,7 @@ module gfp8_nv_dot (
     end
     
     // ===================================================================
-    // Output Registers (2nd cycle latency)
+    // Output Registers (Final cycle latency)
     // ===================================================================
     logic signed [31:0] result_mantissa_reg;
     logic signed [7:0]  result_exponent_reg;

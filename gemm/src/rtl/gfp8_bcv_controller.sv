@@ -11,16 +11,19 @@
 //
 // State Machine:
 //  IDLE         -> Wait for TILE command
-//  FILL_BUFFER  -> Load exponent + 4 mantissa lines for both NV_left and NV_right (9 cycles)
-//                 Parallel exp+man reads, 2-cycle BRAM latency per group, 4 groups
-//  COMPUTE_NV   -> Compute NV dot product (3 cycles: 2-cycle wait + 1 transition)
+//  FILL_BUFFER  -> Load 4 groups (exp+man) for both NV_left and NV_right (5 cycles)
+//                  TRUE 1-cycle BRAM latency: Combinational addr → BRAM → registered output
+//                  Sets ready flag on cycle 4, transitions on cycle 5
+//  COMPUTE_NV   -> Compute NV dot product (4 cycles)  
 //  ACCUM        -> Accumulate result into V-loop accumulator (1 cycle)
 //  RETURN       -> Output final result after V iterations complete (1 cycle)
 //
-// Latency per output: 9 (fill) + 3 (compute) + 1 (accum) = 13 cycles per V
-//                     Total: 13xV + 1 (return) cycles per BxC result
+// Latency per output: 5 (fill) + 4 (compute) + 1 (accum) = 10 cycles per V
+//                     Total: 10xV + 1 (return) cycles per BxC result
 //
-// Address Space: 9-bit addresses for 512-line tile_bram (0-511)
+// OPTIMIZATION: Direct combinational connection (no BCV output registers!)
+//   Cycle 0 (IDLE→FILL): Issue G0 read → Cycle 1: Capture G0, Issue G1 → ...
+//   Cycle 4: Capture G3, set ready flag → Cycle 5: Transition on flag
 //
 // Author: Refactoring from compute_engine.sv
 // Date: Fri Oct 10 2025
@@ -95,6 +98,9 @@ module gfp8_bcv_controller (
     
     assign i_tile_en_rising = i_tile_en && !i_tile_en_prev;
     
+    // Fill buffer ready flag (set when last group captured)
+    logic fill_buffer_ready;
+    
     // ===================================================================
     // Native Vector Buffers (Local Storage)
     // ===================================================================
@@ -107,9 +113,8 @@ module gfp8_bcv_controller (
     logic [31:0]  nv_right_exp;        // 4 bytes (one per group)
     logic [255:0] nv_right_man [0:3];  // 4 lines x 256 bits
     
-    // Fill cycle counter (0-10: grab exponent + 4 mantissa lines from both mem_left and mem_right)
-    // Each read takes 2 cycles (pipelined): issue, wait, capture
-    logic [4:0] fill_cycle;  // 5 bits to count 0-16
+    // Fill cycle counter (0-4: TRUE 1-cycle latency, 4 groups + 1 final cycle)
+    logic [2:0] fill_cycle;  // 3 bits to count 0-7
     
     // ===================================================================
     // NV Dot Product Instance
@@ -139,7 +144,7 @@ module gfp8_bcv_controller (
     logic signed [31:0] accum_mantissa;
     logic signed [7:0]  accum_exponent;
     
-    // Compute pipeline counter (track 6-cycle latency: 3-stage input + 2 compute + 1 output)
+    // Compute pipeline counter (track 4-cycle latency)
     logic [2:0] compute_wait;
     
     // ===================================================================
@@ -156,22 +161,19 @@ module gfp8_bcv_controller (
             end
             
             ST_FILL_BUFFER: begin
-                // Optimized: Parallel exp+man reads, 2 cycles each, 4 groups = 8 cycles + 1 wait
-                // Cycle 0-1: Group 0, Cycle 2-3: Group 1, Cycle 4-5: Group 2, Cycle 6-7: Group 3, Cycle 8: transition
-                if (fill_cycle >= 5'd9) begin  // 8 cycles for parallel reads + 1 for final write
+                // TRUE 1-cycle BRAM latency (combinational BCV outputs)
+                // Cycle 0: Issue G0 | Cycle 1: Capture G0, Issue G1
+                // Cycle 2: Capture G1, Issue G2 | Cycle 3: Capture G2, Issue G3
+                // Cycle 4: Capture G3, set ready flag
+                // Cycle 5: Transition on ready flag
+                if (fill_buffer_ready) begin
                     state_next = ST_COMPUTE_NV;
                 end
             end
             
             ST_COMPUTE_NV: begin
-                // Wait for gfp8_nv_dot 6-cycle pipeline (3-stage input + 2 compute + 1 output)
-                // Cycle 0: i_input_valid high, capture to man_left_captured
-                // Cycle 1: propagate man_left_captured -> man_left_prop
-                // Cycle 2: propagate man_left_prop -> man_left_stable
-                // Cycle 3: GROUP_DOT can now read stable data (combinational compute)
-                // Cycle 4: GROUP_DOT output registered
-                // Cycle 5: NV_DOT summation and output ready
-                if (compute_wait == 3'd5) begin
+                // Wait for gfp8_nv_dot 4-cycle pipeline
+                if (compute_wait == 3'd3) begin
                     state_next = ST_ACCUM;
                 end
             end
@@ -216,167 +218,67 @@ module gfp8_bcv_controller (
     end
     
     // ===================================================================
-    // BRAM Read Address Calculation - UNIFIED ADDRESSING
+    // BRAM Read Address Generation - DIRECT (COMBINATIONAL) CONNECTION
     // ===================================================================
-    // NEW: Unified addressing: line_addr = nv_idx * 4 + g_idx
-    //   - nv_idx: Native vector index = b_idx * V + v_idx (for left) or c_idx * V + v_idx (for right)
-    //   - g_idx: Group index within NV [0-3]
-    //   - Exp and Man BRAMs share same line addressing (separate BRAMs, same index)
+    // TRUE 1-cycle latency: Address generated combinationally, data back next cycle
+    // No registered outputs - direct wire connection to tile_bram
+    //
+    // Pipeline:
+    //   Cycle N:   Generate address (comb) → BRAM input
+    //   Cycle N+1: BRAM output ready → Capture data, generate next address
     
-    logic [8:0]  left_addr_next, right_addr_next;  // 9-bit for 512-line tile_bram
-    logic [8:0]  left_exp_addr_next, right_exp_addr_next;
-    logic left_en_next, right_en_next;
-    logic left_exp_en_next, right_exp_en_next;
-
     always_comb begin
-        left_addr_next = 9'd0;
-        right_addr_next = 9'd0;
-        left_exp_addr_next = 9'd0;
-        right_exp_addr_next = 9'd0;
-        left_en_next = 1'b0;
-        right_en_next = 1'b0;
-        left_exp_en_next = 1'b0;
-        right_exp_en_next = 1'b0;
+        // Default: no reads
+        o_man_left_rd_addr = 9'd0;
+        o_man_right_rd_addr = 9'd0;
+        o_exp_left_rd_addr = 9'd0;
+        o_exp_right_rd_addr = 9'd0;
+        o_man_left_rd_en = 1'b0;
+        o_man_right_rd_en = 1'b0;
+        o_exp_left_rd_en = 1'b0;
+        o_exp_right_rd_en = 1'b0;
         
-        if (state_reg == ST_FILL_BUFFER) begin
-            // Calculate NV index with base address from MATMUL command
-            // Base addresses are in BRAM lines (4 lines per NV), convert to NV index
+        if (state_reg == ST_FILL_BUFFER && fill_cycle < 4'd4) begin
+            // Calculate NV indices
             automatic logic [15:0] left_nv_index;
             automatic logic [15:0] right_nv_index;
             automatic logic [15:0] left_base_nv;
             automatic logic [15:0] right_base_nv;
-            automatic logic [8:0] left_line_addr;   // 9-bit for 512-line tile_bram (0-511)
-            automatic logic [8:0] right_line_addr;  // 9-bit for 512-line tile_bram (0-511)
-            automatic logic [1:0] g_idx;
-
-            // Convert line addresses to NV indices (divide by 4: addr[8:2])
-            // Use registered values for timing stability
+            automatic logic [8:0] left_line_addr;
+            automatic logic [8:0] right_line_addr;
+            
+            // Convert base addresses from line units to NV units (divide by 4)
             left_base_nv = {9'd0, left_base_reg[8:2]};
             right_base_nv = {9'd0, right_base_reg[8:2]};
             
-            // Add base address + relative offset from B/C/V loop counters
+            // Calculate NV index based on loop counters
             left_nv_index = left_base_nv + ({8'd0, b_idx} * {8'd0, dim_v_reg} + {8'd0, v_idx});
             right_nv_index = right_base_nv + ({8'd0, c_idx} * {8'd0, dim_v_reg} + {8'd0, v_idx});
             
-            `ifdef SIMULATION
-            if (fill_cycle == 4'd0) begin
-                $display("[BCV_ADDR] @%0t [B%0d,C%0d,V%0d] base_nv: L=%0d R=%0d, nv_idx: L=%0d R=%0d, V=%0d",
-                         $time, b_idx, c_idx, v_idx, left_base_nv, right_base_nv, 
-                         left_nv_index, right_nv_index, dim_v_reg);
-            end
-            `endif
+            // Convert NV index to line address and add group offset
+            // fill_cycle 0→G0, 1→G1, 2→G2, 3→G3
+            left_line_addr = {left_nv_index[6:0], 2'b00} + {7'd0, fill_cycle[1:0]};
+            right_line_addr = {right_nv_index[6:0], 2'b00} + {7'd0, fill_cycle[1:0]};
             
-            // OPTIMIZED: Read exp+man in PARALLEL with 2-cycle holds
-            // Total: 8 cycles (4 groups × 2 cycles) instead of 24 cycles (was sequential + 3-cycle holds)
-            // Performance: 3× faster buffer fill!
-            if (fill_cycle == 3'd0 || fill_cycle == 3'd1) begin
-                // Cycles 0-1: Read exp[0] + man[0] in parallel (2-cycle hold for BRAM latency)
-                g_idx = 2'd0;
-                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};   // 9-bit address calc
-                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx}; // 9-bit address calc
-
-                // Exponent read
-                left_exp_addr_next = left_line_addr;   // Already 9-bit
-                right_exp_addr_next = right_line_addr; // Already 9-bit
-                left_exp_en_next = 1'b1;
-                right_exp_en_next = 1'b1;
-
-                // Mantissa read (parallel!)
-                left_addr_next = left_line_addr;
-                right_addr_next = right_line_addr;
-                left_en_next = 1'b1;
-                right_en_next = 1'b1;
-
-            end else if (fill_cycle == 3'd2 || fill_cycle == 3'd3) begin
-                // Cycles 2-3: Read exp[1] + man[1] in parallel
-                g_idx = 2'd1;
-                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};   // 9-bit address calc
-                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx}; // 9-bit address calc
-
-                left_exp_addr_next = left_line_addr;   // Already 9-bit
-                right_exp_addr_next = right_line_addr; // Already 9-bit
-                left_exp_en_next = 1'b1;
-                right_exp_en_next = 1'b1;
-
-                left_addr_next = left_line_addr;
-                right_addr_next = right_line_addr;
-                left_en_next = 1'b1;
-                right_en_next = 1'b1;
-
-            end else if (fill_cycle == 3'd4 || fill_cycle == 3'd5) begin
-                // Cycles 4-5: Read exp[2] + man[2] in parallel
-                g_idx = 2'd2;
-                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};   // 9-bit address calc
-                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx}; // 9-bit address calc
-
-                left_exp_addr_next = left_line_addr;   // Already 9-bit
-                right_exp_addr_next = right_line_addr; // Already 9-bit
-                left_exp_en_next = 1'b1;
-                right_exp_en_next = 1'b1;
-
-                left_addr_next = left_line_addr;
-                right_addr_next = right_line_addr;
-                left_en_next = 1'b1;
-                right_en_next = 1'b1;
-
-            end else if (fill_cycle == 3'd6 || fill_cycle == 3'd7) begin
-                // Cycles 6-7: Read exp[3] + man[3] in parallel
-                g_idx = 2'd3;
-                left_line_addr = ({left_nv_index[6:0], 2'b00}) + {7'd0, g_idx};   // 9-bit address calc
-                right_line_addr = ({right_nv_index[6:0], 2'b00}) + {7'd0, g_idx}; // 9-bit address calc
-
-                left_exp_addr_next = left_line_addr;   // Already 9-bit
-                right_exp_addr_next = right_line_addr; // Already 9-bit
-                left_exp_en_next = 1'b1;
-                right_exp_en_next = 1'b1;
-
-                left_addr_next = left_line_addr;
-                right_addr_next = right_line_addr;
-                left_en_next = 1'b1;
-                right_en_next = 1'b1;
-            end
-        end
-    end
-    
-    // Register BRAM control signals (mantissa and exponent)
-    always_ff @(posedge i_clk or negedge i_reset_n) begin
-        if (!i_reset_n) begin
-            o_man_left_rd_addr <= 9'd0;    // 9-bit for 512-line tile_bram
-            o_man_left_rd_en <= 1'b0;
-            o_man_right_rd_addr <= 9'd0;   // 9-bit for 512-line tile_bram
-            o_man_right_rd_en <= 1'b0;
-            o_exp_left_rd_addr <= 9'd0;
-            o_exp_left_rd_en <= 1'b0;
-            o_exp_right_rd_addr <= 9'd0;
-            o_exp_right_rd_en <= 1'b0;
-        end else begin
-            // Mantissa addresses and enables
-            o_man_left_rd_addr <= left_addr_next;
-            o_man_left_rd_en <= left_en_next;
-            o_man_right_rd_addr <= right_addr_next;
-            o_man_right_rd_en <= right_en_next;
-
-            // Exponent addresses and enables
-            o_exp_left_rd_addr <= left_exp_addr_next;
-            o_exp_left_rd_en <= left_exp_en_next;
-            o_exp_right_rd_addr <= right_exp_addr_next;
-            o_exp_right_rd_en <= right_exp_en_next;
-            
-            `ifdef SIMULATION
-            if (b_idx == 0 && c_idx == 0 && v_idx == 0 && fill_cycle <= 5'd5) begin  // Show cycles 0-5 for first iteration
-                $display("[BCV_ADDR_REG] @%0t cycle=%0d: right_exp_addr_next=%0d, will be registered to o_exp_right_rd_addr",
-                         $time, fill_cycle, right_exp_addr_next);
-            end
-            `endif
+            // Combinational assignment - direct to BRAM (no registers!)
+            o_man_left_rd_addr = left_line_addr;
+            o_man_right_rd_addr = right_line_addr;
+            o_exp_left_rd_addr = left_line_addr;
+            o_exp_right_rd_addr = right_line_addr;
+            o_man_left_rd_en = 1'b1;
+            o_man_right_rd_en = 1'b1;
+            o_exp_left_rd_en = 1'b1;
+            o_exp_right_rd_en = 1'b1;
         end
     end
     
     // ===================================================================
-    // Buffer Filling Logic (6 cycles to grab both NVs: 1 exp + 4 mantissa + 1 capture)
+    // Buffer Filling Logic (5 cycles to grab both NVs + flag for transition)
     // ===================================================================
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             fill_cycle <= 3'd0;
+            fill_buffer_ready <= 1'b0;
             nv_left_exp <= 32'd0;
             nv_right_exp <= 32'd0;
             for (int i = 0; i < 4; i++) begin
@@ -386,95 +288,57 @@ module gfp8_bcv_controller (
         end else begin
             case (state_reg)
                 ST_IDLE: begin
-                    fill_cycle <= 4'd0;
+                    fill_cycle <= 3'd0;
+                    fill_buffer_ready <= 1'b0;
                 end
                 
                 ST_FILL_BUFFER: begin
-                    `ifdef SIMULATION
-                    if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                        $display("[BCV_FILL_STATE] @%0t ENTERED ST_FILL_BUFFER, fill_cycle=%0d", $time, fill_cycle);
-                    end
-                    `endif
-                    // OPTIMIZED: Parallel exp+man reads with 2-cycle BRAM latency
-                    // Performance: 8 cycles (vs 24 cycles) = 3× faster!
-                    // Cycle 0-1: Hold addr g=0 | Cycle 2: Capture exp[0]+man[0]
-                    // Cycle 2-3: Hold addr g=1 | Cycle 4: Capture exp[1]+man[1]
-                    // Cycle 4-5: Hold addr g=2 | Cycle 6: Capture exp[2]+man[2]
-                    // Cycle 6-7: Hold addr g=3 | Cycle 8: Capture exp[3]+man[3]
-                    if (fill_cycle == 3'd0 || fill_cycle == 3'd1) begin
-                        // Cycles 0-1: Wait for g=0 data (2-cycle BRAM latency)
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd2) begin
-                        // Cycle 2: Capture exp[0] + man[0] (PARALLEL!)
+                    // TRUE 1-cycle BRAM latency: combinational address → registered BRAM output
+                    // Cycle 0: Issue G0 | Cycle 1: Capture G0, Issue G1
+                    // Cycle 2: Capture G1, Issue G2 | Cycle 3: Capture G2, Issue G3
+                    // Cycle 4: Capture G3, set ready flag → Cycle 5: Transition
+                    if (fill_cycle == 3'd1) begin
+                        // Cycle 1: Capture G0 (from cycle 0 read)
                         nv_left_exp[7:0] <= i_exp_left_rd_data;
                         nv_right_exp[7:0] <= i_exp_right_rd_data;
                         nv_left_man[0] <= i_man_left_rd_data;
                         nv_right_man[0] <= i_man_right_rd_data;
-                        `ifdef SIMULATION
-                        if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_PARALLEL] @%0t V=%0d G=0: exp_L=0x%02x exp_R=0x%02x man_L=0x%064x man_R=0x%064x",
-                                     $time, v_idx, i_exp_left_rd_data, i_exp_right_rd_data,
-                                     i_man_left_rd_data, i_man_right_rd_data);
-                        end
-                        `endif
                         fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd3) begin
-                        // Cycle 3: Wait for g=1 data
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd4) begin
-                        // Cycle 4: Capture exp[1] + man[1] (PARALLEL!)
+                    end else if (fill_cycle == 3'd2) begin
+                        // Cycle 2: Capture G1
                         nv_left_exp[15:8] <= i_exp_left_rd_data;
                         nv_right_exp[15:8] <= i_exp_right_rd_data;
                         nv_left_man[1] <= i_man_left_rd_data;
                         nv_right_man[1] <= i_man_right_rd_data;
-                        `ifdef SIMULATION
-                        if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_PARALLEL] @%0t V=%0d G=1: exp_L=0x%02x exp_R=0x%02x",
-                                     $time, v_idx, i_exp_left_rd_data, i_exp_right_rd_data);
-                        end
-                        `endif
                         fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd5) begin
-                        // Cycle 5: Wait for g=2 data
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd6) begin
-                        // Cycle 6: Capture exp[2] + man[2] (PARALLEL!)
+                    end else if (fill_cycle == 3'd3) begin
+                        // Cycle 3: Capture G2
                         nv_left_exp[23:16] <= i_exp_left_rd_data;
                         nv_right_exp[23:16] <= i_exp_right_rd_data;
                         nv_left_man[2] <= i_man_left_rd_data;
                         nv_right_man[2] <= i_man_right_rd_data;
-                        `ifdef SIMULATION
-                        if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_PARALLEL] @%0t V=%0d G=2: exp_L=0x%02x exp_R=0x%02x",
-                                     $time, v_idx, i_exp_left_rd_data, i_exp_right_rd_data);
-                        end
-                        `endif
                         fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd7) begin
-                        // Cycle 7: Wait for g=3 data
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 4'd8) begin
-                        // Cycle 8: Capture exp[3] + man[3] (PARALLEL!)
+                    end else if (fill_cycle == 3'd4) begin
+                        // Cycle 4: Capture G3, set ready flag
                         nv_left_exp[31:24] <= i_exp_left_rd_data;
                         nv_right_exp[31:24] <= i_exp_right_rd_data;
                         nv_left_man[3] <= i_man_left_rd_data;
                         nv_right_man[3] <= i_man_right_rd_data;
-                        `ifdef SIMULATION
-                        if (b_idx == 0 && c_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_PARALLEL] @%0t V=%0d G=3: exp_L=0x%02x exp_R=0x%02x man_L=0x%064x man_R=0x%064x",
-                                     $time, v_idx, i_exp_left_rd_data, i_exp_right_rd_data,
-                                     i_man_left_rd_data, i_man_right_rd_data);
-                        end
-                        `endif
+                        fill_buffer_ready <= 1'b1;  // Signal ready for transition
+                        fill_cycle <= 3'd0;  // Reset for next iteration
+                    end else begin
+                        // Cycle 0: Just increment (issuing first read combinationally)
                         fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 4'd9) begin
-                        // Cycle 9: Reset for next V iteration (state transition in FSM)
-                        fill_cycle <= 4'd0;
                     end
                 end
                 
+                ST_COMPUTE_NV: begin
+                    // Clear the ready flag once we've transitioned
+                    fill_buffer_ready <= 1'b0;
+                end
+                
                 default: begin
-                    fill_cycle <= 4'd0;
+                    fill_cycle <= 3'd0;
                 end
             endcase
         end
@@ -489,21 +353,8 @@ module gfp8_bcv_controller (
         end else begin
             case (state_reg)
                 ST_COMPUTE_NV: begin
-                    if (compute_wait < 3'd5) begin
-                        `ifdef SIMULATION
-                        if (compute_wait == 3'd0 && b_idx == 0 && v_idx == 0) begin
-                            $display("[BCV_COMPUTE_START] @%0t [B%0d,C%0d,V%0d]", $time, b_idx, c_idx, v_idx);
-                            $display("  nv_left_exp=0x%08x  [G0=0x%02x, G1=0x%02x, G2=0x%02x, G3=0x%02x]",
-                                     nv_left_exp, nv_left_exp[7:0], nv_left_exp[15:8], nv_left_exp[23:16], nv_left_exp[31:24]);
-                            $display("  nv_right_exp=0x%08x [G0=0x%02x, G1=0x%02x, G2=0x%02x, G3=0x%02x]",
-                                     nv_right_exp, nv_right_exp[7:0], nv_right_exp[15:8], nv_right_exp[23:16], nv_right_exp[31:24]);
-                        end
-                        if (compute_wait == 3'd4) begin
-                            $display("[BCV_NV_DOT_RESULT] @%0t [B%0d,C%0d,V%0d] mantissa=%0d (0x%08x), exponent=%0d",
-                                     $time, b_idx, c_idx, v_idx, nv_dot_mantissa, nv_dot_mantissa, nv_dot_exponent);
-                        end
-                        `endif
-                        compute_wait <= compute_wait + 1;  // Count: 0->1->2->3->4->5
+                    if (compute_wait < 3'd3) begin
+                        compute_wait <= compute_wait + 1;  // Count: 0→1→2→3
                     end
                 end
                 default: begin

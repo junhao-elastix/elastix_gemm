@@ -224,6 +224,47 @@ import gemm_pkg::*;
     logic [3:0]  unpack_exp_packed_rd_addr_reg; // 0-15: which exp_packed line to read
     logic [MAN_WIDTH-1:0] exp_packed_rd_data_wire; // Data from exp_packed BRAM
 
+    // DISPATCH pipeline signals (moved before first use)
+    logic [9:0] man_rd_addr_pipe;    // Pipeline for source address [0-511]
+    logic [9:0] man_wr_addr_pipe;    // Pipeline for destination address [0-511]
+    logic [9:0] exp_rd_addr_pipe;    // Pipeline for source address [0-511]
+    logic [9:0] exp_wr_addr_pipe;    // Pipeline for destination address [0-511]
+    logic signed [10:0] disp_write_cnt;  // Signed to allow -1 initial value
+    logic       copy_active_pipe;
+    logic       man_wr_valid_pipe;   // Valid signal for mantissa write
+    logic       exp_wr_valid_pipe;   // Valid signal for exponent write
+    logic [4:0] physical_tile_id_pipe;   // Physical tile ID (0-23) for future round-robin
+    logic       man_wr_valid_delayed;
+    logic       exp_wr_valid_delayed;
+    logic       batch_complete_pending;    // Flag to delay setting done by 1 cycle
+    logic       set_batch_complete;        // Combinational flag indicating batch just completed
+
+    // Internal read addresses for DISPATCH operation
+    logic [TILE_ADDR_WIDTH-1:0] internal_man_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_man_right_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_exp_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] internal_exp_right_rd_addr;
+    logic                       internal_rd_en;
+
+    // Muxed read addresses (select internal during DISPATCH, external otherwise)
+    logic [TILE_ADDR_WIDTH-1:0] muxed_man_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_man_right_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_left_rd_addr;
+    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_right_rd_addr;
+    logic                       muxed_man_left_rd_en;
+    logic                       muxed_man_right_rd_en;
+    logic                       muxed_exp_left_rd_en;
+    logic                       muxed_exp_right_rd_en;
+
+    // Multi-tile write enable - COMBINATIONAL (no pipeline delay)
+    logic [23:0] tile_wr_en_comb;
+
+    // Pipeline disp_right_reg for synchronization with write valid signals
+    logic disp_right_pipe;
+
+    // Parallel exponent unpacking counter
+    logic [9:0] unpack_idx_reg;
+
     // ===================================================================
     // Helper Functions
     // ===================================================================
@@ -574,48 +615,7 @@ import gemm_pkg::*;
     // ===================================================================
     // During ST_DISP_BUSY, read from dispatcher_bram/exp_bram and write to tile_bram
     // The BRAM read has 1-cycle latency, so we pipeline: read cycle N, write cycle N+1
-
-    logic [9:0] man_rd_addr_pipe;    // Pipeline for source address [0-511]
-    logic [9:0] man_wr_addr_pipe;    // Pipeline for destination address [0-511]
-    logic [9:0] exp_rd_addr_pipe;    // Pipeline for source address [0-511]
-    logic [9:0] exp_wr_addr_pipe;    // Pipeline for destination address [0-511]
-
-    // Write counter lags read counter by 1 due to BRAM latency
-    logic signed [10:0] disp_write_cnt;  // Signed to allow -1 initial value
-    logic       copy_active_pipe;
-    logic       man_wr_valid_pipe;   // Valid signal for mantissa write
-    logic       exp_wr_valid_pipe;   // Valid signal for exponent write
-
-    // Multi-tile write enable pipeline (1-stage to avoid blocking first write)
-    logic [4:0] physical_tile_id_pipe;   // Physical tile ID (0-23) for future round-robin
-    // tile_wr_en now uses combinational logic (tile_wr_en_comb) - no pipeline register needed
-
-    // BRAM read latency compensation - delay write valid by 1 cycle
-    logic       man_wr_valid_delayed;
-    logic       exp_wr_valid_delayed;
-
-    // Delay done signals to allow final delayed write to complete
-    logic       batch_complete_pending;    // Flag to delay setting done by 1 cycle
-    logic       set_batch_complete;        // Combinational flag indicating batch just completed
-
-    // Internal read addresses for DISPATCH operation
-    // During DISPATCH, we internally control reads from dispatcher_bram
-    // During MATMUL, external CE controls reads
-    logic [TILE_ADDR_WIDTH-1:0] internal_man_left_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] internal_man_right_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] internal_exp_left_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] internal_exp_right_rd_addr;
-    logic                       internal_rd_en;
-
-    // Muxed read addresses (select internal during DISPATCH, external otherwise)
-    logic [TILE_ADDR_WIDTH-1:0] muxed_man_left_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] muxed_man_right_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_left_rd_addr;
-    logic [TILE_ADDR_WIDTH-1:0] muxed_exp_right_rd_addr;
-    logic                       muxed_man_left_rd_en;
-    logic                       muxed_man_right_rd_en;
-    logic                       muxed_exp_left_rd_en;
-    logic                       muxed_exp_right_rd_en;
+    // (Signals declared earlier to avoid use-before-declare errors)
 
     // Address source multiplexing (internal during DISPATCH, external during MATMUL)
     // CRITICAL: internal addresses must be combinational to match pipeline timing
@@ -705,7 +705,6 @@ import gemm_pkg::*;
     // Multi-tile write enable - COMBINATIONAL (no pipeline delay)
     // CRITICAL: Must update in SAME cycle as disp_current_tile_idx_reg changes
     // to avoid first write of new batch going to wrong tile
-    logic [23:0] tile_wr_en_comb;
     always_comb begin
         if (state_reg == ST_DISP_BUSY) begin
             if (disp_broadcast_reg) begin
@@ -729,7 +728,6 @@ import gemm_pkg::*;
     // This allows separate DISPATCH commands for left and right matrices
 
     // Pipeline disp_right_reg for synchronization with write valid signals
-    logic disp_right_pipe;
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             disp_right_pipe <= 1'b0;
@@ -779,7 +777,7 @@ import gemm_pkg::*;
     
     // Continuous unpacking counter (runs every cycle during ST_FETCH_READ_MAN)
     // CRITICAL: Only reset at start of FETCH, not when transitioning to ST_FETCH_READ!
-    logic [9:0] unpack_idx_reg;
+    // (unpack_idx_reg declared earlier to avoid use-before-declare errors)
     
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin

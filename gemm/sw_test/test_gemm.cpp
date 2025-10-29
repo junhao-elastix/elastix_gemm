@@ -291,12 +291,26 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // FETCH commands (using class methods)
         uint32_t left_lines = (left_data.size() + 31) / 32;
         uint32_t right_lines = (right_data.size() + 31) / 32;
-
+        
+        // Time the FETCH operations
+        auto fetch_left_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);  // Left matrix
+        auto fetch_left_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> fetch_left_duration = fetch_left_end - fetch_left_start;
+        if (verbose) {
+            cout << "  FETCH LEFT commands took " << fetch_left_duration.count() << " ms" << endl;
+        }
+        auto fetch_right_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true); // Right matrix (fetch_right=true)
+        auto fetch_right_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> fetch_right_duration = fetch_right_end - fetch_right_start;
+        if (verbose) {
+            cout << "  FETCH RIGHT commands took " << fetch_right_duration.count() << " ms" << endl;
+        }
 
         // DISPATCH LEFT command (disp_right=false for left matrix)
         // man_nv_cnt=128 (full dispatcher BRAM), ugd_vec_size=V, tile_addr=0
+        auto dispatch_left_start = chrono::high_resolution_clock::now();
         uint8_t disp_left_id = gemm_device.dispatch(
             128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
             V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
@@ -308,8 +322,14 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             false   // man_4b: 8-bit mantissas
         );
         gemm_device.waitDispatch(disp_left_id);
+        auto dispatch_left_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> dispatch_left_duration = dispatch_left_end - dispatch_left_start;
+        if (verbose) {
+            cout << "  DISPATCH LEFT commands took " << dispatch_left_duration.count() << " ms" << endl;
+        }
 
         // DISPATCH RIGHT command (disp_right=true for right matrix)
+        auto dispatch_right_start = chrono::high_resolution_clock::now();
         uint8_t disp_right_id = gemm_device.dispatch(
             128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
             V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
@@ -321,9 +341,15 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             false   // man_4b: 8-bit mantissas
         );
         gemm_device.waitDispatch(disp_right_id);
+        auto dispatch_right_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> dispatch_right_duration = dispatch_right_end - dispatch_right_start;
+        if (verbose) {
+            cout << "  DISPATCH RIGHT commands took " << dispatch_right_duration.count() << " ms" << endl;
+        }
 
         // MATMUL command - AMD-compatible signature
         // Pass B, C, V directly as leftUgdLen, rightUgdLen, vecLen
+        auto tile_start = chrono::high_resolution_clock::now();
         uint8_t tile_id = gemm_device.tile(
             0,    // left_addr
             0,    // right_addr
@@ -334,12 +360,22 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             false, // rightMan4b
             true   // mainLoopOverLeft
         );
-
         gemm_device.waitTile(tile_id);
+        auto tile_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> tile_duration = tile_end - tile_start;
+        if (verbose) {
+            cout << "  MATMUL commands took " << tile_duration.count() << " ms" << endl;
+        }
 
+        auto wait_idle_start = chrono::high_resolution_clock::now();
         if (!gemm_device.wait_idle()) {
             cerr << "ERROR: Engine timeout" << endl;
             return false;
+        }
+        auto wait_idle_end = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> wait_idle_duration = wait_idle_end - wait_idle_start;
+        if (verbose) {
+            cout << "  WAIT IDLE commands took " << wait_idle_duration.count() << " ms" << endl;
         }
 
         // Read results
@@ -411,6 +447,16 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             cout << "  [FAIL] B" << B << "_C" << C << "_V" << V << " - Validation failed" << endl;
         }
 
+        auto wait_idle_start_2 = chrono::high_resolution_clock::now();
+        if (!gemm_device.wait_idle()) {
+            cerr << "ERROR: Engine timeout" << endl;
+            return false;
+        }
+        auto wait_idle_end_2 = chrono::high_resolution_clock::now();
+        chrono::duration<double, std::milli> wait_idle_duration_2 = wait_idle_end_2 - wait_idle_start_2;
+        if (verbose) {
+            cout << "  WAIT IDLE commands took " << wait_idle_duration_2.count() << " ms" << endl;
+        }
         // Soft reset after test
         gemm_device.soft_reset();
 

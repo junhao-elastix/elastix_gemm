@@ -30,6 +30,7 @@
 
 `include "nap_interfaces.svh"
 `include "reg_control_defines.svh"
+`include "version_defines.svh"
 `include "build_timestamp.svh"
 
 // Include the JTAG port definitions, (used by ADM and SnapShot)
