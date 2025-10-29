@@ -71,8 +71,12 @@ def dispatch(
     Returns:
         Dictionary with execution statistics
     """
+    if ugd_vec_size * man_nv_cnt > 128:
+        raise ValueError("ugd_vec_size * man_nv_cnt must be less than or equal to 128")
+
     num_tiles = pop_count(col_en)
     disp_addr_start = 0
+    tile_addr_start = 0
     
     # Calculate dimensions
     outer_dim = man_nv_cnt // ugd_vec_size  # UGD
@@ -100,29 +104,58 @@ def dispatch(
     copy_steps = []
     
     # Main dispatch loop
-    for ugd_idx in range(outer_dim):
-        for t_idx in range(num_tiles):
-            for vec_idx in range(inner_dim):
-                if broadcast:
+    if broadcast:
+        for ugd_idx in range(outer_dim):
+            for t_idx in range(num_tiles):
+                for vec_idx in range(inner_dim):
                     # Broadcast: same data from dispatcher_bram to all tiles
                     # Disp_offset doesn't depend on t_idx
-                    disp_offset = disp_addr_start + ugd_idx * inner_dim * 4 + vec_idx * 4
-                    tile_offset = ugd_idx * inner_dim * 4 + vec_idx * 4
+                    # vec_idx increments by 1 line (16 bytes) per iteration
+                    disp_offset = disp_addr_start + ugd_idx * inner_dim + vec_idx
+                    tile_offset = ugd_idx * inner_dim + vec_idx
                     
-                else:
-                    # Distribute: round-robin distribution across tiles
-                    # Disp_offset depends on t_idx
-                    disp_offset = disp_addr_start + (ugd_idx * num_tiles + t_idx) * inner_dim * 4 + vec_idx * 4
-                    tile_offset = ugd_idx * inner_dim * 4 + vec_idx * 4
-                
+                    # Store copy information
+                    copy_count += 1
+                    
+                    # Calculate byte addresses (each line is 16 bytes)
+                    # disp_offset is in line units (each line is 16 bytes)
+                    # For display, show sequential byte ranges: [15:0], [31:16], [47:32], etc.
+                    disp_byte_addr = disp_offset * 4
+                    tile_byte_addr = (tile_addr + tile_offset) * 4
+                    
+                    copy_steps.append({
+                        'step': copy_count,
+                        'tile': t_idx,
+                        'disp_byte': disp_byte_addr,
+                        'tile_byte': tile_byte_addr
+                    })
+                    
+                    # Read from dispatcher_bram
+                    data = disp_bram.read(disp_offset)
+                    
+                    # Write to tile_bram (respecting tile_addr offset)
+                    tile_write_addr = tile_addr + tile_offset
+                    tile_brams[t_idx].write(tile_write_addr, data)
+    else:
+        t_idx = 0
+        for ugd_idx in range(outer_dim):
+            t_idx = t_idx % num_tiles
+            if t_idx == 0 and ugd_idx > 0:
+                tile_addr_start += inner_dim
+            for vec_idx in range(inner_dim):
+                # Distribute: round-robin distribution across tiles
+                # Disp_offset depends on t_idx
+                disp_offset = disp_addr_start + ugd_idx * inner_dim + vec_idx
+                tile_offset = tile_addr_start + vec_idx
+            
                 # Store copy information
                 copy_count += 1
                 
                 # Calculate byte addresses (each line is 16 bytes)
                 # disp_offset is in line units (each line is 16 bytes)
                 # For display, show sequential byte ranges: [15:0], [31:16], [47:32], etc.
-                disp_byte_addr = disp_offset * 16
-                tile_byte_addr = (tile_addr + tile_offset) * 16
+                disp_byte_addr = disp_offset * 4
+                tile_byte_addr = (tile_addr + tile_offset) * 4
                 
                 copy_steps.append({
                     'step': copy_count,
@@ -137,17 +170,18 @@ def dispatch(
                 # Write to tile_bram (respecting tile_addr offset)
                 tile_write_addr = tile_addr + tile_offset
                 tile_brams[t_idx].write(tile_write_addr, data)
+            t_idx += 1
     
     # Print output in documentation format
     if verbose:
         side_label = "right" if disp_right else "left"
         broadcast_label = "broadcasts" if broadcast else "distributes"
-        print(f"2. DC {broadcast_label} data sequentially from dispatcher_bram_{side_label} to tile_bram_{side_label}")
+        print(f"2. DC {broadcast_label} data sequentially from dispatcher_bram_{side_label} to tile_bram_{side_label}, each step below writes 4 lines of data which is 1 Native Vector of 128 GFP8 numbers")
         for step_info in copy_steps:
             # Display as byte ranges [high:low] where each is a 16-byte chunk
-            tile_hi = step_info['tile_byte'] + 15
+            tile_hi = step_info['tile_byte'] + 3
             tile_lo = step_info['tile_byte']
-            disp_hi = step_info['disp_byte'] + 15
+            disp_hi = step_info['disp_byte'] + 3
             disp_lo = step_info['disp_byte']
             
             # Format to match documentation style
@@ -158,6 +192,7 @@ def dispatch(
         print()
     
     return {
+        'cmd_id': cmd_id,
         'copy_count': copy_count,
         'num_tiles': num_tiles,
         'total_lines': total_lines
@@ -192,7 +227,7 @@ def example_dispatch_right():
     dispatch(
         cmd_id=3,
         tile_addr=0,
-        man_nv_cnt=16,     # 16 Native Vectors total (C * V)
+        man_nv_cnt=32,     # 32 Native Vectors total (C * V)
         ugd_vec_size=4,    # 4 NVs per UGD
         disp_right=1,      # Dispatch to right
         broadcast=0,       # Distribute mode

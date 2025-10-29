@@ -384,16 +384,26 @@ import gemm_pkg::*;
     // ------------------------------------------------------------------
     // Compute Engine Array - Multi-tile parallel execution
     // NOW WITH GENERATE LOOP for NUM_TILES instances (Oct 28, 2025)
+    // Per-Tile FIFOs for concurrent result collection (Oct 28, 2025)
     // ------------------------------------------------------------------
     // Per-tile signals (arrays)
-    logic [15:0]   ce_result_data_arr [NUM_TILES];    // Per-tile result data
-    logic          ce_result_valid_arr [NUM_TILES];   // Per-tile result valid
+    logic [15:0]   ce_result_data_arr [NUM_TILES];    // CE → per-tile FIFO
+    logic          ce_result_valid_arr [NUM_TILES];   // CE → per-tile FIFO
     logic          ce_tile_done_arr [NUM_TILES];      // Per-tile done signals
     logic [3:0]    ce_state_arr [NUM_TILES];          // Per-tile state
     logic [15:0]   result_count_arr [NUM_TILES];      // Per-tile result count
 
+    // Per-tile FIFO signals
+    logic [15:0]   tile_fifo_rd_data [NUM_TILES];     // FIFO → Arbiter
+    logic          tile_fifo_rd_en [NUM_TILES];       // Arbiter → FIFO
+    logic          tile_fifo_empty [NUM_TILES];       // FIFO → Arbiter
+    logic          tile_fifo_full [NUM_TILES];        // FIFO → CE
+    logic          tile_fifo_afull [NUM_TILES];       // FIFO → CE
+    logic [8:0]    tile_fifo_count [NUM_TILES];       // FIFO status (0-128)
+
     generate
         for (genvar tile_id = 0; tile_id < NUM_TILES; tile_id++) begin : gen_compute_tiles
+            // Compute Engine Instance
             compute_engine_modular u_compute_engine (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
@@ -428,15 +438,38 @@ import gemm_pkg::*;
                 .i_right_exp_wr_en       (dc_tile_right_exp_wr_en && dc_tile_wr_en[tile_id]),
                 .i_right_exp_wr_data     (dc_tile_right_exp_wr_data),
 
-                // Result FIFO Write Interface (per-tile outputs)
+                // Result → Per-Tile FIFO (no backpressure to CE, FIFO sized for max results)
                 .o_result_data      (ce_result_data_arr[tile_id]),
                 .o_result_valid     (ce_result_valid_arr[tile_id]),
-                .i_result_full      (result_fifo_full),
-                .i_result_afull     (result_fifo_afull),
+                .i_result_full      (tile_fifo_full[tile_id]),
+                .i_result_afull     (tile_fifo_afull[tile_id]),
 
                 // Debug
                 .o_ce_state         (ce_state_arr[tile_id]),
                 .o_result_count     (result_count_arr[tile_id])
+            );
+
+            // Per-Tile Result FIFO (128 deep for concurrent buffering)
+            tile_result_fifo #(
+                .DEPTH      (128),
+                .DATA_WIDTH (16)
+            ) u_tile_fifo (
+                .i_clk      (i_clk),
+                .i_reset_n  (i_reset_n),
+
+                // Write from Compute Engine
+                .i_wr_data  (ce_result_data_arr[tile_id]),
+                .i_wr_en    (ce_result_valid_arr[tile_id]),
+                .o_full     (tile_fifo_full[tile_id]),
+                .o_afull    (tile_fifo_afull[tile_id]),
+
+                // Read to Arbiter
+                .o_rd_data  (tile_fifo_rd_data[tile_id]),
+                .i_rd_en    (tile_fifo_rd_en[tile_id]),
+                .o_empty    (tile_fifo_empty[tile_id]),
+
+                // Status
+                .o_count    (tile_fifo_count[tile_id])
             );
         end
     endgenerate
@@ -486,100 +519,176 @@ import gemm_pkg::*;
     end
 
     // ------------------------------------------------------------------
-    // Result Arbiter - Row-Interleaved Result Collection
-    // Collects results from tiles in row-major order for transparency
-    // (per SINGLE_ROW_REFERENCE.md: results appear as single matrix)
+    // Result Arbiter - Concurrent Round-Robin Result Collection
+    // Collects results from ALL enabled tiles concurrently using round-robin
+    // Tiles produce results in parallel, arbiter fairly collects from all
     // ------------------------------------------------------------------
     typedef enum logic [2:0] {
         ARB_IDLE,
         ARB_COLLECT,
-        ARB_NEXT_TILE,
-        ARB_NEXT_ROW,
         ARB_DONE
     } arb_state_t;
 
     arb_state_t arb_state_reg;
 
     // Arbiter control registers
-    logic [7:0]  arb_left_ugd_len_reg;      // Number of rows (B)
-    logic [7:0]  arb_right_ugd_len_reg;     // Results per tile per row
-    logic [4:0]  arb_current_tile_reg;      // Current tile being read (0 to NUM_TILES-1)
-    logic [7:0]  arb_current_row_reg;       // Current row (0 to B-1)
+    logic [15:0] arb_right_ugd_len_reg;     // Results per tile (B×C, up to 65535)
+    logic [4:0]  arb_current_tile_reg;      // Current tile to check (round-robin pointer)
     logic [23:0] arb_col_en_reg;            // Captured col_en from MATMUL start
-    logic [7:0]  arb_result_cnt_reg;        // Results collected from current tile in current row
 
-    // Result arbiter state machine
+    // Per-tile result counters (track how many results collected from each tile)
+    logic [15:0] arb_tile_result_cnt [NUM_TILES];  // 0 to B×C per tile
+
+    // Per-tile pending read counters (track reads in-flight due to 2-cycle BRAM latency)
+    logic [1:0]  arb_tile_pending_reads [NUM_TILES];  // 0-2 pending reads per tile
+
+    // Shadow FIFO counts (immediate tracking of logical FIFO state)
+    // Physical FIFO count has 2-cycle latency, shadow count updates immediately
+    logic [8:0]  arb_tile_shadow_count [NUM_TILES];  // Forward-projected FIFO state
+
+    // Result arbiter state machine - Round-robin concurrent collection via per-tile FIFOs
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             arb_state_reg <= ARB_IDLE;
-            arb_left_ugd_len_reg <= 8'd0;
-            arb_right_ugd_len_reg <= 8'd0;
+            arb_right_ugd_len_reg <= 16'd0;
             arb_col_en_reg <= 24'd0;
             arb_current_tile_reg <= 5'd0;
-            arb_current_row_reg <= 8'd0;
-            arb_result_cnt_reg <= 8'd0;
+            for (int i = 0; i < NUM_TILES; i++) begin
+                arb_tile_result_cnt[i] <= 16'd0;
+                tile_fifo_rd_en[i] <= 1'b0;
+                arb_tile_pending_reads[i] <= 2'd0;
+                arb_tile_shadow_count[i] <= 9'd0;
+            end
         end else begin
             case (arb_state_reg)
                 ARB_IDLE: begin
+                    // Clear all FIFO read enables when idle
+                    for (int i = 0; i < NUM_TILES; i++) begin
+                        tile_fifo_rd_en[i] <= 1'b0;
+                        arb_tile_pending_reads[i] <= 2'd0;
+                    end
+
                     // Wait for MATMUL command to start result collection
                     if (|mc_ce_tile_en) begin  // Start when ANY tile enabled
                         // Capture matrix dimensions AND tile enable mask
-                        arb_left_ugd_len_reg <= mc_ce_tile_left_ugd_len;    // B (rows)
-                        arb_right_ugd_len_reg <= mc_ce_tile_right_ugd_len;  // C per tile (cols per tile)
-                        arb_col_en_reg <= mc_ce_tile_en;                    // Capture which tiles are enabled
-                        arb_current_tile_reg <= 5'd0;
-                        arb_current_row_reg <= 8'd0;
-                        arb_result_cnt_reg <= 8'd0;
+                        // CRITICAL: Compute engines produce B×C results per tile in ONE execution
+                        // Cast to 16-bit BEFORE multiplication to avoid overflow
+                        arb_right_ugd_len_reg <= 16'(mc_ce_tile_left_ugd_len) * 16'(mc_ce_tile_right_ugd_len);
+                        arb_col_en_reg <= mc_ce_tile_en;  // Capture which tiles are enabled
+                        arb_current_tile_reg <= 5'd0;     // Start round-robin from tile 0
+
+                        // Reset per-tile counters and initialize shadow counts from FIFOs
+                        for (int i = 0; i < NUM_TILES; i++) begin
+                            arb_tile_result_cnt[i] <= 16'd0;
+                            arb_tile_pending_reads[i] <= 2'd0;
+                            arb_tile_shadow_count[i] <= tile_fifo_count[i];  // Snapshot current FIFO state
+                        end
+
                         arb_state_reg <= ARB_COLLECT;
+                        $display("[ARB] @%0t IDLE->COLLECT: B=%0d, C=%0d, results_per_tile=%0d, col_en=0x%06x",
+                                $time, mc_ce_tile_left_ugd_len, mc_ce_tile_right_ugd_len,
+                                16'(mc_ce_tile_left_ugd_len) * 16'(mc_ce_tile_right_ugd_len), mc_ce_tile_en);
                     end
                 end
 
                 ARB_COLLECT: begin
-                    // Collect results from current tile (for current row)
-                    // Skip disabled tiles immediately (use CAPTURED col_en, not live signal)
-                    if (!arb_col_en_reg[arb_current_tile_reg]) begin
-                        // This tile was not enabled at MATMUL start, skip to next tile
-                        arb_state_reg <= ARB_NEXT_TILE;
-                    end else if (ce_result_valid_arr[arb_current_tile_reg] && !result_fifo_full) begin
-                        // Result transferred to FIFO
-                        arb_result_cnt_reg <= arb_result_cnt_reg + 1;
+                    // Clear all FIFO read enables first (only ONE will be set per cycle)
+                    for (int i = 0; i < NUM_TILES; i++) begin
+                        tile_fifo_rd_en[i] <= 1'b0;
+                    end
 
-                        if (arb_result_cnt_reg == arb_right_ugd_len_reg - 1) begin
-                            // Collected all results from current tile for this row
-                            arb_state_reg <= ARB_NEXT_TILE;
+                    // Track shadow count increments from compute engine writes
+                    for (int i = 0; i < NUM_TILES; i++) begin
+                        if (ce_result_valid_arr[i]) begin
+                            arb_tile_shadow_count[i] <= arb_tile_shadow_count[i] + 1;
                         end
                     end
-                end
 
-                ARB_NEXT_TILE: begin
-                    arb_result_cnt_reg <= 8'd0;
-                    arb_current_tile_reg <= arb_current_tile_reg + 1;
-
-                    if (arb_current_tile_reg == NUM_TILES - 1) begin
-                        // All physical tiles checked (enabled or not)
-                        arb_state_reg <= ARB_NEXT_ROW;
-                    end else begin
-                        // More tiles to check for this row
-                        arb_state_reg <= ARB_COLLECT;
+                    // Decrement pending_reads when data actually comes out (pipeline stage 2 completes)
+                    if (arb_read_valid_reg) begin
+                        arb_tile_pending_reads[arb_read_tile_reg] <= arb_tile_pending_reads[arb_read_tile_reg] - 1;
                     end
-                end
 
-                ARB_NEXT_ROW: begin
-                    arb_current_tile_reg <= 5'd0;
-                    arb_current_row_reg <= arb_current_row_reg + 1;
+                    // Round-robin FIFO draining: Check current tile's FIFO for data
+                    // Skip disabled tiles - find next enabled tile
+                    if (!arb_col_en_reg[arb_current_tile_reg]) begin
+                        // Tile not enabled, find next enabled tile
+                        automatic logic [4:0] next_tile = arb_current_tile_reg;
+                        for (int i = 1; i < NUM_TILES; i++) begin
+                            next_tile = (arb_current_tile_reg + i) % NUM_TILES;
+                            if (arb_col_en_reg[next_tile]) break;
+                        end
+                        arb_current_tile_reg <= next_tile;
+                    end
+                    // Check if current tile's FIFO has data AND space for more pending reads AND result_bram not full
+                    // Use shadow count (immediate) instead of physical empty (2-cycle delayed)
+                    // Shadow count > 0 means FIFO has data (or will have after in-flight writes complete)
+                    else if ((arb_tile_shadow_count[arb_current_tile_reg] > 9'd0) &&
+                             arb_tile_pending_reads[arb_current_tile_reg] < 2'd2 &&
+                             !result_fifo_full) begin
+                        // Read from current tile's FIFO
+                        tile_fifo_rd_en[arb_current_tile_reg] <= 1'b1;
+                        arb_tile_pending_reads[arb_current_tile_reg] <= arb_tile_pending_reads[arb_current_tile_reg] + 1;
+                        arb_tile_result_cnt[arb_current_tile_reg] <= arb_tile_result_cnt[arb_current_tile_reg] + 1;
+                        arb_tile_shadow_count[arb_current_tile_reg] <= arb_tile_shadow_count[arb_current_tile_reg] - 1;  // Immediate decrement
 
-                    if (arb_current_row_reg == arb_left_ugd_len_reg - 1) begin
-                        // All rows complete
-                        arb_state_reg <= ARB_DONE;
-                    end else begin
-                        // More rows to collect
-                        arb_state_reg <= ARB_COLLECT;
+                        $display("[ARB] @%0t COLLECT: Tile %0d FIFO start read[%0d/%0d] (shadow=%0d->%0d, phys=%0d, pending=%0d->%0d)",
+                                $time, arb_current_tile_reg,
+                                arb_tile_result_cnt[arb_current_tile_reg], arb_right_ugd_len_reg,
+                                arb_tile_shadow_count[arb_current_tile_reg],
+                                arb_tile_shadow_count[arb_current_tile_reg] - 1,
+                                tile_fifo_count[arb_current_tile_reg],
+                                arb_tile_pending_reads[arb_current_tile_reg],
+                                arb_tile_pending_reads[arb_current_tile_reg] + 1);
+
+                        // Move to next ENABLED tile for next cycle (round-robin)
+                        begin
+                            automatic logic [4:0] next_tile = arb_current_tile_reg;
+                            for (int i = 1; i <= NUM_TILES; i++) begin
+                                next_tile = (arb_current_tile_reg + i) % NUM_TILES;
+                                if (arb_col_en_reg[next_tile]) break;
+                            end
+                            arb_current_tile_reg <= next_tile;
+                        end
+                    end
+                    else begin
+                        // Current tile FIFO empty OR pending read OR result_bram full, try next tile
+                        // Find next enabled tile
+                        automatic logic [4:0] next_tile = arb_current_tile_reg;
+                        for (int i = 1; i <= NUM_TILES; i++) begin
+                            next_tile = (arb_current_tile_reg + i) % NUM_TILES;
+                            if (arb_col_en_reg[next_tile]) break;
+                        end
+                        arb_current_tile_reg <= next_tile;
+                    end
+
+                    // Check if ALL enabled tiles have produced their B×C results
+                    // This check happens every cycle to detect completion
+                    begin
+                        automatic logic all_tiles_done = 1'b1;
+                        for (int i = 0; i < NUM_TILES; i++) begin
+                            if (arb_col_en_reg[i]) begin
+                                if (arb_tile_result_cnt[i] < arb_right_ugd_len_reg) begin
+                                    all_tiles_done = 1'b0;
+                                end
+                            end
+                        end
+
+                        if (all_tiles_done) begin
+                            $display("[ARB] @%0t COLLECT->DONE: All enabled tiles produced %0d results each",
+                                    $time, arb_right_ugd_len_reg);
+                            arb_state_reg <= ARB_DONE;
+
+                            // Clear all read enables
+                            for (int i = 0; i < NUM_TILES; i++) begin
+                                tile_fifo_rd_en[i] <= 1'b0;
+                            end
+                        end
                     end
                 end
 
                 ARB_DONE: begin
                     // Wait for next MATMUL command
-                    // Stay in DONE until new tile_en (state will reset via IDLE)
                     if (|mc_ce_tile_en) begin  // New MATMUL when ANY tile enabled
                         arb_state_reg <= ARB_IDLE;  // Will start new collection next cycle
                     end
@@ -590,10 +699,51 @@ import gemm_pkg::*;
         end
     end
 
-    // Mux result data/valid based on current tile being read
-    assign ce_result_data = ce_result_data_arr[arb_current_tile_reg];
-    assign ce_result_valid = (arb_state_reg == ARB_COLLECT) ?
-                             ce_result_valid_arr[arb_current_tile_reg] : 1'b0;
+    // Pipeline FIFO read to account for 2-cycle BRAM read latency
+    // Cycle N: Assert tile_fifo_rd_en[i]
+    // Cycle N+1: BRAM reads internally
+    // Cycle N+2: tile_fifo_rd_data[i] has valid data → write to result_bram
+    logic [4:0]  arb_read_tile_reg;        // Which tile was read 2 cycles ago
+    logic [4:0]  arb_read_tile_pipe;       // Pipeline stage 1
+    logic        arb_read_valid_reg;       // Delayed read enable (2 cycles)
+    logic        arb_read_valid_pipe;      // Pipeline stage 1
+    logic        any_tile_rd_en;           // OR of all tile rd_en signals
+
+    // Check if ANY tile has rd_en asserted (combinational)
+    always_comb begin
+        any_tile_rd_en = 1'b0;
+        for (int i = 0; i < NUM_TILES; i++) begin
+            if (tile_fifo_rd_en[i]) any_tile_rd_en = 1'b1;
+        end
+    end
+
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            arb_read_tile_pipe <= 5'd0;
+            arb_read_tile_reg <= 5'd0;
+            arb_read_valid_pipe <= 1'b0;
+            arb_read_valid_reg <= 1'b0;
+        end else begin
+            // 2-stage pipeline for BRAM read latency
+            // Stage 1: Capture which tile had rd_en asserted
+            for (int i = 0; i < NUM_TILES; i++) begin
+                if (tile_fifo_rd_en[i]) begin
+                    arb_read_tile_pipe <= i[4:0];
+                    break;
+                end
+            end
+            arb_read_valid_pipe <= any_tile_rd_en;
+
+            // Stage 2: Delayed by 1 more cycle
+            arb_read_tile_reg <= arb_read_tile_pipe;
+            arb_read_valid_reg <= arb_read_valid_pipe;
+        end
+    end
+
+    // Mux result data from per-tile FIFOs based on PREVIOUS cycle's read
+    // Data flows: tile_fifo (1-cycle delay) → arbiter → result_bram
+    assign ce_result_data = tile_fifo_rd_data[arb_read_tile_reg];
+    assign ce_result_valid = arb_read_valid_reg;
 
     // Debug outputs: Use tile 0 for state monitoring
     assign ce_state = ce_state_arr[0];

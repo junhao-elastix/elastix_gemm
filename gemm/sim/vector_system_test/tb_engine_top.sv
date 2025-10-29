@@ -233,6 +233,15 @@ module tb_engine_top;
 
         // Run all test configurations
         foreach (test_configs[i]) begin
+            // Reset engine between tests to ensure clean state
+            if (i > 0) begin
+                reset_n = 1'b0;
+                repeat (10) @(posedge clk);
+                reset_n = 1'b1;
+                repeat (10) @(posedge clk);
+                $display("[TB] Reset between tests completed at time %0t", $time);
+            end
+
             run_single_test(
                 test_configs[i].B,
                 test_configs[i].C,
@@ -404,8 +413,10 @@ module tb_engine_top;
         logic [31:0] wait_disp_cmd [0:3];
         logic [31:0] tile_cmd [0:3];
         logic [31:0] wait_tile_cmd [0:3];
-        
+
         integer idx = 0;
+        integer num_enabled_tiles;
+        integer dim_c_per_tile;
 
         // ===================================================================
         // LEFT MATRIX FETCH AND DISPATCH (disp_right=0)
@@ -498,8 +509,6 @@ module tb_engine_top;
         // Multi-tile MATMUL: Each enabled tile computes dim_b × dim_c_per_tile results
         // Total results = dim_b × dim_c_per_tile × num_enabled_tiles
         //               = dim_b × C (where C = dim_c_per_tile × num_tiles)
-        integer num_enabled_tiles;
-        integer dim_c_per_tile;
 
         // Count enabled tiles
         num_enabled_tiles = $countones(col_en);

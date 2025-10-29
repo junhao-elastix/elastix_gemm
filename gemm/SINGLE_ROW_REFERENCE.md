@@ -25,6 +25,9 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
 
 ## Table of Contents
 
+0. [Numbering Format](#numbering-format-and-organization)
+   - 0.1 [GFP8 Number Format](#gfp8-number-format)
+   - 0.2 [Terminology and Default Configs](#terminology-and-default-configurations)
 1. [Architecture Overview](#architecture-overview)
    - 1.1 [Three-Level Memory Hierarchy](#three-level-memory-hierarchy)
    - 1.2 [Command Flow (5-stage pipeline)](#command-flow-5-stage-pipeline)
@@ -56,6 +59,39 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
    - 5.7 [Command 0xF4: WAIT_MATMUL](#command-0xf4-wait_matmul)
    - 5.8 [Command 0xF5: VECTOR_READOUT](#command-0xf5-vector_readout)
    - 5.9 [Command Execution Flow Example](#command-execution-flow-example)
+
+---
+
+## Numbering Format and Organization
+
+### GFP8 Number Format
+[GFP Explanation](/home/dev/Dev/elastix_gemm/gemm/GFP_EXPLANATION.md)
+
+### Terminology and Default Configurations
+
+- GFP8: 
+  - Group Floating-Point
+  - 8-bit mantissa, 5-bit exponent
+- GFP4: 
+  - Group Floating-Point
+  - 4-bit mantissa, 5-bit exponent
+- Group Size:
+  - The size of GFP group that shares one exponent
+  - Default: 32
+- Native Vector (NV):
+  - A vector of GFP numbers
+  - May contain multiple groups
+  - Hardware considerations
+- Native Vector Size:
+  - The number of GFP numbers in a Native Vector
+  - Default: 128
+  - 32 groups of GFP numbers, 128 bytes of mantissa, 4 bytes of exponent
+- Grouped Dimension (GD):
+  - The dimension in a matrix along which the GFP numbers are grouped
+  - Usually the inner dimension in the context of Matrix-Matrix Multiplication
+- UnGrouped Dimension (UGD):
+  - The dimension in a matrix that is not grouped. 
+  - Usually the outer dimensions (batch, column) in the context of Matrix-Matrix Multiplication
 
 ---
 

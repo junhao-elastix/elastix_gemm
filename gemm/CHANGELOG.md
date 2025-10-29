@@ -1,5 +1,127 @@
 # CHANGELOG - Elastix GEMM Project
 
+## [2025-10-28 20:13] - MAJOR FIX: Shadow FIFO Count Tracking for Race-Free Collection
+
+**Timestamp**: Tue Oct 28 20:13:48 PDT 2025
+**Status**: ⚡ **MAJOR PROGRESS** - 10/14 tests passing (400% improvement from 2/14)
+**Issue**: BRAM-based FIFO control signals have 2-cycle latency causing read-before-update races
+**Solution**: Implemented shadow FIFO count tracking for immediate logical state updates
+
+### Summary
+
+Implemented shadow FIFO count tracking to solve the fundamental race condition where physical FIFO control signals (empty, count) lag by 2 cycles due to BRAM read latency. The arbiter now maintains a forward-projected logical view of FIFO state that updates immediately when reads/writes occur, preventing double-reads of the same entry.
+
+### Root Cause Analysis
+
+**The Problem**: BRAM-based FIFOs have 2-cycle latency for ALL signals, not just data:
+- **Cycle N**: Arbiter asserts `tile_fifo_rd_en[i]`
+- **Cycle N+1**: BRAM internal read (physical count unchanged)
+- **Cycle N+2**: Data appears AND count decrements
+
+**The Race**: At cycle N+1, physical `empty` flag still shows old value, allowing arbiter to read the same entry twice before the count updates.
+
+**Evidence from Logs**:
+```
+[ARB] @560705 COLLECT: Tile 0 start read[234/256] (fifo_count=1)
+[ARB] @560715 COLLECT: Tile 0 start read[235/256] (fifo_count=1)  ← Race! Same entry read twice
+```
+
+### The Solution: Shadow FIFO Count
+
+Created **forward-projected logical FIFO state** that updates immediately:
+
+**1. Initialization** (engine_top.sv:584):
+```systemverilog
+// Snapshot physical FIFO counts when entering ARB_COLLECT
+for (int i = 0; i < NUM_TILES; i++) begin
+    arb_tile_shadow_count[i] <= tile_fifo_count[i];
+end
+```
+
+**2. Real-time Updates** (engine_top.sv:600-605):
+```systemverilog
+// Track shadow count increments from compute engine writes
+for (int i = 0; i < NUM_TILES; i++) begin
+    if (ce_result_valid_arr[i]) begin
+        arb_tile_shadow_count[i] <= arb_tile_shadow_count[i] + 1;
+    end
+end
+```
+
+**3. Race-Free Read Decision** (engine_top.sv:626-633):
+```systemverilog
+// Use shadow count (immediate) instead of physical empty (2-cycle delayed)
+else if ((arb_tile_shadow_count[arb_current_tile_reg] > 9'd0) &&
+         arb_tile_pending_reads[arb_current_tile_reg] < 2'd2 &&
+         !result_fifo_full) begin
+    tile_fifo_rd_en[arb_current_tile_reg] <= 1'b1;
+    arb_tile_shadow_count[arb_current_tile_reg] <=
+        arb_tile_shadow_count[arb_current_tile_reg] - 1;  // Immediate decrement
+end
+```
+
+### Test Results
+
+**Before Fix**: 2/14 tests passing (14% pass rate)
+- Only single-result tests working (B1_C1_V1, B1_C1_V128)
+- All multi-result and multi-tile tests failing
+
+**After Fix**: 10/14 tests passing (71% pass rate)
+
+**✅ PASSING (10/10 single-tile tests)**:
+- B1_C1_V1, B2_C2_V2, B4_C4_V4, B2_C2_V64, B4_C4_V32
+- B8_C8_V16, B16_C16_V8, B1_C128_V1, B128_C1_V1, B1_C1_V128
+
+**❌ FAILING (4/4 multi-tile tests with "_2T" suffix)**:
+- B2_C4_V16_2T - 8 mismatches, 8/8 results collected
+- B4_C8_V8_2T - 32 mismatches, 32/32 results collected
+- B8_C32_V2_2T - 256 mismatches, 256/256 results collected
+- B16_C16_V4_2T - 255 mismatches, 256/256 results collected
+
+### Remaining Issue
+
+**Multi-tile tests collect correct COUNT but wrong VALUES**: Arbiter logs show reads only from Tile 0, never Tile 1:
+```
+[ARB] IDLE->COLLECT: col_en=0x000003 (2 tiles enabled)
+[ARB] Tile 0 FIFO start read[0/4] (shadow=1->0)
+[ARB] Tile 0 FIFO start read[1/4] (shadow=1->0)
+...
+[ARB] Tile 0 FIFO start read[7/4] ← Reading 8 times from Tile 0 only!
+```
+
+**Hypothesis**: Shadow count initialization timing or round-robin advancement logic may not properly switch between tiles when both are enabled.
+
+### Code Changes
+
+**gemm/src/rtl/engine_top.sv**:
+- Added shadow FIFO count declaration (line 547)
+- Added shadow count initialization in reset and ARB_IDLE (lines 560, 584)
+- Implemented shadow count increment tracking (lines 600-605)
+- Changed read decision to use shadow count instead of physical empty (line 626)
+- Added immediate shadow count decrement on reads (line 633)
+- Updated debug logging to show shadow vs physical counts (lines 635-642)
+
+### Performance Impact
+
+**Single-Tile Tests**: ✅ 10/10 passing
+- Shadow FIFO count correctly prevents double-reads
+- Full 2-cycle pipeline operation with up to 2 pending reads
+- No duplicate results observed in logs
+
+**Multi-Tile Tests**: ⚠️ 4/4 still failing
+- Correct result count collected (arbiter terminates properly)
+- Wrong values (only reading from one tile)
+- Requires further investigation of round-robin tile selection logic
+
+### Next Steps
+
+1. Debug why arbiter stays on Tile 0 in multi-tile mode
+2. Verify round-robin advancement logic when multiple tiles enabled
+3. Check if shadow count initialization happens before compute engines start producing
+4. Validate tile index capture in read pipeline (arb_read_tile_pipe/reg)
+
+---
+
 ## [2025-10-28 16:00] - CRITICAL FIX: Enable True Multi-Tile Parallel Execution
 
 **Timestamp**: Tue Oct 28 16:00:00 PDT 2025

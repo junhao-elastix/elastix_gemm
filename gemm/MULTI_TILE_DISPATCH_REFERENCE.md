@@ -122,40 +122,10 @@ Here's what actually happens:
 3. Dispatch done
 
 
-### python-style pseudocode:
+### [python-style pseudocode](/home/dev/Dev/elastix_gemm/gemm/dispatch.py)
 
-```python
+## Notes: 
 
-def dispatch(
-        int cmd_id,
-        int tile_addr,
-        int man_nv_cnt,
-        int ugd_vec_size,
-        bool disp_right, 
-        bool broadcast, 
-        bool man_4b, 
-        int col_start, 
-        int col_en,
-        int disp_bram, 
-        int tile_bram):
-    
-    num_tiles = pop_count(col_en)
-    disp_addr_start = 0;
-    outer_dim = man_nv_cnt/ugd_vec_size # UGD
-    inner_dim = ugd_vec_size
-    for ugd_idx in range(out_dim):
-        for t_idx in range(num_tiles):
-            for vec_idx in range(inner_dim):
-                if broadcast:
-
-                else:
-                    # disp_offset = disp_addr_start + vec_idx*4
-                    # tile_offset = ugd_idx*inner_dim*4 + vec_idx*4
-                    # tile_bram[t_idx][tile_offset:tile_offset+4] = disp_bram[disp_offset:disp_offset+4]
-
-
-```
-    
     
 
 

@@ -40,6 +40,7 @@ TB_SOURCES = ../../src/tb/tb_memory_model.sv tb_engine_top.sv
 # RTL sources (from gemm - MS2.0 FIFO architecture!)
 RTL_SOURCES = \
 	$(GEMM_RTL)/cmd_fifo.sv \
+	$(GEMM_RTL)/tile_result_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram.sv \

@@ -503,19 +503,37 @@ import gemm_pkg::*;
                                             $time, disp_current_tile_idx_reg + 1);
                                 end
                             end else begin
-                                // === DISTRIBUTE MODE (SIMPLIFIED) ===
-                                // Each tile gets different data, round-robin
-                                // Assumption: C divisible by num_tiles
+                                // === DISTRIBUTE MODE (Per MULTI_TILE_DISPATCH_REFERENCE.md & dispatch.py) ===
+                                // Each tile gets different data batches in round-robin fashion
+                                // KEY: All tiles write to SAME address range, destination address only
+                                //      increments when wrapping back to tile 0
                                 $display("[DC] @%0t DISTRIBUTE: Batch %0d to tile %0d complete",
                                         $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
 
                                 // Each tile gets different data, advance source pointer
                                 disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
-                                disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
                                 disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
+
+                                // CRITICAL FIX: Destination address increment logic per dispatch.py
+                                // - Multi-tile (num_tiles > 1): Only increment when wrapping to tile 0
+                                //   (per dispatch.py lines 142-144: "if t_idx == 0 and ugd_idx > 0")
+                                // - Single-tile (num_tiles == 1): Always increment (legacy behavior)
+                                if (disp_num_enabled_tiles_reg == 8'd1) begin
+                                    // Single-tile: Always increment destination address
+                                    disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                end else if (((disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg) == 5'd0 && disp_batch_cnt_reg > 0) begin
+                                    // Multi-tile: Only increment when wrapping to tile 0
+                                    disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                    $display("[DC] @%0t DISTRIBUTE: Wrapping to tile 0, incrementing dest_addr %0d -> %0d",
+                                            $time, disp_receive_tile_start_reg,
+                                            disp_receive_tile_start_reg + disp_ugd_batch_lines_reg);
+                                end
 
                                 // Move to next tile (simple modulo wrap-around)
                                 disp_current_tile_idx_reg <= (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg;
+                                $display("[DC] @%0t DISTRIBUTE: Tile index changing %0d -> %0d (num_tiles=%0d)",
+                                        $time, disp_current_tile_idx_reg, (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg,
+                                        disp_num_enabled_tiles_reg);
 
                                 // Check if all batches dispatched
                                 if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
