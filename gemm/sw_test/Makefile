@@ -1,7 +1,7 @@
 # Makefile for Elastix GEMM Software Tests
 # 128-register configuration test suite for AC7t1500 Speedster7t
 
-DEV_ROOT = /home/dev/Dev
+DEV_ROOT = /home/workstation
 
 CXX = g++
 CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -DDRIVER_ACX

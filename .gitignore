@@ -12,3 +12,4 @@ dma_ddr_ref
 gddr_ref_design
 llm_vp_demo_pcie_orig
 shell_demo
+**/__pycache__/**

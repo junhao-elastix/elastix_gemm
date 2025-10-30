@@ -17,6 +17,8 @@ cmd_fifo.sv
 compute_engine_modular.sv
 csr_to_fifo_bridge.sv
 dispatcher_bram.sv
+fetcher.sv
+dispatcher.sv
 dispatcher_control.sv
 dma_bram_bridge.sv
 engine_top.sv

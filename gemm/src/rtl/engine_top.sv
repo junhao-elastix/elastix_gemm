@@ -315,32 +315,7 @@ import gemm_pkg::*;
         .i_disp_broadcast   (mc_dc_disp_broadcast),
         .o_disp_done        (dc_mc_disp_done),
 
-        // Dispatcher BRAM Read Ports (dispatcher_bram → dispatcher_control during DISPATCH)
-        .i_disp_man_left_rd_addr   (dc_disp_rd_addr),
-        .i_disp_man_left_rd_en     (dc_disp_rd_en),
-        .o_disp_man_left_rd_data   (dc_disp_man_left_rd_data),
-
-        .i_disp_man_right_rd_addr  (dc_disp_rd_addr),
-        .i_disp_man_right_rd_en    (dc_disp_rd_en),
-        .o_disp_man_right_rd_data  (dc_disp_man_right_rd_data),
-
-        // Dispatcher BRAM Exponent Write Ports (dispatcher_control → dispatcher_bram from unpacking)
-        .o_disp_exp_left_wr_addr   (dc_disp_exp_left_wr_addr),
-        .o_disp_exp_left_wr_en     (dc_disp_exp_left_wr_en),
-        .o_disp_exp_left_wr_data   (dc_disp_exp_left_wr_data),
-
-        .o_disp_exp_right_wr_addr  (dc_disp_exp_right_wr_addr),
-        .o_disp_exp_right_wr_en    (dc_disp_exp_right_wr_en),
-        .o_disp_exp_right_wr_data  (dc_disp_exp_right_wr_data),
-
-        // Dispatcher BRAM Exponent Read Ports (dispatcher_bram → dispatcher_control during DISPATCH)
-        .i_disp_exp_left_rd_addr   (dc_disp_rd_addr),
-        .i_disp_exp_left_rd_en     (dc_disp_rd_en),
-        .o_disp_exp_left_rd_data   (dc_disp_exp_left_rd_data),
-
-        .i_disp_exp_right_rd_addr  (dc_disp_rd_addr),
-        .i_disp_exp_right_rd_en    (dc_disp_rd_en),
-        .o_disp_exp_right_rd_data  (dc_disp_exp_right_rd_data),
+        // Note: CE read ports and exponent write ports removed - now handled internally by fetcher/dispatcher
 
         // Tile BRAM Write Ports (for DISPATCH copy) - FOUR PARALLEL PATHS
         .o_tile_man_left_wr_addr   (dc_tile_man_left_wr_addr),

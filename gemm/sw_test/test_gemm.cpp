@@ -309,16 +309,20 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // DISPATCH LEFT command (disp_right=false for left matrix)
-        // man_nv_cnt=128 (full dispatcher BRAM), ugd_vec_size=V, tile_addr=0
+        // man_nv_cnt = B×V (total NVs in left matrix)
+        // LEFT matrix uses BROADCAST mode (same data replicated to all enabled tiles)
         auto dispatch_left_start = chrono::high_resolution_clock::now();
+        if (verbose) {
+            cout << "  DEBUG: Sending DISPATCH LEFT with man_nv_cnt=" << (B*V) << ", ugd_vec_size=" << V << endl;
+        }
         uint8_t disp_left_id = gemm_device.dispatch(
-            128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
+            B * V,  // man_nv_cnt: Total Native Vectors = B × V
             V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
             0,      // tile_addr: Start at tile_bram[0]
             false,  // disp_right: LEFT matrix (disp_right=0)
             0x0001, // col_en: Enable tile 0 only
             0,      // col_start: Start from tile 0
-            false,  // broadcast: Distribute mode
+            true,   // broadcast: BROADCAST mode for left (activations replicated)
             false   // man_4b: 8-bit mantissas
         );
         gemm_device.waitDispatch(disp_left_id);
@@ -329,15 +333,20 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // DISPATCH RIGHT command (disp_right=true for right matrix)
+        // man_nv_cnt = C×V (total NVs in right matrix)
+        // RIGHT matrix uses DISTRIBUTE mode (different data per tile)
         auto dispatch_right_start = chrono::high_resolution_clock::now();
+        if (verbose) {
+            cout << "  DEBUG: Sending DISPATCH RIGHT with man_nv_cnt=" << (C*V) << ", ugd_vec_size=" << V << endl;
+        }
         uint8_t disp_right_id = gemm_device.dispatch(
-            128,    // man_nv_cnt: Full dispatcher BRAM capacity (128 NVs × 4 lines = 512 lines)
+            C * V,  // man_nv_cnt: Total Native Vectors = C × V
             V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
             0,      // tile_addr: Start at tile_bram[0]
             true,   // disp_right: RIGHT matrix (disp_right=1)
             0x0001, // col_en: Enable tile 0 only
             0,      // col_start: Start from tile 0
-            false,  // broadcast: Distribute mode
+            false,  // broadcast: DISTRIBUTE mode for right (weights sharded)
             false   // man_4b: 8-bit mantissas
         );
         gemm_device.waitDispatch(disp_right_id);
@@ -350,6 +359,9 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // MATMUL command - AMD-compatible signature
         // Pass B, C, V directly as leftUgdLen, rightUgdLen, vecLen
         auto tile_start = chrono::high_resolution_clock::now();
+        if (verbose) {
+            cout << "  DEBUG: Sending TILE with B=" << B << ", C=" << C << ", V=" << V << endl;
+        }
         uint8_t tile_id = gemm_device.tile(
             0,    // left_addr
             0,    // right_addr

@@ -10,15 +10,15 @@
 // FETCH Operation Flow:
 //  1. Lines 0-15:   Write to exp_packed buffer (256-bit staging)
 //  2. Lines 16-527: Write to man buffer (256-bit mantissas, stored at [0-511])
-//  3. During step 2: Unpack exp_packed -> exp_aligned (done by dispatcher_control)
+//  3. During step 2: Unpack exp_packed -> exp_aligned (done by fetcher)
 //
-// Four Output Ports (to compute engine):
+// Four Read Ports (to dispatcher for DISPATCH operation):
 //  1. left_exp (8-bit) - From exp_left_aligned
 //  2. left_man (256-bit) - From man_left
 //  3. right_exp (8-bit) - From exp_right_aligned
 //  4. right_man (256-bit) - From man_right
 //
-// Write Interface (from dispatcher_control):
+// Write Interface (from fetcher for FETCH operation):
 //  - i_wr_target: 0=left, 1=right
 //  - Address [0-15]:   Write to exp_packed
 //  - Address [16-527]: Write to man (stored at [addr-16])
@@ -44,7 +44,7 @@ module dispatcher_bram #(
     input  logic                            i_reset_n,
 
     // ===================================================================
-    // WRITE PORTS (from dispatcher_control)
+    // WRITE PORTS (from fetcher - for FETCH operation)
     // ===================================================================
 
     // Main write port for exp_packed and mantissas
@@ -53,7 +53,7 @@ module dispatcher_bram #(
     input  logic                            i_wr_en,
     input  logic                            i_wr_target,    // 0=left, 1=right
 
-    // Exponent aligned write ports (from unpacking logic in dispatcher_control)
+    // Exponent aligned write ports (from unpacking logic in fetcher)
     input  logic [RD_ADDR_WIDTH-1:0]        i_exp_left_wr_addr,
     input  logic                            i_exp_left_wr_en,
     input  logic [EXP_WIDTH-1:0]            i_exp_left_wr_data,
@@ -63,7 +63,7 @@ module dispatcher_bram #(
     input  logic [EXP_WIDTH-1:0]            i_exp_right_wr_data,
 
     // ===================================================================
-    // READ PORTS (to compute engine)
+    // READ PORTS (to dispatcher - for DISPATCH operation)
     // ===================================================================
 
     // Left matrix read ports
@@ -85,7 +85,7 @@ module dispatcher_bram #(
     output logic [EXP_WIDTH-1:0]            o_exp_right_rd_data,
 
     // ===================================================================
-    // UNPACKING INTERFACE (for dispatcher_control to read exp_packed)
+    // UNPACKING INTERFACE (for fetcher to read exp_packed during unpacking)
     // ===================================================================
     input  logic [EXP_PACKED_ADDR_WIDTH-1:0] i_exp_packed_rd_addr,
     input  logic                              i_exp_packed_rd_target,

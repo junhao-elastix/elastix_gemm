@@ -42,6 +42,8 @@ RTL_SOURCES = \
 	$(GEMM_RTL)/cmd_fifo.sv \
 	$(GEMM_RTL)/tile_result_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
+	$(GEMM_RTL)/fetcher.sv \
+	$(GEMM_RTL)/dispatcher.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram.sv \
 	$(GEMM_RTL)/tile_bram.sv \

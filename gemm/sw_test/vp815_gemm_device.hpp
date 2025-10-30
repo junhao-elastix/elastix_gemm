@@ -106,9 +106,12 @@ public:
                      bool broadcast = false, bool man_4b = false) {
         uint8_t id = next_cmd_id();
         uint32_t w0 = build_word0(OPC_DISPATCH, id);
+        // Word 1: {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
         uint32_t w1 = (static_cast<uint32_t>(man_nv_cnt) << 16) |
                       static_cast<uint32_t>(ugd_vec_size);
+        // Word 2: {16'b0, tile_addr[15:0]}
         uint32_t w2 = static_cast<uint32_t>(tile_addr & 0xFFFF);
+        // Word 3: {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
         uint32_t w3 = ((col_en & 0xFFFFFF) << 8) |              // col_en[23:0] at bits [31:8]
                       ((col_start & 0x1F) << 3) |                // col_start[4:0] at bits [7:3]
                       (disp_right ? 4u : 0u) |                   // disp_right at bit 2
@@ -137,23 +140,26 @@ public:
     // cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_MATMUL}
     // cmd[1] = {left_addr[15:0], right_addr[15:0]}
     // cmd[2] = {8'b0, left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
-    // cmd[3] = {col_en[15:0], 13'b0, left_4b, right_4b, main_loop_left}
+    // cmd[3] = {col_en[23:0], 5'b0, left_4b, right_4b, main_loop_left}
     uint8_t tile(uint16_t leftAddr, uint16_t rightAddr,
                  uint8_t leftUgdLen, uint8_t rightUgdLen, uint8_t vecLen,
                  bool leftMan4b = false, bool rightMan4b = false,
-                 bool mainLoopOverLeft = true, uint16_t col_en = 0x0001) {
+                 bool mainLoopOverLeft = true, uint32_t col_en = 0x0001) {
         uint8_t id = next_cmd_id();
 
         uint32_t w0 = build_word0(OPC_MATMUL, id);
+        // Word 1: {left_addr[15:0], right_addr[15:0]}
         uint32_t w1 = (static_cast<uint32_t>(leftAddr) << 16) |
                       static_cast<uint32_t>(rightAddr);
+        // Word 2: {8'b0, left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
         uint32_t w2 = (static_cast<uint32_t>(leftUgdLen) << 16) |
                       (static_cast<uint32_t>(rightUgdLen) << 8) |
                       static_cast<uint32_t>(vecLen);
-        uint32_t w3 = (static_cast<uint32_t>(col_en) << 16) |
-                      (leftMan4b ? 4u : 0u) |
-                      (rightMan4b ? 2u : 0u) |
-                      (mainLoopOverLeft ? 1u : 0u);
+        // Word 3: {col_en[23:0], 5'b0, left_4b, right_4b, main_loop_left}
+        uint32_t w3 = ((col_en & 0xFFFFFF) << 8) |  // col_en[23:0] at bits [31:8]
+                      (leftMan4b ? 4u : 0u) |        // left_4b at bit [2]
+                      (rightMan4b ? 2u : 0u) |       // right_4b at bit [1]
+                      (mainLoopOverLeft ? 1u : 0u);   // main_loop_left at bit [0]
 
         issue_command(w0, w1, w2, w3);
         return id;
