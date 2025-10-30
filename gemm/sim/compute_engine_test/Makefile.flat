@@ -1,0 +1,136 @@
+# Makefile for Compute Engine Test with FLATTENED Ping-Pong BCV Controller
+# 
+# This version uses the flattened loop implementation for simpler logic
+
+# Simulator paths
+SIMULATOR := rivieradx
+VLIB := vlib
+VLOG := vlog
+VOPT := vopt
+VSIM := vsim
+
+# ACE installation path - use environment variable or default
+ACE_INSTALL_DIR ?= /opt/achronix/ACE_10_3_1/Achronix-linux
+
+# Device configuration
+DEVICE := AC7t1500
+DEVICE_SPEED := S3
+BASE_NAME := ac7t1500
+LOG_FILE := sim_flat.log
+
+# Achronix environment setup
+export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
+DSM_INCLUDE_FILE := $(ACX_DEVICE_INSTALL_DIR)/sim/$(BASE_NAME)_dsm_incdirs.f
+DSM_COMPILE_FILE := $(ACX_DEVICE_INSTALL_DIR)/sim/$(BASE_NAME)_dsm_filelist.v
+DEVICE_MODELS := $(ACE_INSTALL_DIR)/libraries/device_models/$(DEVICE)_simmodels.sv
+
+# Achronix Speedster7t library paths
+ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
+ACX_LIB_DSM := $(ACX_DEVICE_INSTALL_DIR)/sim
+
+# Project paths
+GEMM_ROOT := ../..
+GEMM_RTL := $(GEMM_ROOT)/src/rtl
+GEMM_TB := .
+GEMM_INC := $(GEMM_RTL)
+
+# Compilation flags
+VLOG_OPTIONS := +define+SIMULATION
+VLOG_OPTIONS += -sv
+VLOG_OPTIONS += -timescale "1ps/1ps"
+VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/
+VLOG_OPTIONS += +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim
+VLOG_OPTIONS += +incdir+$(ACX_LIB_S7T)/common
+VLOG_OPTIONS += +incdir+$(ACX_LIB_S7T)/hdl/rtl/common
+VLOG_OPTIONS += +incdir+$(GEMM_INC)
+VLOG_OPTIONS += -f $(DSM_INCLUDE_FILE)
+VLOG_OPTIONS += -msg 0
+VLOG_OPTIONS += -err VCP2587 W1
+
+# Default target
+all: run
+
+# Create work library
+lib:
+	@echo "Creating work library..."
+	@$(VLIB) work > $(LOG_FILE) 2>&1
+
+# Compile all sources
+compile: lib
+	@echo "======================================================================"
+	@echo "  Compilation Started: $(shell date)"
+	@echo "  Using FLATTENED PING-PONG BCV Controller"
+	@echo "======================================================================"
+	
+	@echo "Compiling packages..."
+	@$(VLOG) $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/gemm_pkg.sv \
+		>> $(LOG_FILE) 2>&1 || (echo "ERROR: Package compilation failed. See $(LOG_FILE)"; exit 1)
+	
+	@echo "Compiling Achronix primitives..."
+	@$(VLOG) $(VLOG_OPTIONS) \
+		$(DSM_COMPILE_FILE) \
+		$(DEVICE_MODELS) \
+		$(ACX_LIB_S7T)/common/acx_integer.sv \
+		$(ACX_LIB_S7T)/common/acx_floating_point.sv \
+		>> $(LOG_FILE) 2>&1 || (echo "ERROR: Achronix primitive compilation failed. See $(LOG_FILE)"; exit 1)
+	
+	@echo "Compiling RTL modules (with FLATTENED PING-PONG BCV)..."
+	@$(VLOG) $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/tile_bram.sv \
+		$(GEMM_RTL)/gfp8_nv_dot_merged.sv \
+		$(GEMM_RTL)/gfp8_group_dot_mlp.sv \
+		$(GEMM_RTL)/gfp8_to_fp16.sv \
+		$(GEMM_RTL)/gfp8_bcv_controller_pingpong_flat.sv \
+		$(GEMM_RTL)/compute_engine_modular.sv \
+		>> $(LOG_FILE) 2>&1 || (echo "ERROR: RTL compilation failed. See $(LOG_FILE)"; exit 1)
+	
+	@echo "Compiling testbench..."
+	@$(VLOG) $(VLOG_OPTIONS) \
+		$(GEMM_TB)/tb_compute_engine_modular.sv \
+		>> $(LOG_FILE) 2>&1 || (echo "ERROR: Testbench compilation failed. See $(LOG_FILE)"; exit 1)
+	
+	@echo "======================================================================"
+	@echo "  Compilation Completed: $(shell date)"
+	@echo "======================================================================"
+
+# Run simulation
+run: compile
+	@echo "Running Compute Engine with FLATTENED Ping-Pong BCV..."
+	@$(VSIM) -batch -do "run -all; quit" tb_compute_engine_modular >> $(LOG_FILE) 2>&1
+	@echo ""
+	@echo "======================================================================"
+	@echo "  Simulation Completed: $(shell date)"
+	@echo "======================================================================"
+	@echo ""
+	@echo "Extracting test summary..."
+	@grep -E "TEST|PASS|FAIL|STATUS|Matches:" $(LOG_FILE) | tail -20
+
+# Clean simulation files
+clean:
+	@echo "=== Cleaning Simulation Files ==="
+	@rm -rf work
+	@rm -f $(LOG_FILE)
+	@rm -f transcript
+	@rm -f *.wlf
+	@rm -f vsim.wlf
+	@rm -f modelsim.ini
+	@echo "Clean complete"
+	@echo ""
+
+# View log file
+view:
+	@tail -100 $(LOG_FILE)
+
+# Search for errors
+errors:
+	@grep -i "error\|fail" $(LOG_FILE) || echo "No errors found"
+
+# Performance comparison
+perf:
+	@echo "=== Performance Comparison ==="
+	@echo "Checking cycle counts..."
+	@grep "Total cycles:" $(LOG_FILE) || echo "Cycle count not found"
+	@grep "Time:" $(LOG_FILE) | tail -1
+
+.PHONY: all lib compile run clean view errors perf

@@ -1,6 +1,6 @@
 #######################################
 # ACE GENERATED SDC FILE
-# Generated on: 2025.10.28 at 20:44:42 PDT
+# Generated on: 2025.10.30 at 08:14:51 PDT
 # By: ACE 10.3.1
 # From project: elastix_gemm_top
 #######################################
@@ -40,13 +40,13 @@ create_clock -period 10.0 {i_adm_clk}
 # Frequency = 100.0 MHz
 set_clock_uncertainty -setup 0.10770329614269007 [get_clocks {i_adm_clk}]
 
-create_clock -period 5.0 {i_reg_clk}
-# Frequency = 200.0 MHz
-set_clock_uncertainty -setup 0.06403124237432849 [get_clocks {i_reg_clk}]
+create_clock -period 4.0 {i_reg_clk}
+# Frequency = 250.0 MHz
+set_clock_uncertainty -setup 0.0565685424949238 [get_clocks {i_reg_clk}]
 
-create_clock -period 10.0 {i_nap_clk}
-# Frequency = 100.0 MHz
-set_clock_uncertainty -setup 0.10770329614269007 [get_clocks {i_nap_clk}]
+create_clock -period 4.0 {i_nap_clk}
+# Frequency = 250.0 MHz
+set_clock_uncertainty -setup 0.0565685424949238 [get_clocks {i_nap_clk}]
 
 
 # Boundary clocks for pll_pcie

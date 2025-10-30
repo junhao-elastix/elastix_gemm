@@ -164,6 +164,23 @@ import gemm_pkg::*;
     logic disp_done_reg;
 
     // ===================================================================
+    // Performance Instrumentation (COMMENTED OUT)
+    // ===================================================================
+    /*
+    logic [31:0] disp_start_cycle;
+    logic [31:0] disp_end_cycle;
+    logic [31:0] total_disp_cycles;
+    logic [31:0] actual_copy_cycles;
+    logic [31:0] first_read_cycle;
+    logic [31:0] first_write_cycle;
+    logic [31:0] last_write_cycle;
+    logic [31:0] batch_transition_cycles;
+    logic [31:0] num_batch_transitions;
+    logic first_read_detected;
+    logic first_write_detected;
+    */
+
+    // ===================================================================
     // Helper Functions
     // ===================================================================
     // Population count (count number of 1's in a bitvector)
@@ -241,8 +258,51 @@ import gemm_pkg::*;
             disp_total_batches_reg <= '0;
             disp_within_batch_cnt_reg <= '0;
             batch_complete_pending <= 1'b0;
+            
+            // Performance counters (COMMENTED OUT)
+            /*
+            disp_start_cycle <= '0;
+            disp_end_cycle <= '0;
+            total_disp_cycles <= '0;
+            actual_copy_cycles <= '0;
+            first_read_cycle <= '0;
+            first_write_cycle <= '0;
+            last_write_cycle <= '0;
+            batch_transition_cycles <= '0;
+            num_batch_transitions <= '0;
+            first_read_detected <= 1'b0;
+            first_write_detected <= 1'b0;
+            */
         end else begin
             disp_done_reg <= 1'b0;  // Default
+            
+            // Performance: Track first read and first write (COMMENTED OUT)
+            /*
+            // Detect first read
+            if (!first_read_detected && state_reg == ST_DISP_BUSY && 
+                (o_disp_man_left_rd_en || o_disp_man_right_rd_en)) begin
+                first_read_detected <= 1'b1;
+                first_read_cycle <= $time / 10;
+                $display("[DISPATCHER] @%0t PERF: First read at cycle=%0d, latency_from_start=%0d",
+                        $time, $time / 10, ($time / 10) - disp_start_cycle);
+            end
+            
+            // Detect first write
+            if (!first_write_detected && 
+                (o_tile_man_left_wr_en || o_tile_man_right_wr_en ||
+                 o_tile_exp_left_wr_en || o_tile_exp_right_wr_en)) begin
+                first_write_detected <= 1'b1;
+                first_write_cycle <= $time / 10;
+                $display("[DISPATCHER] @%0t PERF: First write at cycle=%0d, latency_from_first_read=%0d",
+                        $time, $time / 10, ($time / 10) - first_read_cycle);
+            end
+            
+            // Track last write (update every write)
+            if (o_tile_man_left_wr_en || o_tile_man_right_wr_en ||
+                o_tile_exp_left_wr_en || o_tile_exp_right_wr_en) begin
+                last_write_cycle <= $time / 10;
+            end
+            */
 
             case (state_reg)
                 ST_IDLE: begin
@@ -274,11 +334,27 @@ import gemm_pkg::*;
                         disp_batch_cnt_reg <= '0;  // Start at batch 0
                         disp_within_batch_cnt_reg <= '0;  // Start at line 0 within batch
                         disp_write_cnt <= -11'sd1;  // Start at -1 so first write is to address 0
+                        
+                        // Performance: Start timer (COMMENTED OUT)
+                        /*
+                        disp_start_cycle <= $time / 10;  // Divide by 10 for 4ns clock period
+                        disp_end_cycle <= '0;
+                        total_disp_cycles <= '0;
+                        actual_copy_cycles <= '0;
+                        first_read_cycle <= '0;
+                        first_write_cycle <= '0;
+                        last_write_cycle <= '0;
+                        batch_transition_cycles <= '0;
+                        num_batch_transitions <= '0;
+                        first_read_detected <= 1'b0;
+                        first_write_detected <= 1'b0;
+                        */
 
                         $display("[DISPATCHER] @%0t DISP triggered: man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d, batch_lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
                                  $time, i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size,
                                  {2'b00, i_disp_ugd_vec_size} << 2,
                                  i_disp_right, i_disp_broadcast, i_disp_col_en, popcount_24bit(i_disp_col_en));
+                        // $display("[DISPATCHER] @%0t PERF: DISPATCH_START cycle=%0d", $time, $time / 10);
                     end
                 end
 
@@ -291,6 +367,9 @@ import gemm_pkg::*;
 
                     // Copy one line per cycle (mantissa and exponent in parallel)
                     if (!disp_man_done_reg) begin
+                        // Performance: Count copy cycles (COMMENTED OUT)
+                        // actual_copy_cycles <= actual_copy_cycles + 1;
+                        
                         // Increment read counter
                         disp_within_batch_cnt_reg <= disp_within_batch_cnt_reg + 1;
                         // Increment write counter (lags read by 1 cycle initially due to -1 start)
@@ -298,6 +377,9 @@ import gemm_pkg::*;
 
                         // Check if current batch complete (ugd_vec_size × 4 lines)
                         if (disp_within_batch_cnt_reg == (disp_ugd_batch_lines_reg - 1)) begin
+                            // Performance: Count batch transitions (COMMENTED OUT)
+                            // num_batch_transitions <= num_batch_transitions + 1;
+                            
                             // Batch complete, reset counters
                             disp_within_batch_cnt_reg <= '0;
                             disp_write_cnt <= -11'sd1;  // Reset write counter for next batch
@@ -379,7 +461,16 @@ import gemm_pkg::*;
                         disp_man_done_reg <= 1'b1;
                         disp_exp_done_reg <= 1'b1;
                         batch_complete_pending <= 1'b0;
+                        
+                        // Performance: Mark end of copy phase (COMMENTED OUT)
+                        /*
+                        disp_end_cycle <= $time / 10;
+                        total_disp_cycles <= ($time / 10) - disp_start_cycle;
+                        */
+                        
                         $display("[DISPATCHER] @%0t Final delayed write complete, setting done", $time);
+                        // $display("[DISPATCHER] @%0t PERF: DISPATCH_END cycle=%0d, total_cycles=%0d, copy_cycles=%0d, batch_transitions=%0d",
+                        //         $time, $time / 10, ($time / 10) - disp_start_cycle, actual_copy_cycles, num_batch_transitions);
                     end else if (set_batch_complete) begin
                         batch_complete_pending <= 1'b1;
                     end

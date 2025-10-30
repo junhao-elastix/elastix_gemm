@@ -120,7 +120,7 @@ struct TestConfig {
 };
 
 // Function Declarations
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose);
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing);
 
 // Main
 int main(int argc, char* argv[]) {
@@ -131,6 +131,7 @@ int main(int argc, char* argv[]) {
     // Parse command line arguments
     int device_id = 0;
     bool verbose = false;
+    bool timing = false;
     int test_B = -1, test_C = -1, test_V = -1;
     
     for (int i = 1; i < argc; ++i) {
@@ -138,6 +139,9 @@ int main(int argc, char* argv[]) {
             device_id = stoi(argv[++i]);
         } else if (strcmp(argv[i], "-v") == 0) {
             verbose = true;
+            timing = true;
+        } else if (strcmp(argv[i], "-t") == 0) {
+            timing = true;
         } else if (strcmp(argv[i], "-B") == 0 && i+1 < argc) {
             test_B = stoi(argv[++i]);
         } else if (strcmp(argv[i], "-C") == 0 && i+1 < argc) {
@@ -148,7 +152,8 @@ int main(int argc, char* argv[]) {
             cout << "Usage: test_gemm [options]\n";
             cout << "Options:\n";
             cout << "  -d N                Use device N (default: 0)\n";
-            cout << "  -v                  Verbose output\n";
+            cout << "  -v                  Verbose output (results and debug info)\n";
+            cout << "  -t                  Print timing information for each method\n";
             cout << "  -B N, -C N, -V N    Run single test with specified B, C, V parameters\n";
             cout << "  -h, --help          Show this help\n";
             cout << "\nDefault: Runs 10-config test suite if B/C/V not specified.\n";
@@ -179,7 +184,7 @@ int main(int argc, char* argv[]) {
             cout << "Single Test: B=" << test_B << ", C=" << test_C << ", V=" << test_V << endl;
             cout << "========================================" << endl;
             
-            bool result = run_single_test(gemm_device, test_B, test_C, test_V, verbose);
+            bool result = run_single_test(gemm_device, test_B, test_C, test_V, verbose, timing);
             
             cout << "\n========================================" << endl;
             cout << "TEST " << (result ? "PASSED" : "FAILED") << endl;
@@ -218,7 +223,7 @@ int main(int argc, char* argv[]) {
             cout << "  B=" << config.B << ", C=" << config.C << ", V=" << config.V << endl;
             cout << "----------------------------------------" << endl;
             
-            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose);
+            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing);
             
             if (result) {
                 passed++;
@@ -247,7 +252,7 @@ int main(int argc, char* argv[]) {
 }
 
 // Run Single Test Configuration
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose) {
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing) {
     try {
         // Load matrices from hex files
         string left_hex = "../../hex/left.hex";
@@ -295,16 +300,24 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // Time the FETCH operations
         auto fetch_left_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);  // Left matrix
+        if (!gemm_device.wait_idle(10)) {
+            cerr << "ERROR: FETCH LEFT timeout" << endl;
+            return false;
+        }
         auto fetch_left_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> fetch_left_duration = fetch_left_end - fetch_left_start;
-        if (verbose) {
+        if (timing) {
             cout << "  FETCH LEFT commands took " << fetch_left_duration.count() << " ms" << endl;
         }
         auto fetch_right_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true); // Right matrix (fetch_right=true)
+        if (!gemm_device.wait_idle(10)) {
+            cerr << "ERROR: FETCH RIGHT timeout" << endl;
+            return false;
+        }
         auto fetch_right_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> fetch_right_duration = fetch_right_end - fetch_right_start;
-        if (verbose) {
+        if (timing) {
             cout << "  FETCH RIGHT commands took " << fetch_right_duration.count() << " ms" << endl;
         }
 
@@ -328,7 +341,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.waitDispatch(disp_left_id);
         auto dispatch_left_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> dispatch_left_duration = dispatch_left_end - dispatch_left_start;
-        if (verbose) {
+        if (timing) {
             cout << "  DISPATCH LEFT commands took " << dispatch_left_duration.count() << " ms" << endl;
         }
 
@@ -352,7 +365,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.waitDispatch(disp_right_id);
         auto dispatch_right_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> dispatch_right_duration = dispatch_right_end - dispatch_right_start;
-        if (verbose) {
+        if (timing) {
             cout << "  DISPATCH RIGHT commands took " << dispatch_right_duration.count() << " ms" << endl;
         }
 
@@ -375,7 +388,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.waitTile(tile_id);
         auto tile_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> tile_duration = tile_end - tile_start;
-        if (verbose) {
+        if (timing) {
             cout << "  MATMUL commands took " << tile_duration.count() << " ms" << endl;
         }
 
@@ -386,7 +399,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
         auto wait_idle_end = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> wait_idle_duration = wait_idle_end - wait_idle_start;
-        if (verbose) {
+        if (timing) {
             cout << "  WAIT IDLE commands took " << wait_idle_duration.count() << " ms" << endl;
         }
 
@@ -466,7 +479,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
         auto wait_idle_end_2 = chrono::high_resolution_clock::now();
         chrono::duration<double, std::milli> wait_idle_duration_2 = wait_idle_end_2 - wait_idle_start_2;
-        if (verbose) {
+        if (timing) {
             cout << "  WAIT IDLE commands took " << wait_idle_duration_2.count() << " ms" << endl;
         }
         // Soft reset after test

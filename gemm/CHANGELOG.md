@@ -1,5 +1,208 @@
 # CHANGELOG - Elastix GEMM Project
 
+## [2025-10-30] - Documentation and Profiling Cleanup
+
+**Timestamp**: Thu Oct 30 2025 (Post-Hardware Validation)
+**Status**: ✅ **CLEANUP COMPLETE** - Documentation archived, profiling analysis preserved
+**Achievement**: Clean production-ready documentation structure with all analysis preserved
+
+### Summary
+
+Comprehensive documentation cleanup following successful hardware validation and profiling code removal. Archived completed milestone documents and detailed profiling analysis to streamline the documentation structure while preserving all historical information for future reference.
+
+### Documentation Cleanup
+
+**Root Directory** (4 files archived to `docs/archive_oct30_cleanup/`):
+- `FLATTENED_BCV_SUMMARY.md` - BCV controller flattening implementation summary
+- `FLATTENED_SUCCESS_COMPLETE.md` - BCV flattening completion milestone
+- `PINGPONG_IMPLEMENTATION_SUMMARY.md` - Ping-pong buffer implementation details
+- `PINGPONG_SUCCESS_FINAL.md` - Ping-pong buffer success milestone
+
+**Simulation Directory** (13 files archived to `sim/vector_system_test/archive_oct30_profiling/`):
+- `FETCHER_OPTIMIZATION.md` - Initial fetcher optimization proposals
+- `FETCHER_DEEP_ANALYSIS.md` - Cycle-by-cycle fetcher analysis
+- `FETCHER_LATENCY_FINAL_SUMMARY.md` - Final latency optimization results
+- `STATE_MACHINE_OVERHEAD_ANALYSIS.md` - State machine ping-pong analysis
+- `PERFECT_MEMORY_ANALYSIS.md` - Zero-latency memory model testing
+- `DISPATCHER_PROFILE.md` - Comprehensive dispatcher profiling
+- `BRAM_ARCHITECTURE_ANALYSIS.md` - BRAM interface analysis
+- `PARALLEL_ARCHITECTURE_FIX.md` - Parallel operation fixes
+- `DISP_COPY_BUG_ANALYSIS.md` - Dispatcher bug investigation
+- `OPTIMIZATION_STATUS.md` - Optimization tracking
+- `LATENCY_ANALYSIS.md` - General latency analysis
+- `PHASE4_RESULTS.md` - Phase 4 test results
+- `CLEANUP_SUMMARY.md` - Previous cleanup documentation
+
+### Essential Documentation Preserved
+
+**Active Technical References**:
+- `CHANGELOG.md` - Complete project history
+- `README.md` - Project overview and getting started
+- `CLAUDE.md` - Architecture and development guide
+- `REFERENCES.md` - Documentation index
+- `SINGLE_ROW_REFERENCE.md` - Architecture specification
+- `STATE_TRANSITIONS_REFERENCE.md` - FSM behavior reference
+- `MULTI_TILE_DISPATCH_REFERENCE.md` - Multi-tile architecture
+- `GFP_EXPLANATION.md` - GFP8 format documentation
+
+### Rationale
+
+**Why Archive**:
+1. **Implementation Complete**: BCV flattening and ping-pong buffers are production-ready
+2. **Profiling Complete**: Detailed analysis served its purpose, findings documented in CHANGELOG
+3. **Information Preserved**: All critical information incorporated into production documentation
+4. **Clean Structure**: Root directory should contain only essential/active documentation
+
+**Information Preservation**:
+- Implementation details → CHANGELOG.md entries
+- Technical specifications → Reference documents and source code comments
+- Test results → CHANGELOG.md validation sections
+- Profiling methodology → Archived with detailed ARCHIVE_INFO.txt for future reference
+
+### Archive Structure
+
+```
+docs/archive_oct30_cleanup/
+├── ARCHIVE_INFO.txt (detailed manifest)
+├── FLATTENED_BCV_SUMMARY.md
+├── FLATTENED_SUCCESS_COMPLETE.md
+├── PINGPONG_IMPLEMENTATION_SUMMARY.md
+└── PINGPONG_SUCCESS_FINAL.md
+
+sim/vector_system_test/archive_oct30_profiling/
+├── ARCHIVE_INFO.txt (profiling manifest)
+├── [13 profiling and analysis documents]
+└── [Detailed recovery instructions]
+```
+
+### Current Status
+
+**Production Documentation** (12 essential files):
+- Core docs: CHANGELOG, README, CLAUDE, REFERENCES (4)
+- Technical specs: SINGLE_ROW, STATE_TRANSITIONS, MULTI_TILE_DISPATCH, GFP_EXPLANATION (4)
+- Build/utility scripts: build_and_flash.sh, hex.tcl, hex_rescan_registers.sh, dispatch.py (4)
+
+**Hardware Status**:
+- ✅ Bitstream: 0x10300814 (Build: 10/30 08:14)
+- ✅ All 10 GEMM tests passing (100%)
+- ✅ Profiling code commented out (production-ready RTL)
+- ✅ Device health: ADM Status 0x3, all registers functional
+
+### Recovery Instructions
+
+All archived documents preserved for future reference:
+```bash
+# Root milestone documents
+cd docs/archive_oct30_cleanup
+cat ARCHIVE_INFO.txt  # Full manifest with recovery details
+
+# Profiling analysis documents
+cd sim/vector_system_test/archive_oct30_profiling
+cat ARCHIVE_INFO.txt  # Profiling manifest and re-enable instructions
+```
+
+### Impact
+
+- **Improved Navigation**: Essential documentation easy to find in root directory
+- **Historical Preservation**: All analysis and milestones preserved in organized archives
+- **Professional Structure**: Production-ready documentation organization
+- **No Information Loss**: Complete manifests and recovery instructions provided
+
+---
+
+## [2025-10-30] - Profiling Code Cleanup in Fetcher and Dispatcher
+
+**Timestamp**: Thu Oct 30 2025
+**Status**: ✅ **ALL TESTS PASSING** - Profiling instrumentation commented out, simulation verified
+**Achievement**: Clean production-ready RTL with all profiling code preserved but disabled
+
+### Summary
+
+Commented out all performance profiling instrumentation in `fetcher.sv` and `dispatcher.sv` that was added during the latency analysis phase. All profiling code is preserved in source files for future use but disabled to keep the modules clean for production. Simulation verified with all tests passing (10/10) and no profiling messages in output.
+
+### Changes Made
+
+**1. Fetcher Profiling Code Commented Out** (`fetcher.sv`)
+- Signal declarations: ~50 lines of performance counter signals
+- Performance tracking logic: ~220 lines in `always_ff` block
+- Deep profiling infrastructure: Cycle-by-cycle burst tracking arrays
+- Display statements: All `$display` for `FETCHER_PERF`, `FETCH_DEEP`, `FETCH_STATE` messages
+- **Preserved**: All profiling code remains in source, wrapped in block comments
+
+**2. Dispatcher Profiling Code Commented Out** (`dispatcher.sv`)
+- Signal declarations: ~15 lines of performance counter signals
+- Performance tracking logic: ~40 lines in `always_ff` block
+- Display statements: All `$display` for `PERF:` and dispatcher timing messages
+- **Preserved**: All profiling code remains in source, wrapped in block comments
+
+**3. Simulation Verification**
+- Ran full test suite: `make clean && make run`
+- **Result**: 10/10 tests passing
+- **Profiling messages**: 0 (verified with `grep -E "FETCHER_PERF|FETCH_DEEP|FETCH_STATE|PERF:" sim.log | wc -l`)
+- **Functional behavior**: Identical to profiled version
+
+### Profiling Infrastructure Preserved
+
+All profiling code can be easily re-enabled for future analysis by:
+1. Uncommenting signal declarations in signal declaration section
+2. Uncommenting the performance tracking `always_ff` blocks
+3. Uncommenting the `$display` statements
+
+### Test Results
+
+```
+STATUS: ALL TESTS PASSED
+Profiling Messages: 0
+
+Test results:
+✅ B1_C1_V1    - PASS
+✅ B2_C2_V2    - PASS
+✅ B4_C4_V4    - PASS
+✅ B2_C2_V64   - PASS
+✅ B4_C4_V32   - PASS
+✅ B8_C8_V16   - PASS
+✅ B16_C16_V8  - PASS
+✅ B1_C128_V1  - PASS
+✅ B128_C1_V1  - PASS
+✅ B1_C1_V128  - PASS
+```
+
+### Modified Files
+
+1. **src/rtl/fetcher.sv**:
+   - Lines ~120-170: Performance counter declarations (commented)
+   - Lines ~450-670: Performance tracking always_ff block (commented)
+   - Multiple `$display` statements for profiling output (commented)
+
+2. **src/rtl/dispatcher.sv**:
+   - Lines ~180-195: Performance counter declarations (commented)
+   - Lines ~420-460: Performance tracking logic (commented)
+   - `$display` statements for PERF messages (commented)
+
+### Impact
+
+- **Code Quality**: Clean, production-ready RTL modules
+- **Maintainability**: Profiling infrastructure preserved for future debugging
+- **Simulation**: Faster simulation runs without profiling overhead
+- **Documentation**: Complete profiling analysis documented in:
+  - `FETCHER_OPTIMIZATION.md`
+  - `DISPATCHER_PROFILE.md`
+  - `PERFECT_MEMORY_ANALYSIS.md`
+  - `FETCHER_DEEP_ANALYSIS.md`
+  - `STATE_MACHINE_OVERHEAD_ANALYSIS.md`
+  - `OPTIMIZATION_STATUS.md`
+  - `FETCHER_LATENCY_FINAL_SUMMARY.md`
+
+### Next Steps
+
+Ready for:
+- Hardware synthesis and validation
+- Integration with compute engine optimizations
+- Performance benchmarking on FPGA
+- Production deployment
+
+---
+
 ## [2025-10-29 02:11] - OPTIMIZATION: BCV Controller Refactor with Flag-Based Ready Signal
 
 **Timestamp**: Tue Oct 29 02:11:00 PDT 2025

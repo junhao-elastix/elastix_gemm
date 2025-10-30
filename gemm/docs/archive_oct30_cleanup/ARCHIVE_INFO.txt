@@ -1,0 +1,76 @@
+================================================================================
+ARCHIVE INFORMATION - October 30, 2025 Cleanup
+================================================================================
+
+Archive Date: October 30, 2025
+Archive Location: docs/archive_oct30_cleanup/
+Archived By: AI Assistant (Cleanup Task)
+
+PURPOSE:
+--------
+Archived completed milestone documents and implementation summaries that
+have been superseded by production code and updated documentation.
+
+FILES ARCHIVED (4 files):
+--------------------------
+
+1. FLATTENED_BCV_SUMMARY.md
+   - Date: October 2025
+   - Content: BCV controller flattening analysis and implementation summary
+   - Status: Implementation complete, documented in CHANGELOG.md
+   - Size: Historical milestone documentation
+
+2. FLATTENED_SUCCESS_COMPLETE.md
+   - Date: October 2025
+   - Content: Completion report for BCV flattening optimization
+   - Status: Success milestone achieved, code now in production
+   - Size: Historical milestone documentation
+
+3. PINGPONG_IMPLEMENTATION_SUMMARY.md
+   - Date: October 2025
+   - Content: Ping-pong buffer implementation details and analysis
+   - Status: Implementation complete, documented in CHANGELOG.md and code comments
+   - Size: Historical implementation documentation
+
+4. PINGPONG_SUCCESS_FINAL.md
+   - Date: October 2025
+   - Content: Final success report for ping-pong buffer integration
+   - Status: Feature complete and validated in production
+   - Size: Historical milestone documentation
+
+REASON FOR ARCHIVAL:
+--------------------
+These documents capture important implementation milestones but are no longer
+needed in the root directory because:
+
+1. Implementation details are now documented in CHANGELOG.md
+2. Technical specifications are preserved in:
+   - SINGLE_ROW_REFERENCE.md (architecture)
+   - STATE_TRANSITIONS_REFERENCE.md (FSM behavior)
+   - Source code comments (implementation)
+3. Test results are documented in CHANGELOG.md
+4. Root directory should contain only active/essential documentation
+
+INFORMATION PRESERVATION:
+-------------------------
+All critical information from these documents has been incorporated into:
+- CHANGELOG.md (implementation history)
+- Source code comments (technical details)
+- README.md (current status)
+- CLAUDE.md (architecture overview)
+
+RECOVERY INSTRUCTIONS:
+----------------------
+If any archived document is needed for reference:
+
+cd /home/workstation/elastix_gemm/gemm/docs/archive_oct30_cleanup
+# Files are preserved here for historical reference
+
+RELATED CLEANUP:
+----------------
+Simulation profiling documents also archived to:
+sim/vector_system_test/archive_oct30_profiling/
+(See ARCHIVE_INFO.txt in that directory for details)
+
+================================================================================
+

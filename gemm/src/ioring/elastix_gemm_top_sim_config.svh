@@ -1,6 +1,6 @@
 //////////////////////////////////////
 // ACE GENERATED VERILOG INCLUDE FILE
-// Generated on: 2025.10.28 at 20:44:42 PDT
+// Generated on: 2025.10.30 at 08:14:51 PDT
 // By: ACE 10.3.1
 // From project: elastix_gemm_top
 //////////////////////////////////////
@@ -30,7 +30,7 @@
 
 // Global clocks driven from SW corner
 `ifndef ACX_CLK_SW_FULL
-`ACX_DEVICE_NAME.clocks.global_clk_sw.set_global_clocks({'d5000,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d10000,'d5000,'d10000,'d1000,'d1250,'d5000,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d10000,'d5000,'d10000,'d1000,'d1250});
+`ACX_DEVICE_NAME.clocks.global_clk_sw.set_global_clocks({'d5000,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d4000,'d4000,'d10000,'d1000,'d1250,'d5000,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d0,'d4000,'d4000,'d10000,'d1000,'d1250});
 `endif
 
 

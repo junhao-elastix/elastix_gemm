@@ -1,5 +1,5 @@
 #ACE 10.3.1 Auxiliary IO Design Properties File, generated on:
-#Tue Oct 28 20:44:42 PDT 2025
+#Thu Oct 30 08:14:51 PDT 2025
 ddr4_clk.frequency=800.0
 ddr4_clk.input_to_core=No
 ddr4_clk.output_from_core=No
@@ -72,7 +72,7 @@ i_adm_clk.output_from_core=No
 i_adm_clk.source_ip=PLL_SW_3
 i_adm_clk.track=2
 i_adm_clk.type=GlobalAndLocal
-i_nap_clk.frequency=100.0
+i_nap_clk.frequency=250.0
 i_nap_clk.input_to_core=Yes
 i_nap_clk.output_from_core=No
 i_nap_clk.source_ip=PLL_SW_3
@@ -84,7 +84,7 @@ i_pcie_ts_clk.output_from_core=No
 i_pcie_ts_clk.source_ip=PLL_NE_2
 i_pcie_ts_clk.track=0
 i_pcie_ts_clk.type=GlobalAndLocal
-i_reg_clk.frequency=200.0
+i_reg_clk.frequency=250.0
 i_reg_clk.input_to_core=Yes
 i_reg_clk.output_from_core=No
 i_reg_clk.source_ip=PLL_SW_3

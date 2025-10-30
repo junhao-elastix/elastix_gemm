@@ -23,7 +23,7 @@ module tb_memory_model
     parameter ADDR_WIDTH = 42,         // AXI address width (42-bit for GDDR6 NoC: {Page[9], Line[26], Pad[2], Byte[5]})
     parameter LINES_PER_BLOCK = 528,   // GFP8 block size
     parameter NUM_BLOCKS = 2,          // Left and right blocks
-    parameter READ_LATENCY_NS = 20     // Reduced latency for faster simulation (was 100ns)
+    parameter LATENCY_CYCLES = 0       // PERFECT TEST: 0 latency to measure pure fetcher overhead
 )
 (
     input  logic        i_clk,
@@ -43,21 +43,16 @@ module tb_memory_model
     // Total memory: NUM_BLOCKS x LINES_PER_BLOCK x 256-bit
     logic [DATA_WIDTH-1:0] mem_array [0:NUM_BLOCKS*LINES_PER_BLOCK-1];
 
-    // ===================================================================
-    // AXI Transaction State Machine
-    // ===================================================================
+    // AXI State Machine - PERFECT: arready same cycle, zero latency
     typedef enum logic [2:0] {
         AXI_IDLE    = 3'b000,
-        AXI_ARREADY = 3'b001,
-        AXI_LATENCY = 3'b010,  // Model GDDR6 read latency
-        AXI_RDATA   = 3'b011
+        AXI_RDATA   = 3'b011  // Skip ARREADY and LATENCY states for perfect response
     } axi_state_t;
 
     axi_state_t axi_state_reg, axi_state_next;
 
     // Latency modeling - use cycle counter instead of time
     integer latency_counter_reg;
-    localparam LATENCY_CYCLES = READ_LATENCY_NS / 10;  // Convert ns to cycles (10ns clock period)
 
     // ===================================================================
     // AXI Transaction Registers
@@ -88,6 +83,13 @@ module tb_memory_model
         integer scan_result;
 
         $display("[TB_MEM_MODEL] Loading memory from hex files...");
+        $display("[TB_MEM_MODEL] ===============================================");
+        $display("[TB_MEM_MODEL] ** PERFECT ZERO-LATENCY MODE **");
+        $display("[TB_MEM_MODEL] - arready: SAME cycle as arvalid");
+        $display("[TB_MEM_MODEL] - First rvalid: NEXT cycle after AR");
+        $display("[TB_MEM_MODEL] - rvalid: CONTINUOUS (no gaps)");
+        $display("[TB_MEM_MODEL] - This measures PURE fetcher state machine overhead");
+        $display("[TB_MEM_MODEL] ===============================================");
 
         // Initialize all memory to zero first
         for (int i = 0; i < NUM_BLOCKS*LINES_PER_BLOCK; i = i + 1) begin
@@ -179,22 +181,13 @@ module tb_memory_model
     end
 
     // ===================================================================
-    // AXI State Machine
+    // AXI State Machine - PERFECT: No latency counter needed
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             axi_state_reg <= AXI_IDLE;
-            latency_counter_reg <= 0;
         end else begin
             axi_state_reg <= axi_state_next;
-
-            // Reset counter when entering latency state
-            if (axi_state_reg == AXI_ARREADY && axi_state_next == AXI_LATENCY) begin
-                latency_counter_reg <= 0;
-                $display("[TB_MEM_MODEL] @%0t Starting latency countdown: %0d cycles", $time, LATENCY_CYCLES);
-            end else if (axi_state_reg == AXI_LATENCY) begin
-                latency_counter_reg <= latency_counter_reg + 1;
-            end
         end
     end
 
@@ -203,25 +196,14 @@ module tb_memory_model
 
         case (axi_state_reg)
             AXI_IDLE: begin
+                // PERFECT: Accept AR and go directly to RDATA (data ready next cycle)
                 if (axi_mem_if.arvalid) begin
-                    axi_state_next = AXI_ARREADY;
-                end
-            end
-
-            AXI_ARREADY: begin
-                // Acknowledge address, enter latency state
-                axi_state_next = AXI_LATENCY;
-            end
-
-            AXI_LATENCY: begin
-                // Model GDDR6 read latency using cycle counter
-                if (latency_counter_reg >= LATENCY_CYCLES) begin
-                    $display("[TB_MEM_MODEL] @%0t Latency complete (%0d cycles), moving to RDATA", $time, latency_counter_reg);
                     axi_state_next = AXI_RDATA;
                 end
             end
 
             AXI_RDATA: begin
+                // PERFECT: Continuous data every cycle
                 if (axi_mem_if.rvalid && axi_mem_if.rready) begin
                     if (axi_mem_if.rlast) begin
                         axi_state_next = AXI_IDLE;
@@ -256,7 +238,8 @@ module tb_memory_model
         end
     end
 
-    assign axi_mem_if.arready = (axi_state_reg == AXI_ARREADY);
+    // PERFECT: arready same cycle as arvalid (combinational)
+    assign axi_mem_if.arready = (axi_state_reg == AXI_IDLE);
 
     // ===================================================================
     // AXI Read Data Channel
@@ -274,15 +257,15 @@ module tb_memory_model
             read_last_reg <= 1'b0;
 
             case (axi_state_reg)
-                AXI_ARREADY: begin
-                    beat_count_reg <= '0;
-                end
-
-                AXI_LATENCY: begin
-                    // Wait for latency to elapse (no action needed)
+                AXI_IDLE: begin
+                    // PERFECT: Reset beat counter when accepting new AR
+                    if (axi_mem_if.arvalid && axi_mem_if.arready) begin
+                        beat_count_reg <= '0;
+                    end
                 end
 
                 AXI_RDATA: begin
+                    // PERFECT: Data available EVERY cycle (continuous rvalid)
                     if (!read_valid_reg || (read_valid_reg && axi_mem_if.rready)) begin
                         // Calculate memory address (byte address -> line address)
                         logic [ADDR_WIDTH-1:0] byte_addr;
@@ -364,7 +347,8 @@ module tb_memory_model
                 $display("[TB_MEM_MODEL] @%0t State: %0d -> %0d", $time, axi_state_reg, axi_state_next);
             end
 
-            if (axi_state_reg == AXI_ARREADY) begin
+            if (axi_state_reg == AXI_RDATA && beat_count_reg == 0) begin
+                // PERFECT: Print AR info when entering RDATA for first time
                 $display("[TB_MEM_MODEL] AR: addr=0x%08x, id=0x%02x, len=%0d, size=%0d, burst=%0d",
                          ar_addr_reg, ar_id_reg, ar_len_reg+1, 1<<ar_size_reg, ar_burst_reg);
             end

@@ -128,6 +128,44 @@ import gemm_pkg::*;
     // Edge detection for command enable (prevent double-triggering)
     logic fetch_en_prev;
 
+    // ===================================================================
+    // Performance Instrumentation (COMMENTED OUT)
+    // ===================================================================
+    /*
+    logic [31:0] cycles_in_idle;
+    logic [31:0] cycles_in_init;
+    logic [31:0] cycles_in_read;
+    logic [31:0] cycles_in_read_exp;
+    logic [31:0] cycles_in_read_man;
+    logic [31:0] cycles_in_done;
+    logic [31:0] axi_ar_wait_cycles;      // Cycles waiting for AR ready
+    logic [31:0] axi_r_gap_cycles;        // Gaps between R beats
+    logic [31:0] total_fetch_cycles;      // Total cycles from start to done
+    logic [31:0] fetch_start_cycle;
+    logic [31:0] fetch_end_cycle;
+    logic axi_ar_waiting;                 // Currently waiting for AR ready
+    logic axi_ar_prev_valid;              // Previous AR valid state
+    logic axi_r_prev_valid;               // Previous R valid state
+    state_t state_reg_prev;               // Previous state for detecting transitions
+    
+    // DEEP PROFILING: Cycle-by-cycle tracking
+    logic [31:0] cycle_counter;           // Global cycle counter
+    logic [31:0] last_ar_handshake_cycle;
+    logic [31:0] last_r_beat_cycle;
+    logic [31:0] first_r_beat_after_ar;
+    logic [31:0] ar_to_first_r_latency;
+    logic [31:0] inter_burst_gaps [0:32]; // Track gap between each burst
+    logic [4:0]  burst_index;             // Which burst we're on (0-32)
+    logic [31:0] burst_start_cycles [0:32]; // When each burst AR happened
+    logic [31:0] burst_end_cycles [0:32];   // When each burst RLAST happened
+    logic [31:0] burst_data_cycles [0:32];  // Actual data transfer cycles per burst
+    logic [31:0] current_burst_start;     // Immediate value for current burst start (for same-cycle calc)
+    
+    // Summary stats (for final report)
+    logic [31:0] total_burst_duration;
+    logic [31:0] total_inter_burst_gap;
+    */
+
     // BRAM control signals
     logic [10:0] bram_wr_addr_reg;
     logic [MAN_WIDTH-1:0] bram_wr_data_reg;
@@ -159,7 +197,6 @@ import gemm_pkg::*;
             ST_IDLE: begin
                 // Only trigger on RISING edge of enable to prevent double-triggering
                 if (i_fetch_en && !fetch_en_prev) begin
-                    $display("[FETCHER] @%0t ST_IDLE: i_fetch_en RISING EDGE, transitioning to FETCH_INIT", $time);
                     state_next = ST_FETCH_INIT;
                 end
             end
@@ -173,10 +210,8 @@ import gemm_pkg::*;
                 // Issue AXI read request
                 if (axi_ddr_if.arvalid && axi_ddr_if.arready) begin
                     if (exp_lines_fetched_reg < 16) begin
-                        $display("[FETCHER] @%0t ST_FETCH_READ: AR handshake, moving to FETCH_READ_EXP", $time);
                         state_next = ST_FETCH_READ_EXP;
                     end else begin
-                        $display("[FETCHER] @%0t ST_FETCH_READ: AR handshake, moving to FETCH_READ_MAN", $time);
                         state_next = ST_FETCH_READ_MAN;
                     end
                 end
@@ -186,7 +221,6 @@ import gemm_pkg::*;
                 // Read exponent burst (16 beats)
                 if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
                     if (exp_lines_fetched_reg >= 15) begin
-                        $display("[FETCHER] @%0t FETCH_READ_EXP complete (%0d lines), moving to FETCH_READ for mantissas", $time, exp_lines_fetched_reg + 1);
                         state_next = ST_FETCH_READ;  // Issue next AR for first mantissa burst
                     end else begin
                         state_next = ST_FETCH_READ;  // Issue next AR for more exponents
@@ -198,7 +232,6 @@ import gemm_pkg::*;
                 // Read mantissa bursts (32 bursts x 16 beats = 512 lines) + parallel unpack
                 if (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
                     if (man_lines_fetched_reg >= 511) begin
-                        $display("[FETCHER] @%0t FETCH_READ_MAN complete (%0d lines), moving to FETCH_DONE", $time, man_lines_fetched_reg + 1);
                         state_next = ST_FETCH_DONE;
                     end else begin
                         state_next = ST_FETCH_READ;  // Issue next AR for more mantissas
@@ -208,7 +241,6 @@ import gemm_pkg::*;
 
             ST_FETCH_DONE: begin
                 // Fetch complete - exponents already unpacked in parallel!
-                $display("[FETCHER] @%0t FETCH_DONE, returning to IDLE (unpacking done in parallel)", $time);
                 state_next = ST_IDLE;
             end
 
@@ -281,6 +313,235 @@ import gemm_pkg::*;
             endcase
         end
     end
+
+    // ===================================================================
+    // Performance Instrumentation - Cycle Counting (COMMENTED OUT)
+    // ===================================================================
+    /*
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            cycles_in_idle <= '0;
+            cycles_in_init <= '0;
+            cycles_in_read <= '0;
+            cycles_in_read_exp <= '0;
+            cycles_in_read_man <= '0;
+            cycles_in_done <= '0;
+            axi_ar_wait_cycles <= '0;
+            axi_r_gap_cycles <= '0;
+            axi_ar_waiting <= 1'b0;
+            axi_ar_prev_valid <= 1'b0;
+            axi_r_prev_valid <= 1'b0;
+            state_reg_prev <= ST_IDLE;
+            total_fetch_cycles <= '0;
+            fetch_start_cycle <= '0;
+            fetch_end_cycle <= '0;
+            
+            // Deep profiling
+            cycle_counter <= '0;
+            last_ar_handshake_cycle <= '0;
+            last_r_beat_cycle <= '0;
+            first_r_beat_after_ar <= '0;
+            ar_to_first_r_latency <= '0;
+            burst_index <= '0;
+            total_burst_duration <= '0;
+            total_inter_burst_gap <= '0;
+            current_burst_start <= '0;
+            for (int i = 0; i <= 32; i++) begin
+                inter_burst_gaps[i] <= '0;
+                burst_start_cycles[i] <= '0;
+                burst_end_cycles[i] <= '0;
+                burst_data_cycles[i] <= '0;
+            end
+        end else begin
+            // Global cycle counter
+            cycle_counter <= cycle_counter + 1;
+            
+            // Detect start of new FETCH operation 
+            // Check if we're in FETCH_INIT and haven't started counting yet
+            if (state_reg == ST_FETCH_INIT && fetch_start_cycle == '0) begin
+                // Reset instrumentation counters for new FETCH
+                cycles_in_idle <= '0;
+                cycles_in_init <= '0;
+                cycles_in_read <= '0;
+                cycles_in_read_exp <= '0;
+                cycles_in_read_man <= '0;
+                cycles_in_done <= '0;
+                axi_ar_wait_cycles <= '0;
+                axi_r_gap_cycles <= '0;
+                fetch_start_cycle <= cycle_counter;
+                fetch_end_cycle <= '0;
+                total_fetch_cycles <= '0;
+                
+                // Deep profiling reset
+                burst_index <= '0;
+                last_ar_handshake_cycle <= '0;
+                last_r_beat_cycle <= '0;
+                first_r_beat_after_ar <= '0;
+                total_burst_duration <= '0;
+                total_inter_burst_gap <= '0;
+                current_burst_start <= '0;
+                for (int i = 0; i <= 32; i++) begin
+                    inter_burst_gaps[i] <= '0;
+                    burst_start_cycles[i] <= '0;
+                    burst_end_cycles[i] <= '0;
+                    burst_data_cycles[i] <= '0;
+                end
+                
+                $display("[FETCH_DEEP] ========== NEW FETCH STARTED ==========");
+                $display("[FETCH_DEEP] Start cycle: %0d", cycle_counter);
+            end
+
+            // Count cycles in each state (only during active FETCH operation)
+            if (fetch_start_cycle != '0 && fetch_end_cycle == '0) begin
+                if (state_reg == ST_IDLE) cycles_in_idle <= cycles_in_idle + 1;
+                if (state_reg == ST_FETCH_INIT) cycles_in_init <= cycles_in_init + 1;
+                if (state_reg == ST_FETCH_READ) cycles_in_read <= cycles_in_read + 1;
+                if (state_reg == ST_FETCH_READ_EXP) cycles_in_read_exp <= cycles_in_read_exp + 1;
+                if (state_reg == ST_FETCH_READ_MAN) cycles_in_read_man <= cycles_in_read_man + 1;
+                if (state_reg == ST_FETCH_DONE) cycles_in_done <= cycles_in_done + 1;
+
+                // Track AXI AR handshake waits (within active FETCH)
+                if (state_reg == ST_FETCH_READ && axi_ddr_if.arvalid && !axi_ddr_if.arready) begin
+                    axi_ar_waiting <= 1'b1;
+                    axi_ar_wait_cycles <= axi_ar_wait_cycles + 1;
+                end else if (axi_ddr_if.arready) begin
+                    axi_ar_waiting <= 1'b0;
+                end
+
+                // DEEP: Track AR handshake timing
+                if (axi_ddr_if.arvalid && axi_ddr_if.arready) begin
+                    last_ar_handshake_cycle <= cycle_counter;
+                    burst_start_cycles[burst_index] <= cycle_counter;
+                    current_burst_start <= cycle_counter;  // Immediate update for same-cycle use
+                    first_r_beat_after_ar <= '0; // Reset for this burst
+                    
+                    // Calculate inter-burst gap NOW (time from previous RLAST to this AR)
+                    if (burst_index > 0) begin
+                        inter_burst_gaps[burst_index-1] <= cycle_counter - burst_end_cycles[burst_index-1];
+                    end
+                end
+
+                // DEEP: Track R data timing
+                if (axi_ddr_if.rvalid && axi_ddr_if.rready) begin
+                    // Track first R beat after AR (for latency measurement)
+                    if (first_r_beat_after_ar == '0 && last_ar_handshake_cycle != '0) begin
+                        first_r_beat_after_ar <= cycle_counter;
+                        ar_to_first_r_latency <= cycle_counter - last_ar_handshake_cycle;
+                    end
+                    
+                    // Track last R beat for this fetch
+                    last_r_beat_cycle <= cycle_counter;
+                    
+                    // Track RLAST
+                    if (axi_ddr_if.rlast) begin
+                        burst_end_cycles[burst_index] <= cycle_counter;
+                        // Use current_burst_start for same-cycle accurate calculation
+                        burst_data_cycles[burst_index] <= cycle_counter - current_burst_start;
+                        
+                        burst_index <= burst_index + 1;
+                    end
+                end
+
+                // Track AXI R data gaps (valid=0 when we're expecting data)
+                if ((state_reg == ST_FETCH_READ_EXP || state_reg == ST_FETCH_READ_MAN) && 
+                    axi_r_ready_reg && !axi_ddr_if.rvalid) begin
+                    axi_r_gap_cycles <= axi_r_gap_cycles + 1;
+                end
+            end
+
+            // Track previous states for edge detection
+            axi_ar_prev_valid <= axi_ddr_if.arvalid;
+            axi_r_prev_valid <= axi_ddr_if.rvalid;
+            
+            // STATE TRANSITION TRACKING - Detect and log every transition
+            if (state_reg != state_reg_prev && fetch_start_cycle != '0 && fetch_end_cycle == '0) begin
+                $display("[FETCH_STATE] @%0t Cycle %0d: STATE TRANSITION %0d -> %0d", 
+                        $time, cycle_counter, state_reg_prev, state_reg);
+                
+                // Special logging for key transitions
+                case (state_reg)
+                    ST_FETCH_READ: begin
+                        $display("[FETCH_STATE]   -> Entered ST_FETCH_READ (transition/wait state)");
+                    end
+                    ST_FETCH_READ_EXP: begin
+                        $display("[FETCH_STATE]   -> Entered ST_FETCH_READ_EXP (fetching exponents)");
+                    end
+                    ST_FETCH_READ_MAN: begin
+                        $display("[FETCH_STATE]   -> Entered ST_FETCH_READ_MAN (fetching mantissas)");
+                    end
+                    ST_FETCH_DONE: begin
+                        $display("[FETCH_STATE]   -> Entered ST_FETCH_DONE (operation complete)");
+                    end
+                endcase
+            end
+            
+            state_reg_prev <= state_reg;
+
+            // Detect completion (transition from anything to ST_FETCH_DONE)
+            // Use state_reg_prev to detect when we JUST entered FETCH_DONE
+            if (state_reg == ST_FETCH_DONE && state_reg_prev != ST_FETCH_DONE && fetch_start_cycle != '0) begin
+                fetch_end_cycle <= cycle_counter;
+                total_fetch_cycles <= cycle_counter - fetch_start_cycle;
+                
+                // Report instrumentation
+                $display("[FETCHER_PERF] ========================================");
+                $display("[FETCHER_PERF] FETCH Performance Breakdown:");
+                $display("[FETCHER_PERF] Total cycles: %0d", cycle_counter - fetch_start_cycle);
+                $display("[FETCHER_PERF]   ST_IDLE:         %0d cycles", cycles_in_idle);
+                $display("[FETCHER_PERF]   ST_FETCH_INIT:   %0d cycles", cycles_in_init);
+                $display("[FETCHER_PERF]   ST_FETCH_READ:   %0d cycles", cycles_in_read);
+                $display("[FETCHER_PERF]   ST_FETCH_READ_EXP: %0d cycles", cycles_in_read_exp);
+                $display("[FETCHER_PERF]   ST_FETCH_READ_MAN: %0d cycles", cycles_in_read_man);
+                $display("[FETCHER_PERF]   ST_FETCH_DONE:   %0d cycles", cycles_in_done);
+                $display("[FETCHER_PERF] AXI Wait Cycles:");
+                $display("[FETCHER_PERF]   AR handshake waits: %0d cycles", axi_ar_wait_cycles);
+                $display("[FETCHER_PERF]   R data gaps:       %0d cycles", axi_r_gap_cycles);
+                $display("[FETCHER_PERF] Data transfer:");
+                $display("[FETCHER_PERF]   Exp lines fetched: %0d", exp_lines_fetched_reg);
+                $display("[FETCHER_PERF]   Man lines fetched: %0d", man_lines_fetched_reg);
+                
+                // DEEP PROFILING REPORT
+                $display("[FETCH_DEEP] ==========================================");
+                $display("[FETCH_DEEP] DETAILED BURST-BY-BURST ANALYSIS");
+                $display("[FETCH_DEEP] Total bursts: %0d", burst_index);
+                
+                // Calculate average latencies
+                total_burst_duration = 0;
+                total_inter_burst_gap = 0;
+                
+                for (int i = 0; i < burst_index; i++) begin
+                    total_burst_duration = total_burst_duration + burst_data_cycles[i];
+                    if (i > 0) begin
+                        total_inter_burst_gap = total_inter_burst_gap + inter_burst_gaps[i-1];
+                    end
+                end
+                
+                $display("[FETCH_DEEP] Average burst duration: %0d cycles", 
+                        burst_index > 0 ? total_burst_duration / burst_index : 0);
+                $display("[FETCH_DEEP] Average inter-burst gap: %0d cycles", 
+                        burst_index > 1 ? total_inter_burst_gap / (burst_index-1) : 0);
+                $display("[FETCH_DEEP] Total data transfer cycles: %0d", total_burst_duration);
+                $display("[FETCH_DEEP] Total inter-burst gaps: %0d cycles", total_inter_burst_gap);
+                $display("[FETCH_DEEP] State machine overhead: %0d cycles", 
+                        (cycle_counter - fetch_start_cycle) - total_burst_duration - total_inter_burst_gap);
+                
+                $display("[FETCH_DEEP] ==========================================");
+                $display("[FETCH_DEEP] THEORETICAL vs ACTUAL:");
+                $display("[FETCH_DEEP] Theoretical (perfect):  561 cycles (33 bursts × 17 cycles)");
+                $display("[FETCH_DEEP] Actual measured:       %0d cycles", cycle_counter - fetch_start_cycle);
+                $display("[FETCH_DEEP] Pure overhead:         %0d cycles (%0d%%)",
+                        (cycle_counter - fetch_start_cycle) - 561,
+                        ((cycle_counter - fetch_start_cycle) - 561) * 100 / 561);
+                $display("[FETCHER_PERF] ========================================");
+            end
+
+            // Reset fetch_start_cycle when returning to IDLE after completion
+            if (state_reg == ST_IDLE && fetch_end_cycle != '0) begin
+                fetch_start_cycle <= '0;
+            end
+        end
+    end
+    */
 
     assign o_fetch_done = fetch_done_reg;
 
@@ -414,23 +675,25 @@ import gemm_pkg::*;
             // Read Address Channel
             if (state_reg == ST_FETCH_INIT) begin
                 axi_ar_req_reg <= 1'b1;
-                $display("[FETCHER] @%0t Setting axi_ar_req_reg=1 in ST_FETCH_INIT", $time);
-            end else if (state_reg == ST_FETCH_READ && axi_ddr_if.arvalid && axi_ddr_if.arready) begin
+            end else if (axi_ddr_if.arvalid && axi_ddr_if.arready) begin
+                // OPTIMIZATION: Clear AR request after any handshake
+                // Works for both pipelined and non-pipelined modes
                 axi_ar_req_reg <= 1'b0;
-                $display("[FETCHER] @%0t Clearing axi_ar_req_reg=0 after AR handshake", $time);
             end else if ((state_reg == ST_FETCH_READ_EXP || state_reg == ST_FETCH_READ_MAN) && 
                         axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast) begin
-                // Burst complete - issue next AR if more data needed
-                if (state_reg == ST_FETCH_READ_EXP && exp_lines_fetched_reg >= 15) begin
-                    // Exponent phase complete, need to start mantissa phase
-                    axi_ar_req_reg <= 1'b1;
-                    $display("[FETCHER] @%0t EXP phase done, requesting first MAN burst", $time);
-                end else if (state_reg == ST_FETCH_READ_EXP) begin
-                    // More exponent bursts needed
-                    axi_ar_req_reg <= 1'b1;
-                end else if (state_reg == ST_FETCH_READ_MAN && man_lines_fetched_reg < 511) begin
-                    // More mantissa bursts needed
-                    axi_ar_req_reg <= 1'b1;
+                // OPTIMIZATION: Issue next AR request immediately on RLAST
+                // This saves 1-2 cycles per burst vs waiting for ST_FETCH_READ transition
+                // Original design: RLAST -> ST_FETCH_READ -> wait -> set AR -> handshake
+                // Optimized: RLAST -> set AR (same cycle) -> handshake -> continue
+                // Savings: ~33 cycles total (1 cycle/burst × 33 bursts)
+                if (!axi_ar_req_reg) begin  // Only if AR not already pending
+                    if (state_reg == ST_FETCH_READ_EXP && exp_lines_fetched_reg < 15) begin
+                        axi_ar_req_reg <= 1'b1;
+                    end else if (state_reg == ST_FETCH_READ_EXP && exp_lines_fetched_reg >= 15) begin
+                        axi_ar_req_reg <= 1'b1;
+                    end else if (state_reg == ST_FETCH_READ_MAN && man_lines_fetched_reg < 511) begin
+                        axi_ar_req_reg <= 1'b1;
+                    end
                 end
             end
 
@@ -438,7 +701,9 @@ import gemm_pkg::*;
             axi_r_ready_reg <= (state_reg == ST_FETCH_READ_EXP || state_reg == ST_FETCH_READ_MAN);
 
             // Beat counter
-            if (state_reg == ST_FETCH_READ) begin
+            if (state_reg == ST_FETCH_READ || 
+                (axi_ddr_if.rvalid && axi_ddr_if.rready && axi_ddr_if.rlast)) begin
+                // Reset on ST_FETCH_READ entry OR after RLAST
                 beat_count_reg <= '0;
             end else if ((state_reg == ST_FETCH_READ_EXP || state_reg == ST_FETCH_READ_MAN) && 
                         axi_ddr_if.rvalid && axi_ddr_if.rready) begin
@@ -451,7 +716,7 @@ import gemm_pkg::*;
     // AXI Interface Assignments
     // ===================================================================
 
-    // AXI Read Address Channel
+    // AXI Read Address Channel - use registered signal directly
     assign axi_ddr_if.arvalid  = axi_ar_req_reg;
     assign axi_ddr_if.arid     = 8'hFE;  // Fetcher ID (changed from 0xDC)
     // CRITICAL: Include GDDR6_PAGE_ID in address for correct NoC routing

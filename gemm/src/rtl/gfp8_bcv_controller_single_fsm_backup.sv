@@ -10,28 +10,20 @@
 //  - Output: B x C results (one per (b,c) pair)
 //
 // State Machine:
-//  DUAL FSM ARCHITECTURE with Ping-Pong Buffering
+//  IDLE         -> Wait for TILE command
+//  FILL_BUFFER  -> Load 4 groups (exp+man) for both NV_left and NV_right (5 cycles)
+//                  TRUE 1-cycle BRAM latency: Combinational addr → BRAM → registered output
+//                  Sets ready flag on cycle 4, transitions on cycle 5
+//  COMPUTE_NV   -> Compute NV dot product (4 cycles)  
+//  ACCUM        -> Accumulate result into V-loop accumulator (1 cycle)
+//  RETURN       -> Output final result after V iterations complete (1 cycle)
 //
-//  FSM_FILL: Manages buffer filling (producer)
-//    FILL_IDLE   -> Wait for trigger or check conditions to start fill
-//    FILL_ACTIVE -> Fill PING or PONG buffer (5 cycles)
+// Latency per output: 5 (fill) + 4 (compute) + 1 (accum) = 10 cycles per V
+//                     Total: 10xV + 1 (return) cycles per BxC result
 //
-//  FSM_COMP: Manages computation (consumer)
-//    COMP_IDLE   -> Wait for ready buffer
-//    COMP_NV     -> Compute NV dot product (4 cycles)
-//    COMP_ACCUM  -> Accumulate result (1 cycle)
-//    COMP_RETURN -> Output final result
-//
-//  Handshake Protocol:
-//    filling_ping : Fill FSM sets HIGH when filling PING, Compute FSM clears when starting compute
-//    filling_pong : Fill FSM sets HIGH when filling PONG, Compute FSM clears when starting compute
-//    ping_ready   : Fill FSM sets HIGH when PING filled, Compute FSM clears in ACCUM after compute
-//    pong_ready   : Fill FSM sets HIGH when PONG filled, Compute FSM clears in ACCUM after compute
-//
-// Latency per output (Ping-Pong):
-//   First V:  10 cycles (5 fill + 4 compute + 1 accum)
-//   V>=1:     6 cycles (max(5 fill, 4 compute) overlapped + 1 accum)
-//   Total:    10 + 6×(V-1) + 1 (return) ≈ 6V + 5 cycles per BxC result
+// OPTIMIZATION: Direct combinational connection (no BCV output registers!)
+//   Cycle 0 (IDLE→FILL): Issue G0 read → Cycle 1: Capture G0, Issue G1 → ...
+//   Cycle 4: Capture G3, set ready flag → Cycle 5: Transition on flag
 //
 // Author: Refactoring from compute_engine.sv
 // Date: Fri Oct 10 2025
@@ -76,25 +68,18 @@ module gfp8_bcv_controller (
 );
 
     // ===================================================================
-    // Dual State Machine Definition
+    // State Machine Definition
     // ===================================================================
-    
-    // Fill FSM
-    typedef enum logic {
-        FILL_IDLE   = 1'b0,
-        FILL_ACTIVE = 1'b1
-    } fill_state_t;
-    fill_state_t fill_state_reg, fill_state_next;
-    
-    // Compute FSM
     typedef enum logic [2:0] {
-        COMP_IDLE   = 3'd0,
-        COMP_NV     = 3'd1,
-        COMP_ACCUM  = 3'd2,
-        COMP_RETURN = 3'd3,
-        COMP_DONE   = 3'd4
-    } comp_state_t;
-    comp_state_t comp_state_reg, comp_state_next;
+        ST_IDLE        = 3'd0,
+        ST_FILL_BUFFER = 3'd1,  // Load both NV_left and NV_right (4 cycles)
+        ST_COMPUTE_NV  = 3'd2,  // Compute NV dot product (2 cycles)
+        ST_ACCUM       = 3'd3,  // Accumulate into V-loop accumulator
+        ST_RETURN      = 3'd4,  // Output final result
+        ST_DONE        = 3'd5
+    } state_t;
+    
+    state_t state_reg, state_next;
     
     // ===================================================================
     // Loop Indices (B, C, V nested loops)
@@ -113,57 +98,23 @@ module gfp8_bcv_controller (
     
     assign i_tile_en_rising = i_tile_en && !i_tile_en_prev;
     
-    // ===================================================================
-    // Ping-Pong Handshake Signals
-    // ===================================================================
-    logic filling_ping, filling_pong;  // Producer (Fill FSM) sets, Consumer (Comp FSM) clears at start
-    logic ping_ready, pong_ready;      // Producer sets, Consumer clears after done
+    // Fill buffer ready flag (set when last group captured)
+    logic fill_buffer_ready;
     
     // ===================================================================
-    // Native Vector Buffers - PING-PONG (Double Buffering)
+    // Native Vector Buffers (Local Storage)
     // ===================================================================
     
-    // PING buffers
-    logic [31:0]  nv_left_exp_ping;
-    logic [255:0] nv_left_man_ping [0:3];
-    logic [31:0]  nv_right_exp_ping;
-    logic [255:0] nv_right_man_ping [0:3];
+    // NV_left buffer
+    logic [31:0]  nv_left_exp;         // 4 bytes (one per group)
+    logic [255:0] nv_left_man [0:3];   // 4 lines x 256 bits
     
-    // PONG buffers
-    logic [31:0]  nv_left_exp_pong;
-    logic [255:0] nv_left_man_pong [0:3];
-    logic [31:0]  nv_right_exp_pong;
-    logic [255:0] nv_right_man_pong [0:3];
+    // NV_right buffer
+    logic [31:0]  nv_right_exp;        // 4 bytes (one per group)
+    logic [255:0] nv_right_man [0:3];  // 4 lines x 256 bits
     
-    // Active buffer selection (for compute FSM)
-    logic use_pong;  // 0=use PING, 1=use PONG
-    logic [31:0]  nv_left_exp_active;
-    logic [255:0] nv_left_man_active [0:3];
-    logic [31:0]  nv_right_exp_active;
-    logic [255:0] nv_right_man_active [0:3];
-    
-    // Buffer mux
-    always_comb begin
-        if (use_pong) begin
-            nv_left_exp_active = nv_left_exp_pong;
-            nv_right_exp_active = nv_right_exp_pong;
-            for (int i = 0; i < 4; i++) begin
-                nv_left_man_active[i] = nv_left_man_pong[i];
-                nv_right_man_active[i] = nv_right_man_pong[i];
-            end
-        end else begin
-            nv_left_exp_active = nv_left_exp_ping;
-            nv_right_exp_active = nv_right_exp_ping;
-            for (int i = 0; i < 4; i++) begin
-                nv_left_man_active[i] = nv_left_man_ping[i];
-                nv_right_man_active[i] = nv_right_man_ping[i];
-            end
-        end
-    end
-    
-    // Fill FSM control
-    logic fill_target;  // 0=fill PING, 1=fill PONG
-    logic [2:0] fill_cycle;  // Fill cycle counter (0-4)
+    // Fill cycle counter (0-4: TRUE 1-cycle latency, 4 groups + 1 final cycle)
+    logic [2:0] fill_cycle;  // 3 bits to count 0-7
     
     // ===================================================================
     // NV Dot Product Instance
@@ -171,18 +122,18 @@ module gfp8_bcv_controller (
     logic signed [31:0] nv_dot_mantissa;
     logic signed [7:0]  nv_dot_exponent;
     
-    // Enable signal: pulse high when entering COMP_NV
+    // Enable signal: pulse high when entering ST_COMPUTE_NV
     logic nv_dot_input_valid;
-    assign nv_dot_input_valid = (comp_state_reg != COMP_NV) && (comp_state_next == COMP_NV);
+    assign nv_dot_input_valid = (state_reg != ST_COMPUTE_NV) && (state_next == ST_COMPUTE_NV);
     
     gfp8_nv_dot u_nv_dot (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
-        .i_input_valid      (nv_dot_input_valid),
-        .i_exp_left         (nv_left_exp_active),
-        .i_man_left         (nv_left_man_active),
-        .i_exp_right        (nv_right_exp_active),
-        .i_man_right        (nv_right_man_active),
+        .i_input_valid      (nv_dot_input_valid),  // Latch inputs only when entering COMPUTE
+        .i_exp_left         (nv_left_exp),
+        .i_man_left         (nv_left_man),
+        .i_exp_right        (nv_right_exp),
+        .i_man_right        (nv_right_man),
         .o_result_mantissa  (nv_dot_mantissa),
         .o_result_exponent  (nv_dot_exponent)
     );

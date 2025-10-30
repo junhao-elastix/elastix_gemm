@@ -33,8 +33,8 @@
 # and there should be CDC logic between any of the domain crossing paths
 #
 # Clock domains:
-#   i_reg_clk (200 MHz): Register control block, PCIe register interface
-#   i_nap_clk (300-400 MHz): NAP/NoC operations, GDDR6 access, BRAM operations
+#   i_reg_clk (250 MHz): Register control block, PCIe register interface
+#   i_nap_clk (400 MHz): NAP/NoC operations, GDDR6 access, BRAM operations
 #   i_adm_clk (100 MHz): ADM/GDDR6 training
 #
 # CDC paths in design:
