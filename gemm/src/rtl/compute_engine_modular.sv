@@ -89,24 +89,17 @@ import gemm_pkg::*;
 );
 
     // ===================================================================
-    // Internal Tile BRAM Read Signals (tile_bram → bcv_controller)
-    // All four BRAMs have identical structure: 9-bit address + enable
+    // NV Interface Signals (tile_bram ↔ bcv_controller)
     // ===================================================================
-    logic [8:0]    tile_bram_left_rd_addr;
-    logic [255:0]  tile_bram_left_rd_data;
-    logic          tile_bram_left_rd_en;
-
-    logic [8:0]    tile_bram_right_rd_addr;
-    logic [255:0]  tile_bram_right_rd_data;
-    logic          tile_bram_right_rd_en;
-
-    logic [8:0]    tile_bram_left_exp_rd_addr;
-    logic [7:0]    tile_bram_left_exp_rd_data;
-    logic          tile_bram_left_exp_rd_en;
-
-    logic [8:0]    tile_bram_right_exp_rd_addr;
-    logic [7:0]    tile_bram_right_exp_rd_data;
-    logic          tile_bram_right_exp_rd_en;
+    // NV index outputs from BCV controller
+    logic [6:0]    nv_left_rd_idx;
+    logic [6:0]    nv_right_rd_idx;
+    
+    // Complete NV data from tile_bram
+    logic [31:0]   nv_left_exp;
+    logic [255:0]  nv_left_man [0:3];
+    logic [31:0]   nv_right_exp;
+    logic [255:0]  nv_right_man [0:3];
 
     // ===================================================================
     // BCV Controller Signals
@@ -169,23 +162,14 @@ import gemm_pkg::*;
         .i_exp_right_wr_en    (i_right_exp_wr_en),
         .i_exp_right_wr_data  (i_right_exp_wr_data),
 
-        // Read ports (internal connection to bcv_controller)
-        // Dual-port mantissa reads + exponent reads
-        .i_man_left_rd_addr   (tile_bram_left_rd_addr),
-        .o_man_left_rd_data   (tile_bram_left_rd_data),
-        .i_man_left_rd_en     (tile_bram_left_rd_en),
-
-        .i_man_right_rd_addr  (tile_bram_right_rd_addr),
-        .o_man_right_rd_data  (tile_bram_right_rd_data),
-        .i_man_right_rd_en    (tile_bram_right_rd_en),
-
-        .i_exp_left_rd_addr   (tile_bram_left_exp_rd_addr),
-        .o_exp_left_rd_data   (tile_bram_left_exp_rd_data),
-        .i_exp_left_rd_en     (tile_bram_left_exp_rd_en),
-
-        .i_exp_right_rd_addr  (tile_bram_right_exp_rd_addr),
-        .o_exp_right_rd_data  (tile_bram_right_exp_rd_data),
-        .i_exp_right_rd_en    (tile_bram_right_exp_rd_en)
+        // NV Read ports (internal connection to bcv_controller)
+        .i_nv_left_rd_idx     (nv_left_rd_idx),
+        .o_nv_left_exp        (nv_left_exp),
+        .o_nv_left_man        (nv_left_man),
+        
+        .i_nv_right_rd_idx    (nv_right_rd_idx),
+        .o_nv_right_exp       (nv_right_exp),
+        .o_nv_right_man       (nv_right_man)
     );
 
     // ===================================================================
@@ -240,23 +224,14 @@ import gemm_pkg::*;
         .i_right_base_addr  (i_tile_right_addr),
         .o_tile_done        (bcv_tile_done),
 
-        // Dual BRAM mantissa interface - INTERNAL connection to tile_bram
-        .o_man_left_rd_addr (tile_bram_left_rd_addr),
-        .o_man_left_rd_en   (tile_bram_left_rd_en),
-        .i_man_left_rd_data (tile_bram_left_rd_data),
-
-        .o_man_right_rd_addr(tile_bram_right_rd_addr),
-        .o_man_right_rd_en  (tile_bram_right_rd_en),
-        .i_man_right_rd_data(tile_bram_right_rd_data),
-
-        // Exponent interface - INTERNAL connection to tile_bram
-        .o_exp_left_rd_addr (tile_bram_left_exp_rd_addr),
-        .o_exp_left_rd_en   (tile_bram_left_exp_rd_en),
-        .i_exp_left_rd_data (tile_bram_left_exp_rd_data),
-
-        .o_exp_right_rd_addr(tile_bram_right_exp_rd_addr),
-        .o_exp_right_rd_en  (tile_bram_right_exp_rd_en),
-        .i_exp_right_rd_data(tile_bram_right_exp_rd_data),
+        // NV interface - INTERNAL connection to tile_bram
+        .o_nv_left_rd_idx   (nv_left_rd_idx),
+        .i_nv_left_exp      (nv_left_exp),
+        .i_nv_left_man      (nv_left_man),
+        
+        .o_nv_right_rd_idx  (nv_right_rd_idx),
+        .i_nv_right_exp     (nv_right_exp),
+        .i_nv_right_man     (nv_right_man),
 
         // GFP8 result
         .o_result_mantissa  (bcv_result_mantissa),

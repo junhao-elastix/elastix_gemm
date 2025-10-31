@@ -1,25 +1,25 @@
 // ------------------------------------------------------------------
-// Tile BRAM Module with Separate Left/Right Architecture
+// Tile BRAM Module with Native Vector Packing
 //
-// Purpose: L1 memory layer for compute engine
-// Architecture (matches dispatcher_bram.sv structure):
-//  - FOUR separate BRAMs:
-//    man_left:   256-bit × 512 lines (left matrix mantissas)
-//    man_right:  256-bit × 512 lines (right matrix mantissas)
-//    exp_left:   8-bit × 512 entries (left exponents)
-//    exp_right:  8-bit × 512 entries (right exponents)
+// Purpose: L1 memory layer with automatic NV packing for single-cycle reads
+// Architecture:
+//  - Storage: 128 Native Vectors (NVs) per side
+//  - Each NV contains:
+//    - 4 mantissa groups (256-bit each)
+//    - 1 packed exponent (32-bit with 4 bytes)
 //
 // Write Interface:
-//  - FOUR PARALLEL WRITE PORTS (per SINGLE_ROW_REFERENCE.md)
-//  - All four can write in SAME cycle with counter [0-511]
-//  - man_left, man_right, exp_left, exp_right all driven simultaneously
+//  - Line-based writes (same as before) with automatic NV packing
+//  - FOUR PARALLEL WRITE PORTS - All can write in same cycle
+//  - Writes are automatically packed into NV format internally
 //
-// Read Interface (to compute_engine):
-//  - Dual-read mantissas: Parallel left/right access
-//  - Dual-read exponents: Separate left/right ports
+// Read Interface:
+//  - NEW: Native Vector interface for single-cycle NV reads
+//  - Combinational (0-latency) access to complete NVs
+//  - Old line-based interface REMOVED
 //
-// Author: MS2.0 Architecture - Separate BRAM Fix
-// Date: Sun Oct 27, 2025
+// Author: NV Packing Optimization
+// Date: Thu Oct 31, 2024
 // ------------------------------------------------------------------
 
 module tile_bram #(
@@ -57,41 +57,30 @@ module tile_bram #(
     input  logic [EXP_WIDTH-1:0]        i_exp_right_wr_data,
 
     // ====================================================================
-    // Dual Read Ports (for compute_engine)
-    // All four BRAMs have identical structure: 9-bit address + enable
+    // Native Vector Read Interface (NEW)
+    // Combinational reads - complete NV in single cycle
     // ====================================================================
-    // Left matrix mantissa read
-    input  logic [ADDR_WIDTH-1:0]       i_man_left_rd_addr,
-    input  logic                        i_man_left_rd_en,
-    output logic [MAN_WIDTH-1:0]        o_man_left_rd_data,
+    // Left NV read
+    input  logic [6:0]                  i_nv_left_rd_idx,      // NV index [0-127]
+    output logic [31:0]                 o_nv_left_exp,         // Packed exponents
+    output logic [MAN_WIDTH-1:0]        o_nv_left_man [0:3],   // 4 mantissa groups
 
-    // Right matrix mantissa read
-    input  logic [ADDR_WIDTH-1:0]       i_man_right_rd_addr,
-    input  logic                        i_man_right_rd_en,
-    output logic [MAN_WIDTH-1:0]        o_man_right_rd_data,
-
-    // Left exponent read
-    input  logic [ADDR_WIDTH-1:0]       i_exp_left_rd_addr,
-    input  logic                        i_exp_left_rd_en,
-    output logic [EXP_WIDTH-1:0]        o_exp_left_rd_data,
-
-    // Right exponent read
-    input  logic [ADDR_WIDTH-1:0]       i_exp_right_rd_addr,
-    input  logic                        i_exp_right_rd_en,
-    output logic [EXP_WIDTH-1:0]        o_exp_right_rd_data
+    // Right NV read
+    input  logic [6:0]                  i_nv_right_rd_idx,     // NV index [0-127]
+    output logic [31:0]                 o_nv_right_exp,        // Packed exponents
+    output logic [MAN_WIDTH-1:0]        o_nv_right_man [0:3]   // 4 mantissa groups
 );
 
     // ===================================================================
-    // LEFT SIDE BUFFERS
+    // NV-PACKED STORAGE (128 Native Vectors per side)
     // ===================================================================
-    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] man_left [0:BRAM_DEPTH-1];   // 512 lines
-    (* ram_style = "block" *) logic [EXP_WIDTH-1:0] exp_left [0:BRAM_DEPTH-1];   // 512 exponents
-
-    // ===================================================================
-    // RIGHT SIDE BUFFERS
-    // ===================================================================
-    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] man_right [0:BRAM_DEPTH-1];  // 512 lines
-    (* ram_style = "block" *) logic [EXP_WIDTH-1:0] exp_right [0:BRAM_DEPTH-1];  // 512 exponents
+    // Left side: 128 Native Vectors
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_left [0:127][0:3];  // 128 NVs × 4 groups
+    (* ram_style = "block" *) logic [31:0]          nv_exp_left [0:127];       // 128 NVs × packed exp
+    
+    // Right side: 128 Native Vectors  
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_right [0:127][0:3]; // 128 NVs × 4 groups
+    (* ram_style = "block" *) logic [31:0]          nv_exp_right [0:127];      // 128 NVs × packed exp
 
     // ===================================================================
     // SIMULATION NOTE: Memory initialization via DISPATCH operation
@@ -100,108 +89,98 @@ module tile_bram #(
     // (simulating DISPATCH operation)
 
     // ===================================================================
-    // WRITE LOGIC - MANTISSAS (PARALLEL - All can write in same cycle)
+    // WRITE LOGIC - Pack line-based writes into NV format
     // ===================================================================
-    // Left mantissa write
+    // Left mantissa write - pack into NV format
     always_ff @(posedge i_clk) begin
         if (i_man_left_wr_en) begin
-            man_left[i_man_left_wr_addr] <= i_man_left_wr_data;
-            `ifdef SIMULATION
-            $display("[TILE_WR] @%0t man_left[%0d] = 0x%064x",
-                     $time, i_man_left_wr_addr, i_man_left_wr_data);
-            `endif
+            // Calculate NV index and group within NV
+            automatic logic [6:0] nv_idx = i_man_left_wr_addr[8:2];    // NV index (addr/4)
+            automatic logic [1:0] group_idx = i_man_left_wr_addr[1:0]; // Group within NV [0-3]
+            
+            // Write mantissa to correct group slot in NV
+            nv_man_left[nv_idx][group_idx] <= i_man_left_wr_data;
+            
+            // `ifdef SIMULATION
+            // $display("[TILE_WR] @%0t nv_man_left[%0d][%0d] = 0x%064x (line_addr=%0d)",
+            //          $time, nv_idx, group_idx, i_man_left_wr_data, i_man_left_wr_addr);
+            // `endif
         end
     end
 
-    // Right mantissa write (can execute in SAME cycle as left)
+    // Right mantissa write - pack into NV format
     always_ff @(posedge i_clk) begin
         if (i_man_right_wr_en) begin
-            man_right[i_man_right_wr_addr] <= i_man_right_wr_data;
-            `ifdef SIMULATION
-            $display("[TILE_WR] @%0t man_right[%0d] = 0x%064x",
-                     $time, i_man_right_wr_addr, i_man_right_wr_data);
-            `endif
+            automatic logic [6:0] nv_idx = i_man_right_wr_addr[8:2];
+            automatic logic [1:0] group_idx = i_man_right_wr_addr[1:0];
+            
+            nv_man_right[nv_idx][group_idx] <= i_man_right_wr_data;
+            
+            // `ifdef SIMULATION
+            // $display("[TILE_WR] @%0t nv_man_right[%0d][%0d] = 0x%064x (line_addr=%0d)",
+            //          $time, nv_idx, group_idx, i_man_right_wr_data, i_man_right_wr_addr);
+            // `endif
         end
     end
 
     // ===================================================================
-    // WRITE LOGIC - EXPONENTS
+    // WRITE LOGIC - EXPONENTS (packed into 32-bit words)
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (i_exp_left_wr_en) begin
-            exp_left[i_exp_left_wr_addr] <= i_exp_left_wr_data;
-            `ifdef SIMULATION
-            $display("[TILE_WR] @%0t exp_left[%0d] = 0x%02x",
-                     $time, i_exp_left_wr_addr, i_exp_left_wr_data);
-            `endif
+            automatic logic [6:0] nv_idx = i_exp_left_wr_addr[8:2];
+            automatic logic [1:0] group_idx = i_exp_left_wr_addr[1:0];
+            
+            // Pack exponent into correct byte position in 32-bit word
+            case (group_idx)
+                2'd0: nv_exp_left[nv_idx][7:0]   <= i_exp_left_wr_data;
+                2'd1: nv_exp_left[nv_idx][15:8]  <= i_exp_left_wr_data;
+                2'd2: nv_exp_left[nv_idx][23:16] <= i_exp_left_wr_data;
+                2'd3: nv_exp_left[nv_idx][31:24] <= i_exp_left_wr_data;
+            endcase
+            
+            // `ifdef SIMULATION
+            // $display("[TILE_WR] @%0t nv_exp_left[%0d][byte %0d] = 0x%02x",
+            //          $time, nv_idx, group_idx, i_exp_left_wr_data);
+            // `endif
         end
+        
         if (i_exp_right_wr_en) begin
-            exp_right[i_exp_right_wr_addr] <= i_exp_right_wr_data;
-            `ifdef SIMULATION
-            $display("[TILE_WR] @%0t exp_right[%0d] = 0x%02x",
-                     $time, i_exp_right_wr_addr, i_exp_right_wr_data);
-            `endif
+            automatic logic [6:0] nv_idx = i_exp_right_wr_addr[8:2];
+            automatic logic [1:0] group_idx = i_exp_right_wr_addr[1:0];
+            
+            case (group_idx)
+                2'd0: nv_exp_right[nv_idx][7:0]   <= i_exp_right_wr_data;
+                2'd1: nv_exp_right[nv_idx][15:8]  <= i_exp_right_wr_data;
+                2'd2: nv_exp_right[nv_idx][23:16] <= i_exp_right_wr_data;
+                2'd3: nv_exp_right[nv_idx][31:24] <= i_exp_right_wr_data;
+            endcase
+            
+            // `ifdef SIMULATION
+            // $display("[TILE_WR] @%0t nv_exp_right[%0d][byte %0d] = 0x%02x",
+            //          $time, nv_idx, group_idx, i_exp_right_wr_data);
+            // `endif
         end
     end
 
     // ===================================================================
-    // READ LOGIC - MANTISSAS (Dual-Port)
+    // NV READ LOGIC - Combinational (0-latency)
     // ===================================================================
-    logic [MAN_WIDTH-1:0] man_left_rd_data_reg;
-    logic [MAN_WIDTH-1:0] man_right_rd_data_reg;
-
-    // Left mantissa read (registered)
-    always_ff @(posedge i_clk) begin
-        if (i_man_left_rd_en) begin
-            man_left_rd_data_reg <= man_left[i_man_left_rd_addr];
-            `ifdef SIMULATION
-            $display("[TILE_RD] @%0t man_left[%0d] → 0x%064x",
-                     $time, i_man_left_rd_addr, man_left[i_man_left_rd_addr]);
-            `endif
-        end
-    end
-    assign o_man_left_rd_data = man_left_rd_data_reg;
-
-    // Right mantissa read (registered)
-    always_ff @(posedge i_clk) begin
-        if (i_man_right_rd_en) begin
-            man_right_rd_data_reg <= man_right[i_man_right_rd_addr];
-            `ifdef SIMULATION
-            $display("[TILE_RD] @%0t man_right[%0d] → 0x%064x",
-                     $time, i_man_right_rd_addr, man_right[i_man_right_rd_addr]);
-            `endif
-        end
-    end
-    assign o_man_right_rd_data = man_right_rd_data_reg;
-
-    // ===================================================================
-    // READ LOGIC - EXPONENTS (with enable signals)
-    // ===================================================================
-    logic [EXP_WIDTH-1:0] exp_left_rd_data_reg;
-    logic [EXP_WIDTH-1:0] exp_right_rd_data_reg;
-
-    // Left exponent read (registered)
-    always_ff @(posedge i_clk) begin
-        if (i_exp_left_rd_en) begin
-            exp_left_rd_data_reg <= exp_left[i_exp_left_rd_addr];
-            `ifdef SIMULATION
-            $display("[TILE_RD] @%0t exp_left[%0d] → 0x%02x",
-                     $time, i_exp_left_rd_addr, exp_left[i_exp_left_rd_addr]);
-            `endif
-        end
-    end
-    assign o_exp_left_rd_data = exp_left_rd_data_reg;
-
-    // Right exponent read (registered)
-    always_ff @(posedge i_clk) begin
-        if (i_exp_right_rd_en) begin
-            exp_right_rd_data_reg <= exp_right[i_exp_right_rd_addr];
-            `ifdef SIMULATION
-            $display("[TILE_RD] @%0t exp_right[%0d] → 0x%02x",
-                     $time, i_exp_right_rd_addr, exp_right[i_exp_right_rd_addr]);
-            `endif
-        end
-    end
-    assign o_exp_right_rd_data = exp_right_rd_data_reg;
+    // Left NV read - output complete Native Vector
+    assign o_nv_left_exp = nv_exp_left[i_nv_left_rd_idx];
+    assign o_nv_left_man = nv_man_left[i_nv_left_rd_idx];
+    
+    // Right NV read - output complete Native Vector
+    assign o_nv_right_exp = nv_exp_right[i_nv_right_rd_idx];
+    assign o_nv_right_man = nv_man_right[i_nv_right_rd_idx];
+    
+    // `ifdef SIMULATION
+    // always @(i_nv_left_rd_idx or i_nv_right_rd_idx) begin
+    //     $display("[TILE_NV_RD] @%0t Left NV[%0d]: exp=0x%08x", 
+    //              $time, i_nv_left_rd_idx, o_nv_left_exp);
+    //     $display("[TILE_NV_RD] @%0t Right NV[%0d]: exp=0x%08x", 
+    //              $time, i_nv_right_rd_idx, o_nv_right_exp);
+    // end
+    // `endif
 
 endmodule

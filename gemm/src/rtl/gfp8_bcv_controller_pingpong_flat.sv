@@ -11,7 +11,7 @@
 //   - Simplified state machine (no COMP_RETURN needed)
 //   - Cleaner ping-pong buffer management
 
-module gfp8_bcv_controller #(
+module gfp8_bcv_controller_pingpong_flat #(
     parameter NV_WIDTH = 128  // Native Vector width (pairs of GFP8 values)
 )(
     input  logic        i_clk,
@@ -26,23 +26,14 @@ module gfp8_bcv_controller #(
     input  logic [8:0]  i_right_base_addr,    // Base address for right matrix in tile_bram
     output logic        o_tile_done,
 
-    // BRAM Mantissa Read Interface (to tile_bram)
-    output logic [8:0]   o_man_left_rd_addr,
-    output logic         o_man_left_rd_en,
-    input  logic [255:0] i_man_left_rd_data,
-
-    output logic [8:0]   o_man_right_rd_addr,
-    output logic         o_man_right_rd_en,
-    input  logic [255:0] i_man_right_rd_data,
-
-    // Exponent Read Interface
-    output logic [8:0]   o_exp_left_rd_addr,
-    output logic         o_exp_left_rd_en,
-    input  logic [7:0]   i_exp_left_rd_data,
-
-    output logic [8:0]   o_exp_right_rd_addr,
-    output logic         o_exp_right_rd_en,
-    input  logic [7:0]   i_exp_right_rd_data,
+    // Native Vector Read Interface (to tile_bram)
+    output logic [6:0]   o_nv_left_rd_idx,      // NV index [0-127]
+    input  logic [31:0]  i_nv_left_exp,         // Packed exponents
+    input  logic [255:0] i_nv_left_man [0:3],   // 4 mantissa groups
+    
+    output logic [6:0]   o_nv_right_rd_idx,     // NV index [0-127]
+    input  logic [31:0]  i_nv_right_exp,        // Packed exponents
+    input  logic [255:0] i_nv_right_man [0:3],  // 4 mantissa groups
 
     // Output Result Interface
     output logic signed [31:0] o_result_mantissa,
@@ -89,7 +80,7 @@ module gfp8_bcv_controller #(
     
     // Flatten index derivation (combinational)
     always_comb begin
-        // flat_idx = b * (C * V) + c * V + v
+        // flat_idx = b * (C * V) + c * V + v  (B-outer, C-inner, row-major)
         // To extract: 
         //   v = flat_idx % V
         //   c = (flat_idx / V) % C
@@ -176,7 +167,6 @@ module gfp8_bcv_controller #(
     
     // Fill control
     logic fill_target;  // 0=fill PING, 1=fill PONG
-    logic [2:0] fill_cycle;  // 0-4 for 5-cycle fill
     
     // ===================================================================
     // NV Dot Product Instance
@@ -216,9 +206,13 @@ module gfp8_bcv_controller #(
     // Fill FSM - Next State Logic
     // ===================================================================
     always_comb begin
-        fill_state_next = fill_state_reg;
-        
-        case (fill_state_reg)
+        // Force reset on tile enable rising edge
+        if (i_tile_en_rising) begin
+            fill_state_next = FILL_IDLE;
+        end else begin
+            fill_state_next = fill_state_reg;
+            
+            case (fill_state_reg)
             FILL_IDLE: begin
                 // Start filling if:
                 // 1. Have more iterations to fill
@@ -241,21 +235,24 @@ module gfp8_bcv_controller #(
             end
             
             FILL_ACTIVE: begin
-                // Stay active for 5 cycles (0-4)
-                if (fill_cycle == 3'd4) begin
-                    fill_state_next = FILL_IDLE;
-                end
+                // Single-cycle fill - immediately return to IDLE
+                fill_state_next = FILL_IDLE;
             end
-        endcase
+            endcase
+        end
     end
     
     // ===================================================================
     // Compute FSM - Next State Logic (Simplified!)
     // ===================================================================
     always_comb begin
-        comp_state_next = comp_state_reg;
-        
-        case (comp_state_reg)
+        // Force reset on tile enable rising edge
+        if (i_tile_en_rising) begin
+            comp_state_next = COMP_IDLE;
+        end else begin
+            comp_state_next = comp_state_reg;
+            
+            case (comp_state_reg)
             COMP_IDLE: begin
                 // Wait for ready buffer (but not if tile is complete)
                 if ((ping_ready || pong_ready) && !tile_complete) begin
@@ -280,10 +277,11 @@ module gfp8_bcv_controller #(
             end
             
             COMP_DONE: begin
-                $display("[BCV_FLAT] COMP_DONE state reached!");
+                // $display("[BCV_FLAT] COMP_DONE state reached!");
                 comp_state_next = COMP_IDLE;
             end
-        endcase
+            endcase
+        end
     end
     
     // ===================================================================
@@ -300,62 +298,30 @@ module gfp8_bcv_controller #(
     end
     
     // ===================================================================
-    // BRAM Read Address Generation (Combinational)
+    // NV Index Generation (Combinational)
     // ===================================================================
+    logic [6:0] fill_left_nv_idx;
+    logic [6:0] fill_right_nv_idx;
+    
     always_comb begin
-        // Default: no reads
-        o_man_left_rd_addr = 9'd0;
-        o_man_right_rd_addr = 9'd0;
-        o_exp_left_rd_addr = 9'd0;
-        o_exp_right_rd_addr = 9'd0;
-        o_man_left_rd_en = 1'b0;
-        o_man_right_rd_en = 1'b0;
-        o_exp_left_rd_en = 1'b0;
-        o_exp_right_rd_en = 1'b0;
+        // Convert base addresses from line to NV units (divide by 4)
+        automatic logic [6:0] left_base_nv = left_base_reg[8:2];
+        automatic logic [6:0] right_base_nv = right_base_reg[8:2];
         
-        // BRAM reads for filling buffers (only during cycles 0-3, not 4)
-        if (fill_state_reg == FILL_ACTIVE && fill_cycle < 3'd4) begin
-            // Calculate NV indices using fill's derived b,c,v
-            automatic logic [15:0] left_nv_index;
-            automatic logic [15:0] right_nv_index;
-            automatic logic [15:0] left_base_nv;
-            automatic logic [15:0] right_base_nv;
-            automatic logic [8:0] left_line_addr;
-            automatic logic [8:0] right_line_addr;
-            
-            // Convert base from line to NV units (divide by 4)
-            left_base_nv = {9'd0, left_base_reg[8:2]};
-            right_base_nv = {9'd0, right_base_reg[8:2]};
-            
-            // Calculate addresses using fill's derived indices
-            left_nv_index = left_base_nv + ({8'd0, fill_b_idx} * {8'd0, dim_v_reg} + {8'd0, fill_v_idx});
-            right_nv_index = right_base_nv + ({8'd0, fill_c_idx} * {8'd0, dim_v_reg} + {8'd0, fill_v_idx});
-            
-            // Convert to line address (fill_cycle is 0-3 here)
-            left_line_addr = {left_nv_index[6:0], 2'b00} + {6'd0, fill_cycle};
-            right_line_addr = {right_nv_index[6:0], 2'b00} + {6'd0, fill_cycle};
-            
-            // Combinational assignment
-            o_man_left_rd_addr = left_line_addr;
-            o_man_right_rd_addr = right_line_addr;
-            o_exp_left_rd_addr = left_line_addr;
-            o_exp_right_rd_addr = right_line_addr;
-            o_man_left_rd_en = 1'b1;
-            o_man_right_rd_en = 1'b1;
-            o_exp_left_rd_en = 1'b1;
-            o_exp_right_rd_en = 1'b1;
-            
-            `ifdef SIMULATION
-            $display("[TILE_RD] @%0t man_left[%0d] ← 0x%064x", 
-                     $time, left_line_addr, i_man_left_rd_data);
-            $display("[TILE_RD] @%0t man_right[%0d] ← 0x%064x", 
-                     $time, right_line_addr, i_man_right_rd_data);
-            $display("[TILE_RD] @%0t exp_left[%0d] ← 0x%02x", 
-                     $time, left_line_addr, i_exp_left_rd_data);
-            $display("[TILE_RD] @%0t exp_right[%0d] ← 0x%02x", 
-                     $time, right_line_addr, i_exp_right_rd_data);
-            `endif
-        end
+        // Calculate NV indices for current fill iteration
+        fill_left_nv_idx = left_base_nv + (fill_b_idx * dim_v_reg + fill_v_idx);
+        fill_right_nv_idx = right_base_nv + (fill_c_idx * dim_v_reg + fill_v_idx);
+        
+        // Output NV indices to tile_bram (combinational read)
+        o_nv_left_rd_idx = fill_left_nv_idx;
+        o_nv_right_rd_idx = fill_right_nv_idx;
+        
+        // `ifdef SIMULATION
+        // if (fill_state_reg == FILL_ACTIVE) begin
+        //     $display("[NV_IDX] @%0t Left NV[%0d], Right NV[%0d] for B=%0d, C=%0d, V=%0d", 
+        //              $time, fill_left_nv_idx, fill_right_nv_idx, fill_b_idx, fill_c_idx, fill_v_idx);
+        // end
+        // `endif
     end
     
     // ===================================================================
@@ -368,7 +334,6 @@ module gfp8_bcv_controller #(
             fill_flat_idx <= 24'd0;
             total_iters <= 24'd0;
             
-            fill_cycle <= 3'd0;
             fill_target <= 1'b0;
             
             ping_ready <= 1'b0;
@@ -421,19 +386,18 @@ module gfp8_bcv_controller #(
                 // Clear tile complete flag for new tile
                 tile_complete <= 1'b0;
                 
-                // Reset FSMs
-                fill_state_reg <= FILL_IDLE;
-                comp_state_reg <= COMP_IDLE;
+                // Note: FSM state reset is handled in combinational next-state logic
+                // via i_tile_en_rising signal
                 
                 // Reset buffers
                 ping_ready <= 1'b0;
                 pong_ready <= 1'b0;
                 
-                `ifdef SIMULATION
-                $display("[BCV_FLAT] @%0t NEW TILE: B=%0d, C=%0d, V=%0d (total=%0d iters)", 
-                         $time, i_dim_b, i_dim_c, i_dim_v, 
-                         {8'd0, i_dim_b} * {8'd0, i_dim_c} * {8'd0, i_dim_v});
-                `endif
+                // `ifdef SIMULATION
+                // $display("[BCV_FLAT] @%0t NEW TILE: B=%0d, C=%0d, V=%0d (total=%0d iters)", 
+                //          $time, i_dim_b, i_dim_c, i_dim_v, 
+                //          {8'd0, i_dim_b} * {8'd0, i_dim_c} * {8'd0, i_dim_v});
+                // `endif
             end
             
             // No BC synchronization needed in flattened loop
@@ -448,100 +412,54 @@ module gfp8_bcv_controller #(
                     if (!ping_ready && fill_flat_idx < total_iters && 
                         fill_flat_idx <= flat_idx + 1) begin
                         fill_target <= 1'b0;  // Fill PING
-                        fill_cycle <= 3'd0;
-                        `ifdef SIMULATION
-                        $display("[PINGPONG_FILL] @%0t IDLE: Starting PING fill (flat=%0d)", 
-                                 $time, fill_flat_idx);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[PINGPONG_FILL] @%0t IDLE: Starting PING fill (flat=%0d)", 
+                        //          $time, fill_flat_idx);
+                        // `endif
                     end else if (!pong_ready && fill_flat_idx < total_iters && 
                                 fill_flat_idx <= flat_idx + 1) begin
                         fill_target <= 1'b1;  // Fill PONG
-                        fill_cycle <= 3'd0;
-                        `ifdef SIMULATION
-                        $display("[PINGPONG_FILL] @%0t IDLE: Starting PONG fill (flat=%0d)", 
-                                 $time, fill_flat_idx);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[PINGPONG_FILL] @%0t IDLE: Starting PONG fill (flat=%0d)", 
+                        //          $time, fill_flat_idx);
+                        // `endif
                     end
                 end
                 
                 FILL_ACTIVE: begin
-                    // 5-cycle fill (cycles 0→1→2→3→4)
-                    if (fill_cycle == 3'd0) begin
-                        // Cycle 0: Start BRAM reads (data arrives next cycle)
-                        fill_cycle <= fill_cycle + 1;
-                        `ifdef SIMULATION
-                        $display("[PINGPONG_FILL] @%0t Cycle 0: Starting BRAM reads for %s (flat=%0d)", 
-                                 $time, fill_target ? "PONG" : "PING", fill_flat_idx);
-                        `endif
-                    end else if (fill_cycle == 3'd1) begin
-                        // Capture G0
-                        if (fill_target == 1'b0) begin
-                            nv_left_exp_ping[7:0] <= i_exp_left_rd_data;
-                            nv_right_exp_ping[7:0] <= i_exp_right_rd_data;
-                            nv_left_man_ping[0] <= i_man_left_rd_data;
-                            nv_right_man_ping[0] <= i_man_right_rd_data;
-                        end else begin
-                            nv_left_exp_pong[7:0] <= i_exp_left_rd_data;
-                            nv_right_exp_pong[7:0] <= i_exp_right_rd_data;
-                            nv_left_man_pong[0] <= i_man_left_rd_data;
-                            nv_right_man_pong[0] <= i_man_right_rd_data;
-                        end
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd2) begin
-                        // Capture G1
-                        if (fill_target == 1'b0) begin
-                            nv_left_exp_ping[15:8] <= i_exp_left_rd_data;
-                            nv_right_exp_ping[15:8] <= i_exp_right_rd_data;
-                            nv_left_man_ping[1] <= i_man_left_rd_data;
-                            nv_right_man_ping[1] <= i_man_right_rd_data;
-                        end else begin
-                            nv_left_exp_pong[15:8] <= i_exp_left_rd_data;
-                            nv_right_exp_pong[15:8] <= i_exp_right_rd_data;
-                            nv_left_man_pong[1] <= i_man_left_rd_data;
-                            nv_right_man_pong[1] <= i_man_right_rd_data;
-                        end
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd3) begin
-                        // Capture G2
-                        if (fill_target == 1'b0) begin
-                            nv_left_exp_ping[23:16] <= i_exp_left_rd_data;
-                            nv_right_exp_ping[23:16] <= i_exp_right_rd_data;
-                            nv_left_man_ping[2] <= i_man_left_rd_data;
-                            nv_right_man_ping[2] <= i_man_right_rd_data;
-                        end else begin
-                            nv_left_exp_pong[23:16] <= i_exp_left_rd_data;
-                            nv_right_exp_pong[23:16] <= i_exp_right_rd_data;
-                            nv_left_man_pong[2] <= i_man_left_rd_data;
-                            nv_right_man_pong[2] <= i_man_right_rd_data;
-                        end
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd4) begin
-                        // Capture G3, set ready flag, advance fill index
-                        if (fill_target == 1'b0) begin
-                            nv_left_exp_ping[31:24] <= i_exp_left_rd_data;
-                            nv_right_exp_ping[31:24] <= i_exp_right_rd_data;
-                            nv_left_man_ping[3] <= i_man_left_rd_data;
-                            nv_right_man_ping[3] <= i_man_right_rd_data;
-                            ping_ready <= 1'b1;  // PRODUCER sets ready
-                            `ifdef SIMULATION
-                            $display("[PINGPONG_FILL] @%0t ACTIVE: PING ready (flat=%0d)", 
-                                     $time, fill_flat_idx);
-                            `endif
-                        end else begin
-                            nv_left_exp_pong[31:24] <= i_exp_left_rd_data;
-                            nv_right_exp_pong[31:24] <= i_exp_right_rd_data;
-                            nv_left_man_pong[3] <= i_man_left_rd_data;
-                            nv_right_man_pong[3] <= i_man_right_rd_data;
-                            pong_ready <= 1'b1;  // PRODUCER sets ready
-                            `ifdef SIMULATION
-                            $display("[PINGPONG_FILL] @%0t ACTIVE: PONG ready (flat=%0d)", 
-                                     $time, fill_flat_idx);
-                            `endif
-                        end
-                        fill_cycle <= 3'd0;
-                        // Always advance fill flat index
-                        fill_flat_idx <= fill_flat_idx + 1;
+                    // SINGLE-CYCLE FILL - Read complete NV from tile_bram
+                    if (fill_target == 1'b0) begin  // Fill PING
+                        // Read complete NV from tile_bram in one cycle
+                        nv_left_exp_ping <= i_nv_left_exp;     // From tile_bram NV port
+                        nv_left_man_ping <= i_nv_left_man;     // From tile_bram NV port
+                        nv_right_exp_ping <= i_nv_right_exp;
+                        nv_right_man_ping <= i_nv_right_man;
+                        ping_ready <= 1'b1;
+                        
+                        // `ifdef SIMULATION
+                        // $display("[PINGPONG_FILL] @%0t SINGLE-CYCLE: PING ready (flat=%0d)", 
+                        //          $time, fill_flat_idx);
+                        // $display("  Left NV[%0d]: exp=0x%08x", fill_left_nv_idx, i_nv_left_exp);
+                        // $display("  Right NV[%0d]: exp=0x%08x", fill_right_nv_idx, i_nv_right_exp);
+                        // `endif
+                    end else begin  // Fill PONG
+                        nv_left_exp_pong <= i_nv_left_exp;
+                        nv_left_man_pong <= i_nv_left_man;
+                        nv_right_exp_pong <= i_nv_right_exp;
+                        nv_right_man_pong <= i_nv_right_man;
+                        pong_ready <= 1'b1;
+                        
+                        // `ifdef SIMULATION
+                        // $display("[PINGPONG_FILL] @%0t SINGLE-CYCLE: PONG ready (flat=%0d)", 
+                        //          $time, fill_flat_idx);
+                        // $display("  Left NV[%0d]: exp=0x%08x", fill_left_nv_idx, i_nv_left_exp);
+                        // $display("  Right NV[%0d]: exp=0x%08x", fill_right_nv_idx, i_nv_right_exp);
+                        // `endif
                     end
+                    
+                    // Advance to next iteration immediately
+                    fill_flat_idx <= fill_flat_idx + 1;
+                    // Return to IDLE (no more multi-cycle wait)
                 end
             endcase
             
@@ -555,10 +473,10 @@ module gfp8_bcv_controller #(
                     if (comp_state_next == COMP_NV) begin
                         // Prefer PONG if both ready (but either is fine)
                         use_pong <= pong_ready ? 1'b1 : 1'b0;
-                        `ifdef SIMULATION
-                        $display("[PINGPONG_COMP] @%0t IDLE: Select %s (ping=%b, pong=%b, flat=%0d)", 
-                                 $time, pong_ready ? "PONG" : "PING", ping_ready, pong_ready, flat_idx);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[PINGPONG_COMP] @%0t IDLE: Select %s (ping=%b, pong=%b, flat=%0d)", 
+                        //          $time, pong_ready ? "PONG" : "PING", ping_ready, pong_ready, flat_idx);
+                        // `endif
                     end
                 end
                 
@@ -567,16 +485,16 @@ module gfp8_bcv_controller #(
                     if (compute_wait == 3'd0) begin
                         if (use_pong) begin
                             pong_ready <= 1'b0;
-                            `ifdef SIMULATION
-                            $display("[PINGPONG_COMP] @%0t NV START: Clear pong_ready (flat=%0d)", 
-                                     $time, flat_idx);
-                            `endif
+                            // `ifdef SIMULATION
+                            // $display("[PINGPONG_COMP] @%0t NV START: Clear pong_ready (flat=%0d)", 
+                            //          $time, flat_idx);
+                            // `endif
                         end else begin
                             ping_ready <= 1'b0;
-                            `ifdef SIMULATION
-                            $display("[PINGPONG_COMP] @%0t NV START: Clear ping_ready (flat=%0d)", 
-                                     $time, flat_idx);
-                            `endif
+                            // `ifdef SIMULATION
+                            // $display("[PINGPONG_COMP] @%0t NV START: Clear ping_ready (flat=%0d)", 
+                            //          $time, flat_idx);
+                            // `endif
                         end
                     end
                     compute_wait <= compute_wait + 1;
@@ -587,14 +505,13 @@ module gfp8_bcv_controller #(
                     flat_idx <= flat_idx + 1;
                     // Reset compute wait for next iteration
                     compute_wait <= 3'd0;
-                    `ifdef SIMULATION
-                    $display("[BCV_FLAT] ACCUM: flat=%0d -> %0d (b=%0d, c=%0d, v=%0d)", 
-                             flat_idx, flat_idx + 1, comp_b_idx, comp_c_idx, comp_v_idx);
-                    `endif
+                    // `ifdef SIMULATION
+                    // $display("[BCV_FLAT] ACCUM: flat=%0d -> %0d (b=%0d, c=%0d, v=%0d)", 
+                    //          flat_idx, flat_idx + 1, comp_b_idx, comp_c_idx, comp_v_idx);
+                    // `endif
                 end
                 
                 COMP_DONE: begin
-                    o_tile_done <= 1'b1;
                     tile_complete <= 1'b1;
                     // Clear ready flags to prevent restart
                     ping_ready <= 1'b0;
@@ -619,8 +536,8 @@ module gfp8_bcv_controller #(
             
             `ifdef SIMULATION
             if (comp_state_reg == COMP_NV && compute_wait == 3'd0) begin
-                $display("[NV_DOT_CAPTURE] @%0t Captured: man_left[0]=0x%064x", 
-                         $time, nv_left_man_active[0]);
+                // $display("[NV_DOT_CAPTURE] @%0t Captured: man_left[0]=0x%064x", 
+                //          $time, nv_left_man_active[0]);
             end
             `endif
         end
@@ -656,11 +573,11 @@ module gfp8_bcv_controller #(
                         accum_mantissa <= new_mantissa;
                         accum_exponent <= new_exponent;
                         
-                        `ifdef SIMULATION
-                        $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d INIT: mant=%0d, exp=%0d",
-                                 $time, comp_b_idx, comp_c_idx, comp_v_idx, 
-                                 new_mantissa, new_exponent);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d INIT: mant=%0d, exp=%0d",
+                        //          $time, comp_b_idx, comp_c_idx, comp_v_idx, 
+                        //          new_mantissa, new_exponent);
+                        // `endif
                     end else begin
                         // Accumulate with exponent alignment
                         automatic logic signed [7:0] max_exp;
@@ -688,11 +605,11 @@ module gfp8_bcv_controller #(
                         accum_mantissa <= new_mantissa;
                         accum_exponent <= new_exponent;
                         
-                        `ifdef SIMULATION
-                        $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d ACCUM: mant=%0d + %0d = %0d, exp=%0d",
-                                 $time, comp_b_idx, comp_c_idx, comp_v_idx,
-                                 aligned_accum, aligned_dot, new_mantissa, new_exponent);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[BCV_ACCUM] @%0t [B%0d,C%0d] V=%0d ACCUM: mant=%0d + %0d = %0d, exp=%0d",
+                        //          $time, comp_b_idx, comp_c_idx, comp_v_idx,
+                        //          aligned_accum, aligned_dot, new_mantissa, new_exponent);
+                        // `endif
                     end
                 end
             endcase
@@ -750,10 +667,10 @@ module gfp8_bcv_controller #(
                         o_result_exponent <= final_exponent;
                         o_result_valid <= 1'b1;
                         
-                        `ifdef SIMULATION
-                        $display("[BCV_RESULT] @%0t [B%0d,C%0d] OUTPUT: mant=%0d, exp=%0d",
-                                 $time, comp_b_idx, comp_c_idx, final_mantissa, final_exponent);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[BCV_RESULT] @%0t [B%0d,C%0d] OUTPUT: mant=%0d, exp=%0d",
+                        //          $time, comp_b_idx, comp_c_idx, final_mantissa, final_exponent);
+                        // `endif
                     end
                 end
                 

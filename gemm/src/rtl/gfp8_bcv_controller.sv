@@ -11,19 +11,16 @@
 //
 // State Machine:
 //  IDLE         -> Wait for TILE command
-//  FILL_BUFFER  -> Load 4 groups (exp+man) for both NV_left and NV_right (5 cycles)
-//                  TRUE 1-cycle BRAM latency: Combinational addr → BRAM → registered output
-//                  Sets ready flag on cycle 4, transitions on cycle 5
+//  FILL_BUFFER  -> Load complete NV for both NV_left and NV_right (1 cycle)
+//                  Direct combinational read from tile_bram's NV interface
 //  COMPUTE_NV   -> Compute NV dot product (4 cycles)  
 //  ACCUM        -> Accumulate result into V-loop accumulator (1 cycle)
 //  RETURN       -> Output final result after V iterations complete (1 cycle)
 //
-// Latency per output: 5 (fill) + 4 (compute) + 1 (accum) = 10 cycles per V
-//                     Total: 10xV + 1 (return) cycles per BxC result
+// Latency per output: 1 (fill) + 4 (compute) + 1 (accum) = 6 cycles per V
+//                     Total: 6xV + 1 (return) cycles per BxC result
 //
-// OPTIMIZATION: Direct combinational connection (no BCV output registers!)
-//   Cycle 0 (IDLE→FILL): Issue G0 read → Cycle 1: Capture G0, Issue G1 → ...
-//   Cycle 4: Capture G3, set ready flag → Cycle 5: Transition on flag
+// OPTIMIZATION: Single-cycle NV read via tile_bram's NV interface
 //
 // Author: Refactoring from compute_engine.sv
 // Date: Fri Oct 10 2025
@@ -43,23 +40,14 @@ module gfp8_bcv_controller (
     input  logic [8:0]  i_right_base_addr,    // Base address for right matrix in tile_bram (9-bit for 512 lines)
     output logic        o_tile_done,
 
-    // BRAM Mantissa Read Interface (to tile_bram - 512 lines = 9-bit address)
-    output logic [8:0]   o_man_left_rd_addr,
-    output logic         o_man_left_rd_en,
-    input  logic [255:0] i_man_left_rd_data,
-
-    output logic [8:0]   o_man_right_rd_addr,
-    output logic         o_man_right_rd_en,
-    input  logic [255:0] i_man_right_rd_data,
-
-    // Exponent Read Interface (to dispatcher_bram exp ports)
-    output logic [8:0]   o_exp_left_rd_addr,
-    output logic         o_exp_left_rd_en,
-    input  logic [7:0]   i_exp_left_rd_data,
-
-    output logic [8:0]   o_exp_right_rd_addr,
-    output logic         o_exp_right_rd_en,
-    input  logic [7:0]   i_exp_right_rd_data,
+    // Native Vector Read Interface (to tile_bram)
+    output logic [6:0]   o_nv_left_rd_idx,      // NV index [0-127]
+    input  logic [31:0]  i_nv_left_exp,         // Packed exponents
+    input  logic [255:0] i_nv_left_man [0:3],   // 4 mantissa groups
+    
+    output logic [6:0]   o_nv_right_rd_idx,     // NV index [0-127]
+    input  logic [31:0]  i_nv_right_exp,        // Packed exponents
+    input  logic [255:0] i_nv_right_man [0:3],  // 4 mantissa groups
     
     // Result Interface
     output logic signed [31:0] o_result_mantissa,
@@ -113,8 +101,7 @@ module gfp8_bcv_controller (
     logic [31:0]  nv_right_exp;        // 4 bytes (one per group)
     logic [255:0] nv_right_man [0:3];  // 4 lines x 256 bits
     
-    // Fill cycle counter (0-4: TRUE 1-cycle latency, 4 groups + 1 final cycle)
-    logic [2:0] fill_cycle;  // 3 bits to count 0-7
+    // No fill cycle counter needed - single-cycle NV read
     
     // ===================================================================
     // NV Dot Product Instance
@@ -161,11 +148,7 @@ module gfp8_bcv_controller (
             end
             
             ST_FILL_BUFFER: begin
-                // TRUE 1-cycle BRAM latency (combinational BCV outputs)
-                // Cycle 0: Issue G0 | Cycle 1: Capture G0, Issue G1
-                // Cycle 2: Capture G1, Issue G2 | Cycle 3: Capture G2, Issue G3
-                // Cycle 4: Capture G3, set ready flag
-                // Cycle 5: Transition on ready flag
+                // Wait for NV data to be latched before transitioning
                 if (fill_buffer_ready) begin
                     state_next = ST_COMPUTE_NV;
                 end
@@ -218,66 +201,46 @@ module gfp8_bcv_controller (
     end
     
     // ===================================================================
-    // BRAM Read Address Generation - DIRECT (COMBINATIONAL) CONNECTION
+    // NV Read Index Generation (COMBINATIONAL)
     // ===================================================================
-    // TRUE 1-cycle latency: Address generated combinationally, data back next cycle
-    // No registered outputs - direct wire connection to tile_bram
-    //
-    // Pipeline:
-    //   Cycle N:   Generate address (comb) → BRAM input
-    //   Cycle N+1: BRAM output ready → Capture data, generate next address
+    // Single-cycle NV read via tile_bram's NV interface
     
     always_comb begin
-        // Default: no reads
-        o_man_left_rd_addr = 9'd0;
-        o_man_right_rd_addr = 9'd0;
-        o_exp_left_rd_addr = 9'd0;
-        o_exp_right_rd_addr = 9'd0;
-        o_man_left_rd_en = 1'b0;
-        o_man_right_rd_en = 1'b0;
-        o_exp_left_rd_en = 1'b0;
-        o_exp_right_rd_en = 1'b0;
+        // Default: index 0
+        o_nv_left_rd_idx = 7'd0;
+        o_nv_right_rd_idx = 7'd0;
         
-        if (state_reg == ST_FILL_BUFFER && fill_cycle < 4'd4) begin
+        if (state_reg == ST_FILL_BUFFER) begin
             // Calculate NV indices
-            automatic logic [15:0] left_nv_index;
-            automatic logic [15:0] right_nv_index;
-            automatic logic [15:0] left_base_nv;
-            automatic logic [15:0] right_base_nv;
-            automatic logic [8:0] left_line_addr;
-            automatic logic [8:0] right_line_addr;
+            automatic logic [6:0] left_base_nv;
+            automatic logic [6:0] right_base_nv;
+            automatic logic [6:0] left_nv_index;
+            automatic logic [6:0] right_nv_index;
             
             // Convert base addresses from line units to NV units (divide by 4)
-            left_base_nv = {9'd0, left_base_reg[8:2]};
-            right_base_nv = {9'd0, right_base_reg[8:2]};
+            left_base_nv = left_base_reg[8:2];
+            right_base_nv = right_base_reg[8:2];
             
             // Calculate NV index based on loop counters
-            left_nv_index = left_base_nv + ({8'd0, b_idx} * {8'd0, dim_v_reg} + {8'd0, v_idx});
-            right_nv_index = right_base_nv + ({8'd0, c_idx} * {8'd0, dim_v_reg} + {8'd0, v_idx});
+            left_nv_index = left_base_nv + (b_idx * dim_v_reg + v_idx);
+            right_nv_index = right_base_nv + (c_idx * dim_v_reg + v_idx);
             
-            // Convert NV index to line address and add group offset
-            // fill_cycle 0→G0, 1→G1, 2→G2, 3→G3
-            left_line_addr = {left_nv_index[6:0], 2'b00} + {7'd0, fill_cycle[1:0]};
-            right_line_addr = {right_nv_index[6:0], 2'b00} + {7'd0, fill_cycle[1:0]};
+            // Output NV indices for combinational read from tile_bram
+            o_nv_left_rd_idx = left_nv_index;
+            o_nv_right_rd_idx = right_nv_index;
             
-            // Combinational assignment - direct to BRAM (no registers!)
-            o_man_left_rd_addr = left_line_addr;
-            o_man_right_rd_addr = right_line_addr;
-            o_exp_left_rd_addr = left_line_addr;
-            o_exp_right_rd_addr = right_line_addr;
-            o_man_left_rd_en = 1'b1;
-            o_man_right_rd_en = 1'b1;
-            o_exp_left_rd_en = 1'b1;
-            o_exp_right_rd_en = 1'b1;
+            `ifdef SIMULATION
+            $display("[NV_IDX] @%0t Reading Left NV[%0d], Right NV[%0d] for B=%0d, C=%0d, V=%0d", 
+                     $time, left_nv_index, right_nv_index, b_idx, c_idx, v_idx);
+            `endif
         end
     end
     
     // ===================================================================
-    // Buffer Filling Logic (5 cycles to grab both NVs + flag for transition)
+    // Buffer Filling Logic (Single-cycle NV capture)
     // ===================================================================
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
-            fill_cycle <= 3'd0;
             fill_buffer_ready <= 1'b0;
             nv_left_exp <= 32'd0;
             nv_right_exp <= 32'd0;
@@ -288,48 +251,25 @@ module gfp8_bcv_controller (
         end else begin
             case (state_reg)
                 ST_IDLE: begin
-                    fill_cycle <= 3'd0;
                     fill_buffer_ready <= 1'b0;
                 end
                 
                 ST_FILL_BUFFER: begin
-                    // TRUE 1-cycle BRAM latency: combinational address → registered BRAM output
-                    // Cycle 0: Issue G0 | Cycle 1: Capture G0, Issue G1
-                    // Cycle 2: Capture G1, Issue G2 | Cycle 3: Capture G2, Issue G3
-                    // Cycle 4: Capture G3, set ready flag → Cycle 5: Transition
-                    if (fill_cycle == 3'd1) begin
-                        // Cycle 1: Capture G0 (from cycle 0 read)
-                        nv_left_exp[7:0] <= i_exp_left_rd_data;
-                        nv_right_exp[7:0] <= i_exp_right_rd_data;
-                        nv_left_man[0] <= i_man_left_rd_data;
-                        nv_right_man[0] <= i_man_right_rd_data;
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd2) begin
-                        // Cycle 2: Capture G1
-                        nv_left_exp[15:8] <= i_exp_left_rd_data;
-                        nv_right_exp[15:8] <= i_exp_right_rd_data;
-                        nv_left_man[1] <= i_man_left_rd_data;
-                        nv_right_man[1] <= i_man_right_rd_data;
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd3) begin
-                        // Cycle 3: Capture G2
-                        nv_left_exp[23:16] <= i_exp_left_rd_data;
-                        nv_right_exp[23:16] <= i_exp_right_rd_data;
-                        nv_left_man[2] <= i_man_left_rd_data;
-                        nv_right_man[2] <= i_man_right_rd_data;
-                        fill_cycle <= fill_cycle + 1;
-                    end else if (fill_cycle == 3'd4) begin
-                        // Cycle 4: Capture G3, set ready flag
-                        nv_left_exp[31:24] <= i_exp_left_rd_data;
-                        nv_right_exp[31:24] <= i_exp_right_rd_data;
-                        nv_left_man[3] <= i_man_left_rd_data;
-                        nv_right_man[3] <= i_man_right_rd_data;
-                        fill_buffer_ready <= 1'b1;  // Signal ready for transition
-                        fill_cycle <= 3'd0;  // Reset for next iteration
-                    end else begin
-                        // Cycle 0: Just increment (issuing first read combinationally)
-                        fill_cycle <= fill_cycle + 1;
+                    if (!fill_buffer_ready) begin
+                        // First cycle: capture complete NVs from tile_bram
+                        nv_left_exp <= i_nv_left_exp;
+                        nv_right_exp <= i_nv_right_exp;
+                        nv_left_man <= i_nv_left_man;
+                        nv_right_man <= i_nv_right_man;
+                        fill_buffer_ready <= 1'b1;  // Signal ready for next cycle
+                        
+                        `ifdef SIMULATION
+                        $display("[BCV_FILL] @%0t Capturing NVs for B=%0d, C=%0d, V=%0d",
+                                 $time, b_idx, c_idx, v_idx);
+                        $display("  Left exp: 0x%08x, Right exp: 0x%08x", i_nv_left_exp, i_nv_right_exp);
+                        `endif
                     end
+                    // Second cycle: fill_buffer_ready is high, will transition to COMPUTE_NV
                 end
                 
                 ST_COMPUTE_NV: begin
@@ -338,7 +278,7 @@ module gfp8_bcv_controller (
                 end
                 
                 default: begin
-                    fill_cycle <= 3'd0;
+                    // Keep default values
                 end
             endcase
         end
@@ -481,10 +421,14 @@ module gfp8_bcv_controller (
                 end
                 
                 ST_ACCUM: begin
-                    // Advance V index within current (b,c) pair
-                    v_idx <= v_idx + 1;
-                    $display("[BCV_LOOP] ACCUM: b=%0d, c=%0d, v=%0d -> v=%0d", 
-                             b_idx, c_idx, v_idx, v_idx + 1);
+                    // Check if V loop is complete before advancing
+                    if (v_idx < dim_v_reg - 1) begin
+                        // More V iterations needed - advance V index
+                        v_idx <= v_idx + 1;
+                        $display("[BCV_LOOP] ACCUM: b=%0d, c=%0d, v=%0d -> v=%0d", 
+                                 b_idx, c_idx, v_idx, v_idx + 1);
+                    end
+                    // If v_idx >= dim_v_reg - 1, don't increment (going to RETURN state)
                 end
                 
                 ST_RETURN: begin

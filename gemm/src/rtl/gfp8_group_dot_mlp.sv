@@ -133,12 +133,12 @@ module gfp8_group_dot_mlp #(
         // Note: exp=0 is a valid GFP8 exponent (represents 2^(-15)), not zero!
         exp_sum = $signed(i_exp_left + i_exp_right) - 8'sd30;
         
-        `ifdef SIM_VERBOSE
-        $display("[GROUP_DOT_MLP_G%0d] @%0t exp_left=%0d, exp_right=%0d -> exp_sum=%0d (formula: %0d+%0d-30)",
-                 GROUP_ID, $time, i_exp_left, i_exp_right, exp_sum, i_exp_left, i_exp_right);
-        $display("[GROUP_DOT_MLP_G%0d] @%0t Partial sums: [0]=%0d, [1]=%0d, [2]=%0d, [3]=%0d, total=%0d",
-                 GROUP_ID, $time, mult_add_result[0], mult_add_result[1], mult_add_result[2], mult_add_result[3], accumulator);
-        `endif
+        // `ifdef SIM_VERBOSE
+        // $display("[GROUP_DOT_MLP_G%0d] @%0t exp_left=%0d, exp_right=%0d -> exp_sum=%0d (formula: %0d+%0d-30)",
+        //          GROUP_ID, $time, i_exp_left, i_exp_right, exp_sum, i_exp_left, i_exp_right);
+        // $display("[GROUP_DOT_MLP_G%0d] @%0t Partial sums: [0]=%0d, [1]=%0d, [2]=%0d, [3]=%0d, total=%0d",
+        //          GROUP_ID, $time, mult_add_result[0], mult_add_result[1], mult_add_result[2], mult_add_result[3], accumulator);
+        // `endif
     end
     
     // ===================================================================

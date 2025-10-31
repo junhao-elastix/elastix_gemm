@@ -1,0 +1,73 @@
+================================================================================
+ARCHIVE INFORMATION - October 30, 2025 RTL Cleanup
+================================================================================
+
+Archive Date: October 30, 2025
+Archive Location: src/rtl/archive_oct30_cleanup/
+Archived By: AI Assistant (Cleanup Task)
+
+PURPOSE:
+--------
+Archived failed implementations and backup files from BCV controller
+optimization work and other completed development efforts. These files
+are no longer needed for active development but preserved for reference.
+
+FILES ARCHIVED (4 files):
+--------------------------
+
+1. gfp8_bcv_controller_pingpong_failed.sv
+   - Date: October 2025
+   - Content: Failed ping-pong BCV controller implementation
+   - Status: Implementation failed validation, superseded by wrapper approach
+   - Reason: Complex ping-pong buffering caused timing/coordination issues
+   - Size: 746 lines
+
+2. gfp8_bcv_controller_single_fsm_backup.sv
+   - Date: October 2025
+   - Content: Backup of single FSM BCV controller before modifications
+   - Status: Superseded by current gfp8_bcv_controller.sv
+   - Reason: Safety backup no longer needed after successful implementation
+
+3. dispatcher_control_old.sv
+   - Date: October 2025
+   - Content: Old dispatcher control logic
+   - Status: Superseded by current dispatcher.sv
+   - Reason: Replaced during dispatcher optimization work
+
+4. gfp8_to_fp16.sv.backup_before_rounding
+   - Date: October 2025
+   - Content: Backup of GFP8 to FP16 converter before rounding changes
+   - Status: Superseded by current gfp8_to_fp16.sv
+   - Reason: Safety backup after rounding improvements validated
+
+IMPACT:
+-------
+- No impact on current build or functionality
+- All production RTL remains in src/rtl/
+- Archive contains only failed/superseded implementations
+- Previous archives (archive/, archive_oct12_cleanup/, archive_oct14_cleanup/)
+  remain untouched and contain their own archived files
+
+RESTORATION:
+------------
+If any of these files are needed for reference:
+1. Files are preserved with original names in this directory
+2. Git history contains full development history
+3. Consult CHANGELOG.md for context on what replaced each file
+
+================================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
