@@ -1,23 +1,23 @@
 # ---------------------------------------------------------------------
-# Makefile for OPTIMIZED Compute Engine Modular Simulation
+# Makefile for Compute Engine Modular Simulation
 #
-# Purpose: Validate optimized compute engine with direct path architecture
+# Purpose: Validate complete compute engine with dual BRAM interface and FP16 output
 # Features:
-#   - Direct path from tile_bram to MLP primitives
-#   - Optimized 4-state BCV controller (no FILL_BUFFER)
-#   - 2-cycle NV dot product (reduced from 3)
-#   - Parallel tree-based max-finding
-#   - 33% latency reduction
+#   - Full BCV loop orchestration
+#   - Dual BRAM read interfaces (left/right matrices)
+#   - Exponent read interfaces
+#   - GFP8 to FP16 conversion
+#   - Result validation with FP16 golden reference
 #
-# Author: Optimized Compute Engine Testing
-# Date: Thu Oct 31 2025
+# Author: Compute Engine Modular Testing
+# Date: Fri Oct 24 2025
 # ---------------------------------------------------------------------
 
 # Simulation settings
-SIM_TOP := tb_compute_engine_modular_opt
+SIM_TOP := tb_compute_engine_modular
 DEVICE := AC7t1500
 BASE_NAME := ac7t1500
-LOG_FILE := sim_opt.log
+LOG_FILE := sim.log
 
 # Achronix environment setup
 export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
@@ -74,16 +74,12 @@ compile: create_library
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
 		$(GEMM_RTL)/gfp8_group_dot_mlp.sv \
-		$(GEMM_RTL)/gfp8_nv_dot_merged.sv \
-		$(GEMM_RTL)/gfp8_nv_dot_opt.sv \
-		$(GEMM_RTL)/gfp8_nv_dot_ultra_opt.sv \
+		$(GEMM_RTL)/gfp8_nv_dot.sv \
 		$(GEMM_RTL)/gfp8_bcv_controller.sv \
-		$(GEMM_RTL)/gfp8_bcv_controller_opt.sv \
 		$(GEMM_RTL)/gfp8_to_fp16.sv \
 		$(GEMM_RTL)/tile_bram.sv \
 		$(GEMM_RTL)/compute_engine_modular.sv \
-		$(GEMM_RTL)/compute_engine_modular_opt.sv \
-		tb_compute_engine_modular_opt.sv >> $(LOG_FILE) 2>&1 || \
+		tb_compute_engine_modular.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: RTL compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compilation completed successfully" | tee -a $(LOG_FILE)
 	@echo ""

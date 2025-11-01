@@ -63,6 +63,11 @@ import gemm_pkg::*;
     t_AXI4.initiator                     nap_axi,
 
     // ====================================================================
+    // Flow Control
+    // ====================================================================
+    input  logic                         i_result_almost_full,   // Backpressure from result BRAM
+
+    // ====================================================================
     // Status Outputs
     // ====================================================================
     output logic                         o_engine_busy,
@@ -232,7 +237,7 @@ import gemm_pkg::*;
         // Peripheral State Inputs (for command synchronization)
         .i_dc_state         (dc_state),
         .i_ce_state         (ce_state),
-        .i_result_fifo_afull(result_fifo_afull),
+        .i_result_fifo_afull(i_result_almost_full),  // Use external backpressure signal
 
         // Dispatcher Control Interface (FETCH/DISP commands)
         .o_dc_fetch_en      (mc_dc_fetch_en),
@@ -378,8 +383,8 @@ import gemm_pkg::*;
 
     generate
         for (genvar tile_id = 0; tile_id < NUM_TILES; tile_id++) begin : gen_compute_tiles
-            // Compute Engine Instance
-            compute_engine_modular u_compute_engine (
+            // Compute Engine Instance (OPTIMIZED)
+            compute_engine_modular_opt u_compute_engine (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
 

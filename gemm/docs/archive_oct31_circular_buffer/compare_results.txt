@@ -1,0 +1,13 @@
+HW Results (B2_C2_V2):
+  [0] = 0x0742 (positive)
+  [1] = 0x0307 (positive)  
+  [2] = 0x059a (positive)
+  [3] = 0x038e (positive)
+
+Golden (Expected):
+  [0] = 0x0404 (positive)
+  [1] = 0x067e (positive)
+  [2] = 0x842d (NEGATIVE - bit 15 set)
+  [3] = 0x848d (NEGATIVE - bit 15 set)
+
+Pattern: Hardware results all positive, expected has 2 negative values

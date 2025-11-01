@@ -76,7 +76,6 @@ compile: create_library
 		$(GEMM_RTL)/gfp8_group_dot_mlp.sv \
 		$(GEMM_RTL)/gfp8_nv_dot_merged.sv \
 		$(GEMM_RTL)/gfp8_nv_dot_opt.sv \
-		$(GEMM_RTL)/gfp8_nv_dot_ultra_opt.sv \
 		$(GEMM_RTL)/gfp8_bcv_controller.sv \
 		$(GEMM_RTL)/gfp8_bcv_controller_opt.sv \
 		$(GEMM_RTL)/gfp8_to_fp16.sv \

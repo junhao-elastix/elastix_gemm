@@ -78,6 +78,13 @@ module tb_engine_top;
     logic         result_fifo_empty;
     logic [14:0]  result_fifo_count;
 
+    // Flow control monitoring
+    logic         result_almost_full;
+
+    // Connect result_almost_full to the internal result FIFO almost full signal
+    // This provides the backpressure mechanism to master_control
+    assign result_almost_full = u_dut.result_fifo_afull;
+
     // Status signals
     logic         engine_busy;
     logic [3:0]   mc_state;
@@ -93,7 +100,9 @@ module tb_engine_top;
     // ===================================================================
     t_AXI4 #(
         .DATA_WIDTH (TGT_DATA_WIDTH),
-        .ADDR_WIDTH (AXI_ADDR_WIDTH)
+        .ADDR_WIDTH (AXI_ADDR_WIDTH),
+        .LEN_WIDTH  (8),      // 8-bit ARLEN/AWLEN (AXI4 supports up to 256 beats)
+        .ID_WIDTH   (8)       // 8-bit ARID/AWID
     ) axi_ddr_if();
 
     // ===================================================================
@@ -123,6 +132,9 @@ module tb_engine_top;
         // AXI GDDR6 interface
         .nap_axi                (axi_ddr_if.initiator),
 
+        // Flow control (connect to internal signal for monitoring)
+        .i_result_almost_full   (result_almost_full),
+
         // Status
         .o_engine_busy          (engine_busy),
         .o_mc_state             (mc_state),
@@ -135,6 +147,86 @@ module tb_engine_top;
         .o_bram_wr_count        (bram_wr_count),
         .o_result_count         (result_count)
     );
+
+    // ===================================================================
+    // Result Packing Module - Circular Buffer Integration
+    // ===================================================================
+    // BRAM interface signals
+    logic [8:0]   result_bram_wr_addr;
+    logic [255:0] result_bram_wr_data;
+    logic         result_bram_wr_en;
+    logic [31:0]  result_bram_wr_strobe;
+
+    // First 4 results (for quick checking)
+    logic [15:0]  result_0, result_1, result_2, result_3;
+
+    // Circular buffer interface
+    logic [12:0]  result_rd_ptr;          // Read pointer (host-controlled)
+    logic [12:0]  result_wr_ptr;          // Write pointer (hardware)
+    logic [13:0]  result_used_entries;    // Used entries (0-8192)
+    logic         result_empty;           // Empty flag
+    logic         result_write_top_reset; // Reset signal
+    logic         result_bram_almost_full; // Backpressure signal
+
+    // BRAM model for packed results (512 lines × 256 bits)
+    logic [255:0] result_bram_model [0:511];
+    int           result_bram_lines_written;
+
+    // Initialize result_rd_ptr
+    initial begin
+        result_rd_ptr = 13'b0;
+        result_write_top_reset = 1'b0;
+    end
+
+    result_fifo_to_simple_bram u_result_packer (
+        .i_clk              (clk),
+        .i_reset_n          (reset_n),
+
+        // Result FIFO interface (from engine_top)
+        .i_fifo_rdata       (result_fifo_rdata),
+        .o_fifo_ren         (result_fifo_ren),
+        .i_fifo_empty       (result_fifo_empty),
+
+        // BRAM interface (to model)
+        .o_bram_wr_addr     (result_bram_wr_addr),
+        .o_bram_wr_data     (result_bram_wr_data),
+        .o_bram_wr_en       (result_bram_wr_en),
+        .o_bram_wr_strobe   (result_bram_wr_strobe),
+
+        // First 4 results
+        .o_result_0         (result_0),
+        .o_result_1         (result_1),
+        .o_result_2         (result_2),
+        .o_result_3         (result_3),
+
+        // Circular buffer interface
+        .i_rd_ptr           (result_rd_ptr),
+        .o_wr_ptr           (result_wr_ptr),
+        .o_used_entries     (result_used_entries),
+        .o_empty            (result_empty),
+        .i_write_top_reset  (result_write_top_reset),
+        .o_almost_full      (result_bram_almost_full)
+    );
+
+    // BRAM Model - Captures packed results
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            result_bram_lines_written <= 0;
+            for (int i = 0; i < 512; i++) begin
+                result_bram_model[i] <= 256'h0;
+            end
+        end else if (result_bram_wr_en) begin
+            // Byte-granular write using byte strobes (each bit enables one byte)
+            for (int byte_idx = 0; byte_idx < 32; byte_idx++) begin
+                if (result_bram_wr_strobe[byte_idx]) begin
+                    result_bram_model[result_bram_wr_addr][byte_idx*8 +: 8] <= result_bram_wr_data[byte_idx*8 +: 8];
+                end
+            end
+            result_bram_lines_written <= result_bram_lines_written + 1;
+            $display("[TB_BRAM] @%0t WRITE: addr=%0d, strobe=0x%08x, data=0x%064x",
+                     $time, result_bram_wr_addr, result_bram_wr_strobe, result_bram_wr_data);
+        end
+    end
 
     // ===================================================================
     // Memory Model Instantiation
@@ -225,7 +317,7 @@ module tb_engine_top;
         // Initialize signals
         cmd_fifo_wdata = 32'h0;
         cmd_fifo_wen = 1'b0;
-        result_fifo_ren = 1'b0;
+        // result_fifo_ren is now driven by u_result_packer, not by testbench
 
         // Wait for reset to complete
         wait (reset_n == 1'b1);
@@ -233,13 +325,20 @@ module tb_engine_top;
 
         // Run all test configurations
         foreach (test_configs[i]) begin
+            // Debug: Capture BRAM state before reset (for B4_C4_V4 analysis)
+            if (i > 0 && i == 3) begin  // After test 3 (B4_C4_V4), before reset for test 4
+                $display("[TB_DEBUG] @%0t BEFORE RESET: BRAM[0] = 0x%064x", $time, result_bram_model[0]);
+                $display("[TB_DEBUG] @%0t BEFORE RESET: BRAM lines written counter = %0d", $time, result_bram_lines_written);
+            end
+
             // Reset engine between tests to ensure clean state
             if (i > 0) begin
                 reset_n = 1'b0;
+                result_rd_ptr = 13'b0;  // Reset circular buffer read pointer
                 repeat (10) @(posedge clk);
                 reset_n = 1'b1;
                 repeat (10) @(posedge clk);
-                $display("[TB] Reset between tests completed at time %0t", $time);
+                $display("[TB] Reset between tests completed at time %0t (rd_ptr reset to 0)", $time);
             end
 
             run_single_test(
@@ -356,8 +455,8 @@ module tb_engine_top;
         end
         cmd_fifo_wen = 1'b0;
         
-        // Wait for DISPATCH LEFT to complete (monitor engine_busy)
-        while (engine_busy || !result_fifo_empty) @(posedge clk);
+        // Wait for DISPATCH LEFT to complete (monitor engine_busy and packer draining)
+        while (engine_busy || (result_used_entries > 0)) @(posedge clk);
         disp_left_end = $time;
         disp_left_cycles = (disp_left_end - disp_left_start) / CLK_PERIOD;
         fetch_left_end = disp_left_end;  // FETCH LEFT completes when DISPATCH LEFT completes
@@ -381,8 +480,8 @@ module tb_engine_top;
         end
         cmd_fifo_wen = 1'b0;
         
-        // Wait for DISPATCH RIGHT to complete
-        while (engine_busy || !result_fifo_empty) @(posedge clk);
+        // Wait for DISPATCH RIGHT to complete (monitor engine_busy and packer draining)
+        while (engine_busy || (result_used_entries > 0)) @(posedge clk);
         disp_right_end = $time;
         disp_right_cycles = (disp_right_end - disp_right_start) / CLK_PERIOD;
         fetch_right_end = disp_right_end;  // FETCH RIGHT completes when DISPATCH RIGHT completes
@@ -408,60 +507,121 @@ module tb_engine_top;
         watchdog = 100000;  // 1ms timeout
         results_seen = 0;
         mismatches = 0;
-        
-        // Continuously read results until expected count or timeout
-        while (results_seen < expected_results && timeout_count < watchdog) begin
+
+        // Circular Buffer Monitoring
+        $display("[TB] Circular buffer monitoring enabled");
+        $display("[TB] Initial state: wr_ptr=%0d, rd_ptr=%0d, used_entries=%0d, empty=%b",
+                 result_wr_ptr, result_rd_ptr, result_used_entries, result_empty);
+
+        // Wait for all results to be packed into BRAM
+        while ((result_wr_ptr < expected_results) && (timeout_count < watchdog)) begin
             @(posedge clk);
             timeout_count++;
-            
-            // Read result if FIFO has data
-            if (!result_fifo_empty) begin
-                logic [15:0] fp16_hw;
-                logic [15:0] golden;
-                int diff;
-                
-                result_fifo_ren = 1'b1;
-                @(posedge clk);
-                result_fifo_ren = 1'b0;
-                @(posedge clk);  // Wait additional cycle for BRAM read latency
-                fp16_hw = result_fifo_rdata;
-                
-                golden = golden_results[results_seen];
-                
-                // Check for X/Z states (uninitialized values)
-                if ($isunknown(fp16_hw)) begin
-                    $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d]", 
-                            fp16_hw, results_seen);
-                    mismatches++;
-                end else begin
-                    diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
-                    
-                    if (diff > 2) begin
-                        $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                                results_seen, fp16_hw, golden, diff);
-                        mismatches++;
-                    end else begin
-                        $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d", 
-                                results_seen, fp16_hw, golden, diff);
-                    end
-                end
-                
-                results_seen++;
-            end
         end
 
         if (timeout_count >= watchdog) begin
-            $display("[TB] ERROR: Result wait timeout! Expected %0d, got %0d",
-                     expected_results, results_seen);
+            $display("[TB] ERROR: Packing timeout! Expected %0d, got %0d",
+                     expected_results, result_wr_ptr);
         end else begin
-            $display("[TB] Collected %0d results after %0d cycles", results_seen, timeout_count);
+            $display("[TB] All results packed after %0d cycles: wr_ptr=%0d, used_entries=%0d",
+                     timeout_count, result_wr_ptr, result_used_entries);
         end
+
+        // Wait for BRAM write to propagate (always_ff needs 1 cycle)
+        @(posedge clk);
+        @(posedge clk);  // Additional safety margin
+
+        // Flush partial BRAM line if needed (for tests with < 16 results)
+        if ((expected_results % 16) != 0) begin
+            $display("[TB] Flushing partial BRAM line (%0d results not yet written)...", expected_results % 16);
+            result_write_top_reset = 1'b1;
+            @(posedge clk);
+            result_write_top_reset = 1'b0;
+            @(posedge clk);
+            @(posedge clk);  // Wait for flush to complete
+            $display("[TB] Flush complete. BRAM lines written: %0d", result_bram_lines_written);
+        end else begin
+            $display("[TB] No flush needed. BRAM lines written: %0d", result_bram_lines_written);
+        end
+
+        // Read and verify packed results from BRAM model
+        for (int result_idx = 0; result_idx < expected_results; result_idx++) begin
+            logic [15:0] fp16_hw;
+            logic [15:0] golden;
+            int diff;
+            int bram_line;
+            int bram_pos;
+
+            // Calculate BRAM address: line = result_idx / 16, position = result_idx % 16
+            bram_line = result_idx / 16;
+            bram_pos = result_idx % 16;
+
+            // Extract FP16 value from packed BRAM line
+            fp16_hw = result_bram_model[bram_line][bram_pos*16 +: 16];
+            golden = golden_results[result_idx];
+
+            // Debug: Show what we read from BRAM for B4_C4_V4 test
+            if (expected_results == 16 && result_idx < 4) begin
+                $display("[TB_VERIFY] @%0t READ: result[%0d] from BRAM[%0d][%0d] = 0x%04x (full line = 0x%064x), golden = 0x%04x",
+                        $time, result_idx, bram_line, bram_pos, fp16_hw, result_bram_model[bram_line], golden);
+            end
+
+            // Check for X/Z states (uninitialized values)
+            if ($isunknown(fp16_hw)) begin
+                $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d] (BRAM[%0d][%0d])",
+                        fp16_hw, result_idx, bram_line, bram_pos);
+                mismatches++;
+            end else begin
+                diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
+
+                if (diff > 2) begin
+                    $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (BRAM[%0d][%0d])",
+                            result_idx, fp16_hw, golden, diff, bram_line, bram_pos);
+                    mismatches++;
+                end else if (result_idx < 10 || (result_idx >= expected_results - 5)) begin
+                    // Only print first 10 and last 5 matches to reduce log size
+                    $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (BRAM[%0d][%0d])",
+                            result_idx, fp16_hw, golden, diff, bram_line, bram_pos);
+                end
+            end
+
+            results_seen++;
+
+            // Update rd_ptr every 16 results (one BRAM line consumed)
+            if ((result_idx + 1) % 16 == 0) begin
+                result_rd_ptr = result_rd_ptr + 16;
+            end
+        end
+
+        $display("[TB] Final circular buffer state: wr_ptr=%0d, rd_ptr=%0d, used_entries=%0d",
+                 result_wr_ptr, result_rd_ptr, result_used_entries);
         
         // End timing for TILE stage (when all results collected)
         tile_end = $time;
         tile_cycles = (tile_end - tile_start) / CLK_PERIOD;
         end_time = $time;
         total_cycles = (end_time - start_time) / CLK_PERIOD;
+
+        // Circular Buffer Status Monitoring
+        $display("[TB] ====================================================================");
+        $display("[TB] Circular Buffer Status:");
+        $display("[TB]   wr_ptr: %0d", result_wr_ptr);
+        $display("[TB]   rd_ptr: %0d", result_rd_ptr);
+        $display("[TB]   used_entries: %0d / 8192 (%.1f%% full)",
+                 result_used_entries, (result_used_entries * 100.0) / 8192.0);
+        $display("[TB]   empty: %b", result_empty);
+        $display("[TB]   almost_full: %b (threshold: 7936)", result_bram_almost_full);
+        $display("[TB]   BRAM lines written: %0d", result_bram_lines_written);
+        $display("[TB]   Results collected: %0d", results_seen);
+        $display("[TB] ====================================================================");
+
+        // Monitor internal result FIFO (should be drained by packer)
+        $display("[TB] Internal Result FIFO (engine_top → packer):");
+        $display("[TB]   count: %0d (should be ~0 if packer is draining)", result_fifo_count);
+        $display("[TB]   almost_full: %b", u_dut.result_fifo_afull);
+
+        // For packed result testing, a separate testbench for elastix_gemm_top
+        // would be needed to verify the result_fifo_to_simple_bram functionality
         
         // ===================================================================
         // TIMING REPORT

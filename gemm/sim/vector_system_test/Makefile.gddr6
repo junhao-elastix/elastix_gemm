@@ -1,0 +1,72 @@
+# Additional Makefile rules for GDDR6-realistic simulation
+# Include this file in the main Makefile or use it standalone
+
+# Run with GDDR6-realistic memory model
+run_gddr6:
+	@echo "======================================================================"
+	@echo "  Running with GDDR6-REALISTIC Memory Model"
+	@echo "======================================================================"
+	@echo "Memory Model Features:"
+	@echo "  - First word latency: ~55 cycles (137ns @ 400MHz)"
+	@echo "  - Row miss penalty: ~105 cycles"
+	@echo "  - Inter-burst gap: 5 cycles"
+	@echo "  - Emulates realistic GDDR6+NoC behavior"
+	@echo "======================================================================"
+	@$(MAKE) clean
+	@$(MAKE) MEM_MODEL=gddr6 run
+	@echo ""
+	@echo "GDDR6-realistic simulation complete."
+	@grep "TB_GDDR6_MODEL.*Performance Summary" sim.log -A 10 || true
+
+# Compare simple vs GDDR6 timing
+compare_models:
+	@echo "Running comparison: Simple vs GDDR6 memory models..."
+	@echo "" > comparison.log
+	@echo "=====================================================================" >> comparison.log
+	@echo "Memory Model Comparison" >> comparison.log
+	@echo "=====================================================================" >> comparison.log
+	@echo "" >> comparison.log
+	@echo "1. SIMPLE (ZERO-LATENCY) MODEL:" >> comparison.log
+	@echo "--------------------------------" >> comparison.log
+	@$(MAKE) clean > /dev/null 2>&1
+	@$(MAKE) MEM_MODEL=simple run > /dev/null 2>&1
+	@grep "FETCH.*cycles" sim.log | head -5 >> comparison.log || true
+	@echo "" >> comparison.log
+	@echo "2. GDDR6-REALISTIC MODEL:" >> comparison.log
+	@echo "--------------------------------" >> comparison.log
+	@$(MAKE) clean > /dev/null 2>&1
+	@$(MAKE) MEM_MODEL=gddr6 run > /dev/null 2>&1
+	@grep "FETCH.*cycles" sim.log | head -5 >> comparison.log || true
+	@grep "TB_GDDR6.*Performance Summary" sim.log -A 10 >> comparison.log || true
+	@echo "" >> comparison.log
+	@echo "Comparison complete. Results in comparison.log"
+	@cat comparison.log
+
+# Help for GDDR6 features
+help_gddr6:
+	@echo "======================================================================"
+	@echo "  GDDR6-Realistic Memory Model Usage"
+	@echo "======================================================================"
+	@echo ""
+	@echo "The GDDR6-realistic memory model adds accurate timing to simulations:"
+	@echo ""
+	@echo "Features:"
+	@echo "  - CAS Latency: 40 cycles (~20ns @ 2GHz GDDR6)"
+	@echo "  - Row activation: 50 cycles for row misses"
+	@echo "  - NoC routing: 15 cycles additional"
+	@echo "  - Inter-burst gaps: 5 cycles"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make run_gddr6      - Run all tests with GDDR6 timing"
+	@echo "  make compare_models - Compare simple vs GDDR6 timing"
+	@echo "  make MEM_MODEL=gddr6 debug - Debug with GDDR6 model"
+	@echo ""
+	@echo "The GDDR6 model helps identify:"
+	@echo "  - Memory access patterns impact on performance"
+	@echo "  - Potential optimizations for burst efficiency"
+	@echo "  - Real-world performance expectations"
+	@echo ""
+	@echo "Files:"
+	@echo "  tb_memory_model.sv       - Simple zero-latency model"
+	@echo "  tb_memory_model_gddr6.sv - GDDR6-realistic model"
+	@echo ""

@@ -44,13 +44,14 @@ module dma_bram_bridge
     input wire i_bram_inc42_en, // Legacy processing enable (unused, kept for compatibility)
     
     // Internal Access Ports (for MS2.0 GEMM engine result writer)
-    input  wire                              i_internal_rd_en,    // FSM read enable
-    input  wire [8:0]                        i_internal_rd_addr,  // FSM read address (0-127)
-    output logic [255:0]                     o_internal_rd_data,  // FSM read data (int16 at [15:0])
-    
-    input  wire                              i_internal_wr_en,    // FSM write enable
-    input  wire [8:0]                        i_internal_wr_addr,  // FSM write address (0-127)
-    input  wire [255:0]                      i_internal_wr_data   // FSM write data (int16 at [15:0])
+    input  wire                              i_internal_rd_en,     // FSM read enable
+    input  wire [8:0]                        i_internal_rd_addr,   // FSM read address (0-127)
+    output logic [255:0]                     o_internal_rd_data,   // FSM read data (int16 at [15:0])
+
+    input  wire                              i_internal_wr_en,     // FSM write enable
+    input  wire [8:0]                        i_internal_wr_addr,   // FSM write address (0-127)
+    input  wire [255:0]                      i_internal_wr_data,   // FSM write data (int16 at [15:0])
+    input  wire [31:0]                       i_internal_wr_strobe  // FSM write byte enables
     );
 
 
@@ -185,7 +186,7 @@ module dma_bram_bridge
    assign actual_wr_en   = internal_wr_active ? i_internal_wr_en : (dma_active ? xact_wr_en : 1'b0);
    assign actual_wr_addr = internal_wr_active ? i_internal_wr_addr : (dma_active ? xact_aw_addr : 9'b0);
    assign actual_wr_data = internal_wr_active ? i_internal_wr_data : (dma_active ? xact_w_din_processed : 256'b0);
-   assign actual_wstrb   = internal_wr_active ? 32'hFFFFFFFF : (dma_active ? xact_wstrb : 32'h0); // FSM writes full words
+   assign actual_wstrb   = internal_wr_active ? i_internal_wr_strobe : (dma_active ? xact_wstrb : 32'h0); // Use byte strobes from packer
    
    // Output read data to FSM (registered, matches BRAM latency)
    always_ff @(posedge i_clk) begin

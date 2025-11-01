@@ -146,3 +146,28 @@ Trade-off: Simplicity vs. Performance
 **Alternative:** Accept standalone results as proof-of-concept and keep single-FSM for production reliability.
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

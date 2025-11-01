@@ -1,9 +1,9 @@
 # Elastix GEMM Engine Project
 
-**Status**: ✅ **PRODUCTION READY** - MS2.0 GEMM Engine with Modular Compute Architecture
-**Last Updated**: Fri Oct 24 09:30:00 PDT 2025
-**Bitstream Build**: In progress (awaiting hardware validation after Oct 24 RTL cleanup)
-**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - Pending validation
+**Status**: ✅ **PRODUCTION READY** - MS2.0 GEMM Engine with Circular Buffer Architecture
+**Last Updated**: Fri Oct 31 13:15:00 PDT 2025
+**Bitstream Build**: Bitstream ID 0x10311646 (validated Oct 31)
+**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - 10/10 tests passing (100%)
 **Top-Level Module**: `elastix_gemm_top.sv`
 
 ## Project Overview
@@ -125,8 +125,9 @@ cd sw_test/
 | `test_gddr6` | GDDR6 channel status and performance monitoring | ✅ Pass |
 | `test_bram` | Basic BRAM DMA read/write validation | ✅ Pass |
 | `scan_registers` | Register address space diagnostic scanner | ✅ Pass |
+| `test_gemm` | THREE-STAGE circular buffer validation test | ✅ Pass (10/10) |
+| `test_gemm_full` | MS2.0 GEMM engine full integration test (5 commands) | ✅ Pass |
 | `dma_example` | Advanced DMA testing with performance metrics | ✅ Pass |
-| `test_ms2_gemm_full` | MS2.0 GEMM engine full integration test | ✅ Pass |
 
 ### Archived Tests (moved to obsolete_debug_tests/)
 - `test_bram_vector` - Legacy BRAM vector processor (replaced by GEMM engine)
@@ -237,9 +238,11 @@ gemm/
 │   │   ├── gfp8_nv_dot.sv            # Native Vector dot product
 │   │   ├── gfp8_group_dot.sv         # Group dot product
 │   │   ├── gfp8_to_fp16.sv           # GFP8 to FP16 conversion
-│   │   ├── dispatcher_bram.sv # Dual-read BRAM module
-│   │   ├── result_bram.sv            # Result FIFO (256×16-bit FP16)
-│   │   ├── dma_bram_bridge.sv        # Enhanced BRAM responder
+│   │   ├── dispatcher_bram.sv        # Dual-read BRAM module
+│   │   ├── result_bram.sv            # Result FIFO (256×16-bit FP16, 1-cycle latency)
+│   │   ├── result_fifo_to_simple_bram.sv # Result packer with byte-granular direct writes
+│   │   ├── engine_top.sv             # Engine integration wrapper
+│   │   ├── dma_bram_bridge.sv        # BRAM responder with byte strobe support
 │   │   ├── reg_control_block.sv      # PCIe register interface (133 regs)
 │   │   └── ...                       # Other RTL modules
 │   ├── acxip/                        # IP configurations
@@ -257,8 +260,9 @@ gemm/
 │   ├── test_registers.cpp            # Device health check
 │   ├── test_gddr6.cpp                # GDDR6 status and operations
 │   ├── test_bram.cpp                 # BRAM DMA functionality validation
-│   ├── test_ms2_gemm_full.cpp        # MS2.0 GEMM engine full integration test
-│   ├── DMA_example.cpp               # Advanced DMA testing
+│   ├── test_gemm.cpp                 # THREE-STAGE circular buffer validation
+│   ├── test_gemm_full.cpp            # MS2.0 GEMM engine full integration test (5 commands)
+│   ├── dma_example.cpp               # Advanced DMA testing
 │   ├── Makefile                      # Test suite build system
 │   └── ...                           # Other tests
 └── demo/
@@ -300,6 +304,8 @@ None currently. All tests passing with modular compute engine.
 
 ## Project Evolution
 
+- **Oct 31, 2025**: **CIRCULAR BUFFER COMPLETION** - Implemented byte-granular direct writes with dual-pointer management (rd_ptr/wr_ptr), removed packer buffer complexity, simplified result_bram FIFO to 1-cycle latency, THREE-STAGE validation all passing 100% in hardware (618 FP16 results validated)
+- **Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds, 10/10 simulation tests passing, hardware validation completed Oct 31
 - **Oct 14, 2025**: **COMPREHENSIVE CLEANUP** - Streamlined project structure (66 files archived: 16 RTL modules, 26 tests, 21 sim files, 16 docs), validated with full test suite (88% pass)
 - **Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Migrated to modular compute engine with dual BRAM interface for improved throughput, production-ready
 - **Oct 7, 2025**: **MAJOR CLEANUP** - Initial cleanup phase, removed legacy +42 processing, aligned constraints with GEMM-focused architecture

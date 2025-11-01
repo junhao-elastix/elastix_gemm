@@ -17,8 +17,9 @@
 //  ACCUM        -> Accumulate result into V-loop accumulator (1 cycle)
 //  RETURN       -> Output final result after V iterations complete (1 cycle)
 //
-// Latency per output: 1 (fill) + 4 (compute) + 1 (accum) = 6 cycles per V
-//                     Total: 6xV + 1 (return) cycles per BxC result
+// Latency per output: 6 (pipelined fill) + 4 (compute) + 1 (accum) = 11 cycles per V
+//                     Total: 11xV + 1 (return) cycles per BxC result
+//                     (Extra 5 cycles per V for 200-300 MHz timing optimization)
 //
 // OPTIMIZATION: Single-cycle NV read via tile_bram's NV interface
 //
@@ -201,40 +202,54 @@ module gfp8_bcv_controller (
     end
     
     // ===================================================================
-    // NV Read Index Generation (COMBINATIONAL)
+    // NV Read Index Generation - PIPELINED for 200-300 MHz (TIMING OPTIMIZATION)
     // ===================================================================
-    // Single-cycle NV read via tile_bram's NV interface
+    // Add pipeline register to break critical path:
+    // Before: v_idx → index_calc → tile_bram (8.5ns - too long!)
+    // After:  v_idx → index_calc → INDEX_REG → tile_bram (split into 2 stages)
+    
+    // Combinational NV index calculation
+    logic [6:0] left_nv_index_comb, right_nv_index_comb;
+    logic [6:0] left_base_nv, right_base_nv;
+    
+    // Convert base addresses from line units to NV units (divide by 4)
+    assign left_base_nv = left_base_reg[8:2];
+    assign right_base_nv = right_base_reg[8:2];
     
     always_comb begin
-        // Default: index 0
-        o_nv_left_rd_idx = 7'd0;
-        o_nv_right_rd_idx = 7'd0;
-        
-        if (state_reg == ST_FILL_BUFFER) begin
-            // Calculate NV indices
-            automatic logic [6:0] left_base_nv;
-            automatic logic [6:0] right_base_nv;
-            automatic logic [6:0] left_nv_index;
-            automatic logic [6:0] right_nv_index;
-            
-            // Convert base addresses from line units to NV units (divide by 4)
-            left_base_nv = left_base_reg[8:2];
-            right_base_nv = right_base_reg[8:2];
-            
-            // Calculate NV index based on loop counters
-            left_nv_index = left_base_nv + (b_idx * dim_v_reg + v_idx);
-            right_nv_index = right_base_nv + (c_idx * dim_v_reg + v_idx);
-            
-            // Output NV indices for combinational read from tile_bram
-            o_nv_left_rd_idx = left_nv_index;
-            o_nv_right_rd_idx = right_nv_index;
-            
-            `ifdef SIMULATION
-            $display("[NV_IDX] @%0t Reading Left NV[%0d], Right NV[%0d] for B=%0d, C=%0d, V=%0d", 
-                     $time, left_nv_index, right_nv_index, b_idx, c_idx, v_idx);
-            `endif
+        // Calculate NV indices combinationally
+        left_nv_index_comb = left_base_nv + (b_idx * dim_v_reg + v_idx);
+        right_nv_index_comb = right_base_nv + (c_idx * dim_v_reg + v_idx);
+    end
+    
+    // PIPELINE REGISTER: Break timing path here
+    logic [6:0] left_nv_index_reg, right_nv_index_reg;
+    logic       nv_indices_valid;
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            left_nv_index_reg <= 7'd0;
+            right_nv_index_reg <= 7'd0;
+            nv_indices_valid <= 1'b0;
+        end else begin
+            // Register indices during FILL_BUFFER state
+            if (state_reg == ST_FILL_BUFFER && !fill_buffer_ready) begin
+                left_nv_index_reg <= left_nv_index_comb;
+                right_nv_index_reg <= right_nv_index_comb;
+                nv_indices_valid <= 1'b1;
+                `ifdef SIMULATION
+                $display("[NV_IDX] @%0t Registered Left NV[%0d], Right NV[%0d] for B=%0d, C=%0d, V=%0d", 
+                         $time, left_nv_index_comb, right_nv_index_comb, b_idx, c_idx, v_idx);
+                `endif
+            end else if (state_reg != ST_FILL_BUFFER) begin
+                nv_indices_valid <= 1'b0;
+            end
         end
     end
+    
+    // Output registered indices to tile_bram
+    assign o_nv_left_rd_idx = left_nv_index_reg;
+    assign o_nv_right_rd_idx = right_nv_index_reg;
     
     // ===================================================================
     // Buffer Filling Logic (Single-cycle NV capture)
@@ -255,21 +270,48 @@ module gfp8_bcv_controller (
                 end
                 
                 ST_FILL_BUFFER: begin
-                    if (!fill_buffer_ready) begin
-                        // First cycle: capture complete NVs from tile_bram
-                        nv_left_exp <= i_nv_left_exp;
-                        nv_right_exp <= i_nv_right_exp;
-                        nv_left_man <= i_nv_left_man;
-                        nv_right_man <= i_nv_right_man;
-                        fill_buffer_ready <= 1'b1;  // Signal ready for next cycle
-                        
+                    // PIPELINED: Cycle 0 = calc indices, Cycle 1 = wait for BRAM, Cycles 2-5 = capture groups
+                    if (fill_cycle == 3'd1 && nv_indices_valid) begin
+                        // Cycle 1: Indices now registered, start BRAM read for G0
+                        // BRAM data will be ready next cycle
+                    end else if (fill_cycle == 3'd2) begin
+                        // Cycle 2: Capture G0 (from previous cycle's read)
+                        nv_left_exp[7:0] <= i_nv_left_exp[7:0];
+                        nv_right_exp[7:0] <= i_nv_right_exp[7:0];
+                        nv_left_man[0] <= i_nv_left_man[0];
+                        nv_right_man[0] <= i_nv_right_man[0];
+                    end else if (fill_cycle == 3'd3) begin
+                        // Cycle 3: Capture G1
+                        nv_left_exp[15:8] <= i_nv_left_exp[15:8];
+                        nv_right_exp[15:8] <= i_nv_right_exp[15:8];
+                        nv_left_man[1] <= i_nv_left_man[1];
+                        nv_right_man[1] <= i_nv_right_man[1];
+                    end else if (fill_cycle == 3'd4) begin
+                        // Cycle 4: Capture G2
+                        nv_left_exp[23:16] <= i_nv_left_exp[23:16];
+                        nv_right_exp[23:16] <= i_nv_right_exp[23:16];
+                        nv_left_man[2] <= i_nv_left_man[2];
+                        nv_right_man[2] <= i_nv_right_man[2];
+                    end else if (fill_cycle == 3'd5) begin
+                        // Cycle 5: Capture G3 and set ready flag
+                        nv_left_exp[31:24] <= i_nv_left_exp[31:24];
+                        nv_right_exp[31:24] <= i_nv_right_exp[31:24];
+                        nv_left_man[3] <= i_nv_left_man[3];
+                        nv_right_man[3] <= i_nv_right_man[3];
+                        fill_buffer_ready <= 1'b1;
                         `ifdef SIMULATION
-                        $display("[BCV_FILL] @%0t Capturing NVs for B=%0d, C=%0d, V=%0d",
+                        $display("[BCV_FILL] @%0t Captured all 4 groups for B=%0d, C=%0d, V=%0d (PIPELINED)",
                                  $time, b_idx, c_idx, v_idx);
-                        $display("  Left exp: 0x%08x, Right exp: 0x%08x", i_nv_left_exp, i_nv_right_exp);
+                        $display("  Left exp: 0x%08x, Right exp: 0x%08x", {i_nv_left_exp[31:24], nv_left_exp[23:0]}, {i_nv_right_exp[31:24], nv_right_exp[23:0]});
                         `endif
                     end
-                    // Second cycle: fill_buffer_ready is high, will transition to COMPUTE_NV
+                    
+                    // Increment fill cycle counter
+                    if (fill_cycle < 3'd5) begin
+                        fill_cycle <= fill_cycle + 1;
+                    end else if (fill_buffer_ready) begin
+                        fill_cycle <= 3'd0;  // Reset after ready
+                    end
                 end
                 
                 ST_COMPUTE_NV: begin

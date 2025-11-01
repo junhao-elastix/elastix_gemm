@@ -57,7 +57,6 @@ import gemm_pkg::*;
     // Pointers
     logic [ADDR_WIDTH-1:0] wr_ptr;
     logic [ADDR_WIDTH-1:0] rd_ptr;
-    logic [ADDR_WIDTH-1:0] rd_ptr_next;
 
     // Count and Status
     logic [ADDR_WIDTH:0]   count_reg;  // 15 bits to hold 0-16,384
@@ -65,10 +64,8 @@ import gemm_pkg::*;
     logic                  empty_reg;
     logic                  afull_reg;
 
-    // Read data pipeline for BRAM registered output
-    logic [DATA_WIDTH-1:0] rd_data_bram;
+    // Read data register for BRAM output
     logic [DATA_WIDTH-1:0] rd_data_reg;
-    logic                  rd_valid;
 
     // Combinational status flags (to avoid 1-cycle delay)
     logic                  empty_comb;
@@ -94,7 +91,7 @@ import gemm_pkg::*;
     end
 
     // ===================================================================
-    // Read Logic
+    // Read Logic - Standard Synchronous FIFO (1-cycle latency)
     // ===================================================================
 
     // Read pointer management
@@ -109,30 +106,13 @@ import gemm_pkg::*;
     end
 
     // BRAM read - synchronous read (1 cycle latency)
-    always_ff @(posedge i_clk) begin
-        if (~i_reset_n) begin
-            rd_data_bram <= '0;
-        end else begin
-            // Read ahead to maintain FWFT-like behavior
-            if (i_rd_en && !empty_comb) begin
-                rd_data_bram <= mem[rd_ptr + 1'b1];
-            end else if (!empty_comb) begin
-                rd_data_bram <= mem[rd_ptr];
-            end
-        end
-    end
-
-    // Output register for FWFT compatibility
+    // Standard FIFO behavior: Assert i_rd_en on cycle N, data valid on cycle N+1
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             rd_data_reg <= '0;
-            rd_valid <= 1'b0;
         end else begin
-            if (!empty_comb) begin
-                rd_data_reg <= rd_data_bram;
-                rd_valid <= 1'b1;
-            end else begin
-                rd_valid <= 1'b0;
+            if (i_rd_en && !empty_comb) begin
+                rd_data_reg <= mem[rd_ptr];
             end
         end
     end

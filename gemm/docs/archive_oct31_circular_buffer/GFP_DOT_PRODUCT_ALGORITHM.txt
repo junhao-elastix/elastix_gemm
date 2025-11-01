@@ -1,0 +1,197 @@
+================================================================================
+GFP8 DOT PRODUCT ALGORITHM EXPLANATION
+================================================================================
+
+GFP8 FORMAT:
+  - Group Floating Point with 8-bit mantissas
+  - Shared exponent per group (32 elements share 1 exponent)
+  - Exponent: 5-bit unsigned, bias=15
+  - Mantissa: 8-bit signed integer (-128 to +127)
+  
+Native Vector: 128 elements = 4 groups × 32 elements/group
+
+================================================================================
+HIERARCHICAL STRUCTURE:
+================================================================================
+
+Level 1: GROUP DOT PRODUCT (gfp8_group_dot.sv)
+  Computes: dot product of 32-element groups
+
+Level 2: NATIVE VECTOR DOT PRODUCT (gfp8_nv_dot.sv)
+  Computes: dot product of 128-element native vectors
+  Method: 4× group dots + exponent alignment + summation
+
+================================================================================
+ALGORITHM DETAILS:
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1: GROUP DOT PRODUCT (for each of 4 groups)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Input:
+  - Left:  exp_left  (5-bit), man_left[0:31]  (32× 8-bit signed)
+  - Right: exp_right (5-bit), man_right[0:31] (32× 8-bit signed)
+
+Computation (ALL INTEGER, NO FLOATING-POINT OPS):
+  
+  1.1) Multiply-Accumulate:
+       accumulator = 0
+       for i = 0 to 31:
+           product[i] = man_left[i] × man_right[i]    (8-bit × 8-bit = 16-bit)
+           accumulator += product[i]                   (sum into 32-bit)
+       
+       Result: 32-bit signed integer
+       
+  1.2) Exponent Calculation:
+       exp_result = exp_left + exp_right - 30
+       
+       Why -30? Because bias=15 for each operand:
+       - Real_value_left  = mantissa_left  × 2^(exp_left - 15)
+       - Real_value_right = mantissa_right × 2^(exp_right - 15)
+       - Product = man_L × man_R × 2^(exp_L + exp_R - 30)
+       
+       Result: 8-bit signed integer (can be negative!)
+
+Output:
+  - group_mantissa (32-bit signed): accumulated dot product
+  - group_exponent (8-bit signed):  exp_left + exp_right - 30
+
+Example:
+  Left:  exp=6, mantissas=[10, 20, 30, ..., 5]
+  Right: exp=7, mantissas=[3, -4, 2, ..., 1]
+  
+  accumulator = (10×3) + (20×-4) + (30×2) + ... + (5×1) = 1234 (example)
+  exp_result = 6 + 7 - 30 = -17
+  
+  Output: mantissa=1234, exponent=-17
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2: EXPONENT ALIGNMENT (across 4 groups)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Input: 4 group results, each with (mantissa, exponent):
+  - Group 0: (mant0, exp0)
+  - Group 1: (mant1, exp1)
+  - Group 2: (mant2, exp2)
+  - Group 3: (mant3, exp3)
+
+Computation:
+
+  2.1) Find Maximum Exponent:
+       max_exp = max(exp0, exp1, exp2, exp3)
+       
+  2.2) Align Mantissas to Max Exponent:
+       For each group i:
+           exp_diff = max_exp - exp[i]
+           
+           if exp_diff > 31:
+               aligned_mant[i] = 0    // Underflow
+           else:
+               aligned_mant[i] = mant[i] >> exp_diff  // Arithmetic right-shift
+       
+       Why? To make exponents equal before adding mantissas!
+       - Original: mant[i] × 2^exp[i]
+       - Aligned:  (mant[i] >> exp_diff) × 2^max_exp
+  
+  2.3) Sum Aligned Mantissas:
+       result_mantissa = aligned_mant[0] + aligned_mant[1] + 
+                         aligned_mant[2] + aligned_mant[3]
+       result_exponent = max_exp
+
+Output:
+  - result_mantissa (32-bit signed): sum of all 4 groups
+  - result_exponent (8-bit signed):  max exponent
+
+Example:
+  Group 0: mantissa=1000,  exp=-17
+  Group 1: mantissa=500,   exp=-16
+  Group 2: mantissa=2000,  exp=-17
+  Group 3: mantissa=-300,  exp=-18
+  
+  max_exp = -16
+  
+  Alignment:
+    Group 0: exp_diff = -16 - (-17) = 1  → 1000 >> 1 = 500
+    Group 1: exp_diff = -16 - (-16) = 0  → 500  >> 0 = 500
+    Group 2: exp_diff = -16 - (-17) = 1  → 2000 >> 1 = 1000
+    Group 3: exp_diff = -16 - (-18) = 2  → -300 >> 2 = -75
+  
+  Sum: 500 + 500 + 1000 + (-75) = 1925
+  
+  Final result: mantissa=1925, exponent=-16
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3: V-LOOP ACCUMULATION (in gfp8_bcv_controller.sv)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+For each (B,C) output element, accumulate V native vector dot products:
+
+  3.1) Initialize with V=0 result:
+       accum_mantissa = nv_dot_result[0].mantissa
+       accum_exponent = nv_dot_result[0].exponent
+  
+  3.2) For V=1 to V-1:
+       - Get next dot product: (dot_mant, dot_exp)
+       - Align to common exponent:
+         
+         if accum_exp > dot_exp:
+             aligned_accum = accum_mant
+             aligned_dot = dot_mant >> (accum_exp - dot_exp)
+             result_exp = accum_exp
+         else:
+             aligned_accum = accum_mant >> (dot_exp - accum_exp)
+             aligned_dot = dot_mant
+             result_exp = dot_exp
+       
+       - Add: accum_mant = aligned_accum + aligned_dot
+       - Update: accum_exp = result_exp
+
+  3.3) Final GFP result: (accum_mant, accum_exp)
+
+Example for B=4, C=4, V=4:
+  Output[0,1] needs to accumulate 4 native vector dot products:
+  
+  V=0: mant=-2325,  exp=-17  → Initialize accum
+  V=1: mant=-3813,  exp=-17  → Add: -2325 + -3813 = -6138, exp=-17
+  V=2: mant=12288,  exp=-17  → Add: -6138 + 12288 = 6150, exp=-17
+  V=3: mant=-6879,  exp=-17  → Add: 6150 + -6879 = -729, exp=-17
+  
+  Final: mantissa=-729, exponent=-17
+
+================================================================================
+KEY INSIGHTS:
+================================================================================
+
+1. **Pure Integer Arithmetic**:
+   - All operations are integer (multiply, add, shift)
+   - No floating-point hardware needed!
+   - Exponent handled separately as integer
+
+2. **Exponent Alignment is Critical**:
+   - Before adding mantissas, align to common exponent
+   - Uses arithmetic right-shift to preserve sign
+   - Prevents precision loss for similar-magnitude values
+
+3. **Maximum Exponent Strategy**:
+   - Always align to MAX exponent (not min)
+   - Minimizes precision loss (shift right, not left)
+   - Smaller values may underflow to zero (acceptable)
+
+4. **Sign Preservation**:
+   - Mantissas are SIGNED 8-bit integers
+   - Arithmetic right-shift preserves sign bit
+   - Accumulator handles both positive and negative
+
+5. **Hierarchical Accumulation**:
+   - Group level:  32 element-wise products
+   - NV level:     4 group results aligned and summed
+   - V-loop level: V native vector results accumulated
+
+6. **Why Rounding Differs from FP16**:
+   - Hardware: Integer accumulation with exponent alignment
+   - Python:   FP16 accumulation (different rounding)
+   - Each right-shift loses LSBs differently
+   - Explains the 3-112 LSB differences we see!
+
+================================================================================

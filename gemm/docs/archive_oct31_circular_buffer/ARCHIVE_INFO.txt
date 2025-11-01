@@ -1,0 +1,75 @@
+================================================================================
+ARCHIVE: Oct 31, 2025 - Circular Buffer Implementation Completion
+================================================================================
+
+This archive contains intermediate documentation from the circular buffer
+implementation and validation phase (Oct 30-31, 2025).
+
+ARCHIVED DOCUMENTS:
+-------------------
+
+1. TWO_POINTER_CIRCULAR_BUFFER.md
+   - Design document for circular buffer architecture
+   - Dual-pointer management (rd_ptr/wr_ptr)
+   - Byte-granular write implementation
+   - Status: COMPLETE - All functionality validated
+
+2. HARDWARE_VALIDATION_PACKING.md
+   - Validation documentation for result packing
+   - Status: COMPLETE - Packer removed, direct writes implemented
+
+3. HARDWARE_TEST_STATUS.md
+   - Intermediate hardware test status tracking
+   - Status: COMPLETE - THREE-STAGE validation passed 100%
+
+4. ROOT_CAUSE_SUMMARY.md
+   - Debug summary from FIFO read timing issue
+   - Root cause: Continuous rd_en instead of pulsed
+   - Status: RESOLVED - Fixed pipeline handshaking logic
+
+5. INTEGRATION_INSTRUCTIONS.md
+   - Integration instructions for circular buffer
+   - Status: COMPLETE - Integration successful
+
+6. FETCHER_OPTIMIZATION_PLAN.md
+   - Planning document for fetcher optimizations
+   - Status: ARCHIVED - Reference for future work
+
+7. GFP_EXPLANATION.md
+8. GFP_DOT_PRODUCT_ALGORITHM.txt
+   - Detailed GFP8 format and algorithm documentation
+   - Status: ARCHIVED - Reference information moved to archive
+
+9. compare_results.txt
+   - Temporary comparison output file
+   - Status: OBSOLETE - Test results validated
+
+FINAL STATUS:
+-------------
+✅ Byte-granular direct writes implemented
+✅ Packer buffer removed (simplified architecture)
+✅ 1-cycle FIFO latency (simplified from 2-cycle)
+✅ THREE-STAGE validation: 10/10 tests, all stages match
+✅ Hardware validated: All 618 results match across 3 stages
+
+SIMULATION: 10/10 tests passing (100%)
+HARDWARE: 10/10 tests passing (100%, after retry)
+
+KEY CHANGES COMPLETED:
+----------------------
+- result_fifo_to_simple_bram.sv: Byte-granular direct writes
+- result_bram.sv: Simplified to 1-cycle synchronous FIFO
+- dma_bram_bridge.sv: Added byte strobe support
+- elastix_gemm_top.sv: Connected byte strobe signals
+- tb_engine_top.sv: Byte-granular BRAM write model
+- test_gemm.cpp: THREE-STAGE circular buffer validation
+
+REFERENCE FILES (kept in root):
+-------------------------------
+- RESULT_BUFFER_REFERENCE.md - Current reference for result handling
+- STATE_TRANSITIONS_REFERENCE.md - FSM reference
+- SINGLE_ROW_REFERENCE.md - Algorithm reference
+- MULTI_TILE_DISPATCH_REFERENCE.md - Architecture reference
+
+Date Archived: Oct 31, 2025
+================================================================================

@@ -1,9 +1,9 @@
 # CLAUDE.md - Elastix GEMM Engine Project
 
-**Project Status**: ✅ **PRODUCTION READY** - MS2.0 Modular GEMM Engine with Dual BRAM Architecture
-**Last Updated**: Fri Oct 24 09:30:00 PDT 2025
-**Current Bitstream**: In progress (Oct 24 RTL cleanup build)
-**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - Awaiting validation
+**Project Status**: ✅ **PRODUCTION READY** - MS2.0 Modular GEMM Engine with Circular Buffer Architecture
+**Last Updated**: Fri Oct 31 13:15:00 PDT 2025
+**Current Bitstream**: Bitstream ID 0x10311646 (validated Oct 31)
+**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - 10/10 tests passing (100%)
 **Top-Level Module**: `elastix_gemm_top.sv`
 
 ## Quick Start
@@ -278,9 +278,11 @@ source /home/dev/rescan
 - `src/rtl/dispatcher_bram.sv` - ✅ **NEW**: Dual-read BRAM module
 - `src/rtl/master_control.sv` - Command parsing FSM for GEMM operations
 - `src/rtl/dispatcher_control.sv` - GDDR6 data fetch and buffering controller
-- `src/rtl/result_bram.sv` - Result FIFO buffer (256×16-bit FP16)
+- `src/rtl/result_bram.sv` - Result FIFO buffer (256×16-bit FP16, 1-cycle latency)
+- `src/rtl/result_fifo_to_simple_bram.sv` - ✅ **NEW**: Result packer with byte-granular direct writes
+- `src/rtl/engine_top.sv` - Engine integration wrapper connecting compute and result modules
 - `src/rtl/reg_control_block.sv` - PCIe register interface (133 registers)
-- `src/rtl/dma_bram_bridge.sv` - ✅ **CLEANED**: BRAM responder (legacy +42 processing removed)
+- `src/rtl/dma_bram_bridge.sv` - ✅ **UPDATED**: BRAM responder with byte strobe support
 - `src/acxip/*.acxip` - IP configurations (PCIe, GDDR6, NoC, PLLs)
 
 ### Archived RTL Modules (src/rtl/archive/)
@@ -296,8 +298,9 @@ source /home/dev/rescan
 - `sw_test/test_gddr6.cpp` - ✅ **ESSENTIAL**: GDDR6 channel status and performance monitoring
 - `sw_test/test_bram.cpp` - ✅ **ESSENTIAL**: BRAM DMA functionality validation (cleaned, no +42)
 - `sw_test/scan_registers.cpp` - ✅ **ESSENTIAL**: Register address space diagnostic
+- `sw_test/test_gemm.cpp` - ✅ **ESSENTIAL**: THREE-STAGE circular buffer validation test
+- `sw_test/test_gemm_full.cpp` - ✅ **ESSENTIAL**: MS2.0 GEMM engine full integration test (5 commands)
 - `sw_test/dma_example.cpp` - Advanced DMA testing with performance metrics
-- `sw_test/test_ms2_gemm_full.cpp` - ✅ **ESSENTIAL**: MS2.0 GEMM engine full integration test
 
 ### Archived Tests (moved to obsolete_debug_tests/)
 - `sw_test/obsolete_debug_tests/test_bram_vector.cpp` - Legacy BRAM vector processor (replaced by GEMM engine)
@@ -343,7 +346,7 @@ The MS2.0 GEMM engine uses a 5-command microcode architecture for matrix operati
 | **FETCH** | 0xF0 | Load matrix from GDDR6 → Dispatcher BRAM | master_control, dispatcher_control, NAP, BRAM |
 | **DISPATCH** | 0xF1 | Configure vector dispatch (legacy) | master_control, dispatcher_control |
 | **WAIT_DISPATCH** | 0xF3 | Synchronization barrier | master_control (internal) |
-| **MATMUL** | 0xF2 | Execute matrix multiplication | master_control, compute_engine, result_bram_writer |
+| **MATMUL** | 0xF2 | Execute matrix multiplication | master_control, compute_engine, result_fifo_to_simple_bram |
 | **WAIT_MATMUL** | 0xF4 | Final synchronization | master_control (internal) |
 
 ### Detailed Command Breakdown
@@ -405,10 +408,13 @@ uint32_t cmd_word3 = (cmd_word2 >> 32);  // Upper bits
    - Reads Native Vectors from dispatcher_bram (Port B, dual-read)
    - Performs GFP8 matrix multiplication with V-loop accumulation
    - GFP8→FP16 conversion via gfp8_to_fp16.sv
-   - Outputs FP16 results directly
-3. **result_bram.sv**:
-   - FIFO buffer for FP16 results
-   - Direct output to host via BRAM DMA
+   - Outputs FP16 results to result_bram FIFO
+3. **result_bram.sv**: FIFO buffer (256×16-bit FP16, 1-cycle synchronous read)
+4. **result_fifo_to_simple_bram.sv**:
+   - Reads from result_bram FIFO
+   - Byte-granular direct writes to output BRAM (2 bytes per FP16)
+   - Circular buffer wr_ptr auto-increment
+   - Host reads via BRAM DMA using rd_ptr
 
 #### 5. WAIT_MATMUL (0xF4) - Final Barrier
 
@@ -553,7 +559,8 @@ sudo reboot
 
 ## Project Evolution Notes
 
-**Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds (SETTLE states, complex ID tracking, unused registers), 10/10 simulation tests passing, awaiting hardware validation
+**Oct 31, 2025**: **CIRCULAR BUFFER COMPLETION** - Implemented byte-granular direct writes with dual-pointer management (rd_ptr/wr_ptr), removed packer buffer complexity, simplified result_bram FIFO to 1-cycle latency, THREE-STAGE validation (individual, full accumulation, mini-batches) all passing 100% in hardware, 618 FP16 results validated across all patterns
+**Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds (SETTLE states, complex ID tracking, unused registers), 10/10 simulation tests passing, hardware validation completed Oct 31
 **Oct 14, 2025**: **COMPREHENSIVE CLEANUP & VALIDATION** - Streamlined project structure (66 files archived across all categories), validated with full hardware test suite (8/9 tests = 88% pass), production-ready codebase achieved
 **Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Migrated to modular compute engine with dual BRAM interface for improved throughput, production ready
 **Oct 7, 2025**: **MAJOR CLEANUP** - Initial cleanup phase, removed legacy +42 processing, fixed constraints, GEMM-focused architecture achieved
@@ -564,4 +571,4 @@ sudo reboot
 ---
 
 **Maintained by**: Claude Code (claude.ai/code)
-**Last Validation**: Fri Oct 24 09:30:00 PDT 2025 - Simulation tested (10/10 = 100% pass), RTL cleanup complete, hardware validation in progress ✅
+**Last Validation**: Fri Oct 31 13:15:00 PDT 2025 - Hardware validated (10/10 THREE-STAGE tests = 100% pass), Circular buffer byte-granular writes production-ready ✅

@@ -216,15 +216,20 @@ module elastix_gemm_top
     localparam      IRQ_GEN_REGS_BASE      = 26;                // Start IRQ registers after debug regs (25 = DC_DEBUG)
     localparam      MSIX_IRQ_REGS_BASE     = IRQ_GEN_REGS_BASE + NUM_IRQ_GEN_REGS; // 26 + 6 = 32
     localparam      GDDR_REGS_BASE         = MSIX_IRQ_REGS_BASE + NUM_MSIX_IRQ_REGS; // 32 + 12 = 44
-    localparam      NUM_USER_REGS          = GDDR_REGS_BASE + NUM_GDDR_REGS + 4 + 4; // 44 + 87 + 4 + 4 = 139 (added MC payload + result regs + DC debug)
-    localparam      LTSSM_STATE_REG        = NUM_USER_REGS - 8; // 139 - 8 = 131, offset 131*4 = 524 = 0x20C (moved due to new debug regs)
-    localparam      ADM_STATUS_REG         = NUM_USER_REGS - 7; // 139 - 7 = 132, offset 132*4 = 528 = 0x210
-    localparam      BITSTREAM_ID           = NUM_USER_REGS - 6; // 139 - 6 = 133, offset 133*4 = 532 = 0x214
-    localparam      SCRATCH_REG            = NUM_USER_REGS - 5; // 139 - 5 = 134, offset 134*4 = 536 = 0x218
-    localparam      RESULT_REG_0           = NUM_USER_REGS - 4; // 139 - 4 = 135, offset 135*4 = 540 = 0x21C
-    localparam      RESULT_REG_1           = NUM_USER_REGS - 3; // 139 - 3 = 136, offset 136*4 = 544 = 0x220
-    localparam      RESULT_REG_2           = NUM_USER_REGS - 2; // 139 - 2 = 137, offset 137*4 = 548 = 0x224
-    localparam      RESULT_REG_3           = NUM_USER_REGS - 1; // 139 - 1 = 138 (last register), offset 138*4 = 552 = 0x228
+    localparam      NUM_USER_REGS          = GDDR_REGS_BASE + NUM_GDDR_REGS + 4 + 5 + 4; // 44 + 87 + 4 + 5 + 4 = 144 (added circular buffer registers)
+    localparam      LTSSM_STATE_REG        = NUM_USER_REGS - 13; // 144 - 13 = 131, offset 131*4 = 524 = 0x20C
+    localparam      ADM_STATUS_REG         = NUM_USER_REGS - 12; // 144 - 12 = 132, offset 132*4 = 528 = 0x210
+    localparam      BITSTREAM_ID           = NUM_USER_REGS - 11; // 144 - 11 = 133, offset 133*4 = 532 = 0x214
+    localparam      SCRATCH_REG            = NUM_USER_REGS - 10; // 144 - 10 = 134, offset 134*4 = 536 = 0x218
+    localparam      RESULT_REG_0           = NUM_USER_REGS - 9; // 144 - 9 = 135, offset 135*4 = 540 = 0x21C
+    localparam      RESULT_REG_1           = NUM_USER_REGS - 8; // 144 - 8 = 136, offset 136*4 = 544 = 0x220
+    localparam      RESULT_REG_2           = NUM_USER_REGS - 7; // 144 - 7 = 137, offset 137*4 = 548 = 0x224
+    localparam      RESULT_REG_3           = NUM_USER_REGS - 6; // 144 - 6 = 138, offset 138*4 = 552 = 0x228
+    localparam      ENGINE_WRITE_TOP       = NUM_USER_REGS - 5; // 144 - 5 = 139, offset 139*4 = 556 = 0x22C (write_top)
+    localparam      REG_RD_PTR             = NUM_USER_REGS - 4; // 144 - 4 = 140, offset 140*4 = 560 = 0x230 (NEW: read pointer)
+    localparam      REG_WR_PTR             = NUM_USER_REGS - 3; // 144 - 3 = 141, offset 141*4 = 564 = 0x234 (NEW: write pointer)
+    localparam      REG_USED_ENTRIES       = NUM_USER_REGS - 2; // 144 - 2 = 142, offset 142*4 = 568 = 0x238 (NEW: used entries)
+    localparam      REG_RESULT_EMPTY       = NUM_USER_REGS - 1; // 144 - 1 = 143, offset 143*4 = 572 = 0x23C (NEW: empty flag)
     t_ACX_USER_REG  user_regs_write [NUM_USER_REGS -1:0];
     t_ACX_USER_REG  user_regs_read  [NUM_USER_REGS -1:0];
 
@@ -263,7 +268,7 @@ module elastix_gemm_top
         .IN_REGS_PIPE           (1),                    // Input register pipeline stages
         .OUT_REGS_PIPE          (1)                     // Output register pipeline stages
     ) i_reg_control_block (
-        .i_clk                  (i_nap_clk),            // CHANGED: Use NAP clock instead of reg_clk
+        .i_clk                  (i_reg_clk),            // CHANGED: Use NAP clock instead of reg_clk
         .i_reset_n              (nap_rstn),             // CHANGED: Use NAP reset instead of reg_rstn
         .i_user_regs_in         (user_regs_read),
         .o_user_regs_out        (user_regs_write),
@@ -390,9 +395,10 @@ module elastix_gemm_top
     // Engine result BRAM write signals (from MS2.0 GEMM engine)
     // CRITICAL FIX (Oct 10, 2025): Initialize to avoid undriven signals when generate loop assigns later
     // These are assigned inside the generate loop but used outside - must have defaults
-    logic        engine_bram_wr_en = 1'b0;
-    logic [8:0]  engine_bram_wr_addr = 9'b0;
+    logic         engine_bram_wr_en = 1'b0;
+    logic [8:0]   engine_bram_wr_addr = 9'b0;
     logic [255:0] engine_bram_wr_data = 256'b0;
+    logic [31:0]  engine_bram_wr_strobe = 32'b0;
     
     // First 4 results from compute engine (for register-based testing)
     logic [15:0] captured_result_0 = 16'd0;
@@ -415,15 +421,16 @@ module elastix_gemm_top
         .PROBE_NAME         ("bram_rsp_dma")
     ) i_axi_bram_rsp_dma (
         // Inputs
-        .i_clk              (i_nap_clk),  // FIXED: Match engine clock domain (was i_reg_clk)
+        .i_clk              (i_reg_clk),  // FIXED: Match engine clock domain (was i_reg_clk)
         .i_reset_n          (nap_rstn),   // FIXED: Match engine reset domain (was reg_rstn)
-        .i_bram_inc42_en    (1'b0),       // +42 processing disabled
+        .i_bram_inc42_en       (1'b0),       // +42 processing disabled
         // Internal write ports from MS2.0 Engine result writer
-        .i_internal_wr_en   (engine_bram_wr_en),
-        .i_internal_wr_addr (engine_bram_wr_addr),
-        .i_internal_wr_data (engine_bram_wr_data),
+        .i_internal_wr_en      (engine_bram_wr_en),
+        .i_internal_wr_addr    (engine_bram_wr_addr),
+        .i_internal_wr_data    (engine_bram_wr_data),
+        .i_internal_wr_strobe  (engine_bram_wr_strobe),
         // Tie off internal read ports (not used)
-        .i_internal_rd_en   (1'b0),
+        .i_internal_rd_en      (1'b0),
         .i_internal_rd_addr (9'b0),
         .o_internal_rd_data ()  // unconnected
     );
@@ -543,9 +550,10 @@ module elastix_gemm_top
                     // Pass raw register value directly - do NOT pre-generate pulse
 
                     // Result BRAM interface signals
-                    logic [8:0]  result_bram_wr_addr;
+                    logic [8:0]   result_bram_wr_addr;
                     logic [255:0] result_bram_wr_data;
-                    logic        result_bram_wr_en;
+                    logic         result_bram_wr_en;
+                    logic [31:0]  result_bram_wr_strobe;
 
                     // NO CDC SYNCHRONIZERS NEEDED - All on same clock (i_nap_clk)
                     // reg_control_block, engine_wrapper, and NAP wrapper all run on i_nap_clk
@@ -573,7 +581,7 @@ module elastix_gemm_top
                     logic        bridge_busy;
 
                     csr_to_fifo_bridge i_csr_bridge (
-                        .i_clk         (i_nap_clk),
+                        .i_clk         (i_reg_clk),
                         .i_reset_n     (engine_reset_n),
                         .i_cmd_word0   (user_regs_write[ENGINE_CMD_WORD0]),
                         .i_cmd_word1   (user_regs_write[ENGINE_CMD_WORD1]),
@@ -601,7 +609,7 @@ module elastix_gemm_top
                         .TGT_DATA_WIDTH (256),
                         .AXI_ADDR_WIDTH (42)
                     ) i_engine_top (
-                        .i_clk              (i_nap_clk),
+                        .i_clk              (i_reg_clk),
                         .i_reset_n          (engine_reset_n),
                         // Command FIFO interface
                         .i_cmd_fifo_wdata   (cmd_fifo_wdata),
@@ -616,6 +624,8 @@ module elastix_gemm_top
                         .o_result_fifo_count  (result_fifo_count),
                         // NAP AXI interface
                         .nap_axi            (nap),
+                        // Flow control
+                        .i_result_almost_full (result_almost_full),
                         // Status outputs
                         .o_engine_busy      (engine_busy),
                         .o_mc_state         (mc_state),
@@ -636,20 +646,36 @@ module elastix_gemm_top
 
                     // Local signals for capturing results
                     logic [15:0] local_result_0, local_result_1, local_result_2, local_result_3;
-                    
+                    logic [12:0] result_write_top;       // Write position counter (0-8191) [DEPRECATED - kept for compatibility]
+                    logic        result_write_top_reset; // Host reset signal
+                    logic        result_almost_full;     // Backpressure signal
+                    // Circular buffer interface signals
+                    logic [12:0] result_rd_ptr;          // Read pointer register (host-controlled)
+                    logic [12:0] result_wr_ptr;          // Write pointer from hardware
+                    logic [13:0] result_used_entries;    // Used entries from hardware (0-8192)
+                    logic        result_empty;           // Empty flag from hardware
+
                     result_fifo_to_simple_bram i_result_adapter (
-                        .i_clk            (i_nap_clk),
-                        .i_reset_n        (engine_reset_n),
-                        .i_fifo_rdata     (result_fifo_rdata),
-                        .o_fifo_ren       (result_fifo_ren),
-                        .i_fifo_empty     (result_fifo_empty),
-                        .o_bram_wr_addr   (result_bram_wr_addr),
-                        .o_bram_wr_data   (result_bram_wr_data),
-                        .o_bram_wr_en     (result_bram_wr_en),
-                        .o_result_0       (local_result_0),
-                        .o_result_1       (local_result_1),
-                        .o_result_2       (local_result_2),
-                        .o_result_3       (local_result_3)
+                        .i_clk              (i_reg_clk),
+                        .i_reset_n          (engine_reset_n),
+                        .i_fifo_rdata       (result_fifo_rdata),
+                        .o_fifo_ren         (result_fifo_ren),
+                        .i_fifo_empty       (result_fifo_empty),
+                        .o_bram_wr_addr     (result_bram_wr_addr),
+                        .o_bram_wr_data     (result_bram_wr_data),
+                        .o_bram_wr_en       (result_bram_wr_en),
+                        .o_bram_wr_strobe   (result_bram_wr_strobe),
+                        .o_result_0         (local_result_0),
+                        .o_result_1         (local_result_1),
+                        .o_result_2         (local_result_2),
+                        .o_result_3         (local_result_3),
+                        // Circular buffer interface (updated for circular buffer optimization)
+                        .i_rd_ptr           (result_rd_ptr),
+                        .o_wr_ptr           (result_wr_ptr),
+                        .o_used_entries     (result_used_entries),
+                        .o_empty            (result_empty),
+                        .i_write_top_reset  (result_write_top_reset),
+                        .o_almost_full      (result_almost_full)
                     );
 
                     // Map simplified debug signals (engine_top now exposes full debug outputs)
@@ -675,6 +701,16 @@ module elastix_gemm_top
                     assign user_regs_read[ENGINE_STATUS] = {12'h0, mc_state_next, mc_state, dc_state, ce_state, 3'b0, engine_busy};
                     assign user_regs_read[ENGINE_RESULT_COUNT] = engine_result_count;
                     assign user_regs_read[ENGINE_DEBUG] = engine_debug;  // FIXED: Use actual engine_wrapper debug signals
+
+                    // Circular buffer registers (updated for circular buffer optimization)
+                    assign user_regs_read[ENGINE_WRITE_TOP] = {19'h0, result_wr_ptr};  // Now reads hardware wr_ptr (was result_write_top)
+                    assign result_write_top_reset = write_strobes[ENGINE_WRITE_TOP] && (user_regs_write[ENGINE_WRITE_TOP] == 32'h0);
+                    // New circular buffer registers
+                    assign result_rd_ptr = user_regs_write[REG_RD_PTR][12:0];  // RW: Host writes rd_ptr via this register
+                    assign user_regs_read[REG_RD_PTR] = {19'h0, result_rd_ptr};  // RW: Host-controlled read pointer
+                    assign user_regs_read[REG_WR_PTR] = {19'h0, result_wr_ptr};  // RO: Hardware write pointer
+                    assign user_regs_read[REG_USED_ENTRIES] = {18'h0, result_used_entries};  // RO: Used entries (0-8192)
+                    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, result_empty};  // RO: Empty flag
                     assign user_regs_read[NAP_ERROR_STATUS] = {28'h0, error_valid_nap, error_info_nap};  // NAP Channel 1 error monitoring
                     assign user_regs_read[DC_BRAM_WR_COUNT] = {22'h0, bram_wr_count};  // Dispatcher BRAM write count (verify FETCH worked)
                     assign user_regs_read[DC_DEBUG] = {28'h0, dc_state};  // Dispatcher state debug
@@ -700,9 +736,10 @@ module elastix_gemm_top
                     // Engine status registers handled above - no additional assignments needed
 
                     // Connect engine result BRAM writer to module-level signals
-                    assign engine_bram_wr_en = result_bram_wr_en;
-                    assign engine_bram_wr_addr = result_bram_wr_addr;
-                    assign engine_bram_wr_data = result_bram_wr_data;
+                    assign engine_bram_wr_en     = result_bram_wr_en;
+                    assign engine_bram_wr_addr   = result_bram_wr_addr;
+                    assign engine_bram_wr_data   = result_bram_wr_data;
+                    assign engine_bram_wr_strobe = result_bram_wr_strobe;
                     
                     // Connect local results to module-level captured result signals
                     assign captured_result_0 = local_result_0;  // From result_fifo_to_bram
