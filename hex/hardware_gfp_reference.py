@@ -272,6 +272,10 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     """
     Generate multi-tile golden reference with command sequence.
 
+    This is a TEST CASE PATTERN that uses sequential tiling based on the
+    bottleneck principle. In production, software can use ANY addressing
+    pattern - hardware is completely address-agnostic.
+
     Args:
         B: Output rows (batch size)
         C: Output columns
@@ -281,16 +285,19 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     Returns:
         tuple: (flat_results, command_sequence)
     """
-    # Calculate tile dimensions
-    num_left_tile = 128 // (B * V)
-    num_right_tile = 128 // (C * V)
-    total_tiles = num_left_tile * num_right_tile
-    total_results = total_tiles * B * C
-    
+    # Calculate tile dimensions using BOTTLENECK PRINCIPLE
+    # Given 128 Native Vectors total in reference matrices:
+    max_left_tiles = 128 // (B * V)   # How many left chunks available
+    max_right_tiles = 128 // (C * V)  # How many right chunks available
+
+    # We can only compute as many tiles as the limiting side allows
+    num_tiles = min(max_left_tiles, max_right_tiles)  # Bottleneck
+    total_results = num_tiles * B * C
+
     print(f"Multi-tile configuration:")
     print(f"  B={B}, C={C}, V={V}")
-    print(f"  num_left_tile={num_left_tile}, num_right_tile={num_right_tile}")
-    print(f"  total_tiles={total_tiles}, total_results={total_results}")
+    print(f"  max_left_tiles={max_left_tiles}, max_right_tiles={max_right_tiles}")
+    print(f"  num_tiles={num_tiles} (bottleneck), total_results={total_results}")
 
     # Load matrices from hex files
     left_hex_path = os.path.join(script_dir, 'left.hex')
@@ -310,45 +317,54 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     hw_compute = HardwareGFPCompute(exp_bits=5, exp_bias=15, group_size=32)
     
     # Generate results for all tiles
+    # TEST CASE PATTERN: Sequential tiling with lockstep advancement
+    # NOTE: In production, software can use ANY addressing pattern!
     flat_results = []
     command_sequence = []
-    
-    print(f"\nGenerating {total_tiles} tiles...")
-    
-    for left_tile_idx in range(num_left_tile):
-        for right_tile_idx in range(num_right_tile):
-            tile_num = left_tile_idx * num_right_tile + right_tile_idx
-            
-            # Calculate BRAM addresses using hardware formula
-            # Each Native Vector takes 4 lines, so addr = nv_idx * 4
-            left_addr = (left_tile_idx * B * V) * 4
-            right_addr = (right_tile_idx * C * V) * 4
-            
-            # Compute BxC results for this tile
-            tile_results = hw_compute.compute_gemm_with_bcv(
-                left_mant, left_exp, right_mant, right_exp, 
-                B, C, V, left_addr, right_addr
-            )
-            
-            # Append to flat results array
-            flat_results.extend(tile_results)
-            
-            # Add to command sequence
-            command_sequence.append({
-                'tile_num': tile_num,
-                'left_tile_idx': left_tile_idx,
-                'right_tile_idx': right_tile_idx,
-                'left_addr': left_addr,
-                'right_addr': right_addr,
-                'results': tile_results.copy()
-            })
-            
-            if (tile_num + 1) % 4 == 0:
-                print(f"  Completed {tile_num + 1}/{total_tiles} tiles")
+
+    # Calculate strides for this sequential tiling pattern
+    left_stride = (B * V) * 4   # Lines to advance for each tile
+    right_stride = (C * V) * 4  # Lines to advance for each tile
+
+    print(f"\nGenerating {num_tiles} tiles...")
+    print(f"Address strides: left={left_stride} lines, right={right_stride} lines")
+
+    for tile_idx in range(num_tiles):
+        # For this test pattern: both sides advance together (lockstep)
+        # In production: software could choose ANY addressing pattern!
+        # (e.g., broadcast, sparse, reordered, arbitrary addresses, etc.)
+        left_addr = tile_idx * left_stride
+        right_addr = tile_idx * right_stride
+
+        # Compute BxC results for this tile
+        # Hardware only sees: start addresses, lengths, V-depth
+        tile_results = hw_compute.compute_gemm_with_bcv(
+            left_mant, left_exp, right_mant, right_exp,
+            B, C, V, left_addr, right_addr
+        )
+
+        # Store results in issue order
+        flat_results.extend(tile_results)
+
+        # Add to command sequence
+        command_sequence.append({
+            'tile_idx': tile_idx,
+            'left_addr': left_addr,
+            'right_addr': right_addr,
+            'left_stride': left_stride,
+            'right_stride': right_stride,
+            'results': tile_results.copy()
+        })
+
+        if (tile_idx + 1) % 4 == 0:
+            print(f"  Completed {tile_idx + 1}/{num_tiles} tiles")
+
+    # Hardware writes results sequentially when using TILE + WAIT_TILE pairs
+    # Software orchestrates the addressing pattern via single-loop iteration
     
     # Write output files
     hex_filename = f"{output_prefix}_B{B}_C{C}_V{V}_multitile.hex"
-    cmd_filename = f"{output_prefix}_commands_b{B}_c{C}_v{V}_multitile.txt"
+    cmd_filename = f"{output_prefix}_B{B}_C{C}_V{V}_multitile_commands.txt"
     
     # Write hex file (flat results)
     with open(hex_filename, 'w') as f:
@@ -358,14 +374,20 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     # Write command sequence file
     with open(cmd_filename, 'w') as f:
         f.write(f"# Multi-tile command sequence for B={B}, C={C}, V={V}\n")
-        f.write(f"# num_left_tile={num_left_tile}, num_right_tile={num_right_tile}\n")
-        f.write(f"# total_tiles={total_tiles}, total_results={total_results}\n\n")
-        
+        f.write(f"# TEST CASE PATTERN: Sequential tiling with lockstep advancement\n")
+        f.write(f"# max_left_tiles={max_left_tiles}, max_right_tiles={max_right_tiles}\n")
+        f.write(f"# num_tiles={num_tiles} (bottleneck), total_results={total_results}\n")
+        f.write(f"# left_stride={left_stride} lines, right_stride={right_stride} lines\n")
+        f.write(f"#\n")
+        f.write(f"# NOTE: This is just our test pattern. In production, software can use\n")
+        f.write(f"# ANY addressing pattern - hardware is completely address-agnostic!\n\n")
+
         for cmd in command_sequence:
-            f.write(f"Tile {cmd['tile_num']} (left_tile={cmd['left_tile_idx']}, right_tile={cmd['right_tile_idx']}):\n")
-            f.write(f"  left_addr = ({cmd['left_tile_idx']}*{B}*{V})*4 = {cmd['left_addr']}\n")
-            f.write(f"  right_addr = ({cmd['right_tile_idx']}*{C}*{V})*4 = {cmd['right_addr']}\n")
-            f.write(f"  Expected: {len(cmd['results'])} results (B*C)\n")
+            f.write(f"Tile {cmd['tile_idx']}:\n")
+            f.write(f"  left_addr = {cmd['tile_idx']} × {cmd['left_stride']} = {cmd['left_addr']}\n")
+            f.write(f"  right_addr = {cmd['tile_idx']} × {cmd['right_stride']} = {cmd['right_addr']}\n")
+            f.write(f"  leftUgdLen = {B}, rightUgdLen = {C}, vecLen = {V}\n")
+            f.write(f"  Expected: {len(cmd['results'])} results (B×C = {B}×{C})\n")
             f.write(f"  Results: {' '.join(f'0x{v:04x}' for v in cmd['results'])}\n\n")
     
     print(f"\nGenerated files:")
@@ -520,21 +542,24 @@ def main():
         print("=" * 80)
         print("Multi-Tile Golden Reference Generation")
         print("=" * 80)
-        
+
         # Generate multi-tile golden reference
         flat_results, command_sequence = generate_multitile_golden_reference(B, C, V)
-        
+
         print("\n" + "=" * 80)
         print("Multi-tile golden reference generation complete!")
         print("Files generated:")
         print(f"  golden_B{B}_C{C}_V{V}_multitile.hex - Flat FP16 results")
         print(f"  golden_commands_b{B}_c{C}_v{V}_multitile.txt - Command sequence")
         print("=" * 80)
-        return
-    
-    # Single-tile mode (original behavior)
+        print("\n")
+
+    # Single-tile mode (always runs, both standalone and after multi-tile)
     print("=" * 80)
-    print("Hardware-Accurate GFP GEMM Reference Generation")
+    if args.multitile:
+        print("Single-Tile Golden Reference Generation (for same B, C, V)")
+    else:
+        print("Hardware-Accurate GFP GEMM Reference Generation")
     print("=" * 80)
     print(f"\nConfiguration: B={B}, C={C}, V={V}")
     print(f"  Matrix A: {B} x {128*V} (uses {B*V} Native Vectors)")
@@ -669,8 +694,18 @@ def main():
             print(f"     [{i:2d}] output[{row},{col}] = 0x{fp16_bits:04x} ({fp16_val:8.4f})")
 
     print("\n" + "=" * 80)
-    print("Golden reference generation complete!")
-    print("Hardware-accurate GFP algorithm used:")
+    if args.multitile:
+        print("All Golden Reference Generation Complete!")
+        print("\nMulti-tile files generated:")
+        print(f"  golden_B{B}_C{C}_V{V}_multitile.hex - Flat FP16 results")
+        print(f"  golden_B{B}_C{C}_V{V}_multitile_commands.txt - Command sequence")
+        print("\nSingle-tile files generated:")
+        print(f"  golden_B{B}_C{C}_V{V}.hex - Hardware-accurate reference")
+        print(f"  golden_B{B}_C{C}_V{V}_emu_NEW.hex - Emulator reference")
+        print(f"  out.hex - Same as hardware-accurate reference")
+    else:
+        print("Golden reference generation complete!")
+    print("\nHardware-accurate GFP algorithm used:")
     print("  - Group-by-group integer accumulation")
     print("  - Exponent-aligned integer summation (matches gfp8_nv_dot.sv)")
     print("  - V-loop accumulation (matches gfp8_bcv_controller.sv)")

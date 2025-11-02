@@ -80,3 +80,5 @@ add_region_find_insts "region_gemm_engine_ch0" "find -insts *gemm_engine_channel
 # set_placement -fixed {i:<my_hierarchical_path>.i_bram} {s:x_core.BMLP[29][5].logic.bmlp.bram[0]}
 # set_placement -fixed {i:<my_hierarchical_path>.i_mlp}    {s:x_core.BMLP[29][5].logic.bmlp.mlp[0]}
 
+
+

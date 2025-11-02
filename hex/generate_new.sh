@@ -36,7 +36,7 @@ for config in "${test_configs[@]}"; do
     IFS=' ' read -r B C V <<< "${config}"
     echo ""
     echo "Generating golden for config: B=${B}, C=${C}, V=${V}"
-    python hardware_gfp_reference.py --B ${B} --C ${C} --V ${V}
+    python hardware_gfp_reference.py --B ${B} --C ${C} --V ${V} --multitile
 done
 
 echo ""

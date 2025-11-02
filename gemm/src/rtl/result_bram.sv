@@ -42,10 +42,10 @@ import gemm_pkg::*;
     // ===================================================================
     // Parameters
     // ===================================================================
-    localparam DEPTH      = tile_out_fifo_els_gp;  // 64 from gemm_pkg
+    localparam DEPTH      = tile_out_fifo_els_gp;  // 4096 from gemm_pkg
     localparam DATA_WIDTH = 16;                     // FP16 format
     localparam ADDR_WIDTH = $clog2(DEPTH);          // 6 bits
-    localparam AFULL_THRESHOLD = 192;               // Almost full at 192/256 entries (was 48/64)
+    localparam AFULL_THRESHOLD = 3840;               // Almost full at 3840/4096 entries
 
     // ===================================================================
     // Internal Signals

@@ -20,7 +20,7 @@ VP815_API = $(DEV_ROOT)/eus/shell/devices/acx/vp815/api/vp815.cpp
 
 
 ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram
-ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full
+ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full test_multi_tile test_readback test_bulk_dma
 
 # Aliases for convenience
 BINS = $(ESSENTIAL_BINS)
@@ -54,6 +54,12 @@ test_gemm: test_gemm.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_gemm_full: test_gemm_full.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_multi_tile: test_multi_tile.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_readback: test_readback.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_dma_access: test_dma_access.cpp

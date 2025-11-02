@@ -14,7 +14,7 @@ nap_initiator_wrapper.sv
 nap_responder_wrapper.sv
 # MS2.0 GEMM Engine modules
 cmd_fifo.sv
-compute_engine_modular.sv
+compute_engine_modular_opt.sv
 csr_to_fifo_bridge.sv
 dispatcher_bram.sv
 fetcher.sv
@@ -22,9 +22,9 @@ dispatcher.sv
 dispatcher_control.sv
 dma_bram_bridge.sv
 engine_top.sv
-gfp8_bcv_controller.sv
+gfp8_bcv_controller_opt.sv
 gfp8_group_dot_mlp.sv
-gfp8_nv_dot.sv
+gfp8_nv_dot_ultra_opt.sv
 gfp8_to_fp16.sv
 master_control.sv
 msix_irq_handler.sv

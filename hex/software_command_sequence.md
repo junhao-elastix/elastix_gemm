@@ -1,7 +1,7 @@
 # Software Multi-Tile Command Sequencing for MS2.0 GEMM Engine
 
-**Last Updated**: October 15, 2025  
-**Status**: Multi-tile software orchestration documentation
+**Last Updated**: November 1, 2025
+**Status**: Multi-tile software orchestration documentation - CORRECTED with actual hardware interface
 
 ---
 
@@ -9,27 +9,76 @@
 
 The MS2.0 GEMM engine uses a **clean separation** between hardware and software responsibilities for multi-tile matrix multiplication:
 
-- **Hardware**: Provides a simple, stateless B×C matmul primitive
-- **Software**: Orchestrates multiple TILE commands to implement multi-tile operations
-- **Result**: Flexible, scalable matrix multiplication without hardware complexity
+- **Hardware**: Provides a generic, address-agnostic matmul primitive
+- **Software**: Has **full control** over what data to process via arbitrary addresses and lengths
+- **Result**: Maximum flexibility - software orchestrates any tiling pattern
 
 ---
 
-## Hardware's View: Simple B×C Matmul Primitive
+## Command Types (from MS2.0_uCode-Single_Tile.csv)
 
-### Single TILE Command Behavior
+| Opcode | Name | Purpose | Payload |
+|--------|------|---------|---------|
+| `0xF0` | **FETCH** | Load 128x128 memory block from GDDR6 | addr, len |
+| `0xF1` | **DISP** | Extract BxV (left) or CxV (right) portion to BRAM (current forced to be 128x128) | addr, len, flags |
+| `0xF2` | **TILE** | Execute matrix multiplication | left_addr, right_addr, B, C, V, flags |
+| `0xF3` | **WAIT_DISP** | Wait for DISP to complete | wait_id |
+| `0xF4` | **WAIT_TILE** | Wait for TILE to complete | wait_id |
 
-The hardware receives **one TILE command** with parameters:
-- `left_addr`, `right_addr`: BRAM addresses for matrix data
-- `B`, `C`, `V`: Matrix dimensions and V-loop depth
+---
+
+## Critical Sequencing Rules
+
+### Rule 1: FETCH Before DISP
+- **FETCH** must occur before any **DISP** for that matrix
+- FETCH loads entire 128x128 block into dispatcher buffer
+- DISP extracts portions from this buffer
+
+### Rule 2: Paired Commands
+- **FETCH** + **DISP** + **WAIT_DISP**: Always together, never separated
+- **TILE** + **WAIT_TILE**: Always together, never separated
+
+### Rule 3: FETCH Happens Once
+- One FETCH per 128x128 memory block to left or right
+- TILE needs both left and right to be fetched and dispatched before it can be executed
+
+### Rule 4: Independent Left/Right
+- Left and right matrices have independent FETCH/DISP sequences
+- FETCH left + DISP left and FETCH right + DISP right don't need to be symmetric
+
+### Rule 5: Can issue multiple TILE in a row
+- TILE + WAIT_TILE can be issued in a row without FETCH + DISP + WAIT_DISP
+
+---
+
+## Hardware's View: Generic Address-Based Matmul Primitive
+
+### Actual Hardware Command Interface
+
+```cpp
+uint8_t tile(uint16_t leftAddr, uint16_t rightAddr,
+             uint8_t leftUgdLen, uint8_t rightUgdLen, uint8_t vecLen,
+             bool leftMan4b = false, bool rightMan4b = false,
+             bool mainLoopOverLeft = true, uint32_t col_en = 0x0001);
+```
+
+**Hardware parameters**:
+- `leftAddr`, `rightAddr`: BRAM line addresses (can be **any** valid address)
+- `leftUgdLen`: Number of lines to read from left BRAM (ugd = "upgrade", historical naming)
+- `rightUgdLen`: Number of lines to read from right BRAM
+- `vecLen`: V-loop depth (Native Vector accumulation count)
 
 **Hardware execution**:
-1. Reads B×V Native Vectors from left BRAM (starting at `left_addr`)
-2. Reads C×V Native Vectors from right BRAM (starting at `right_addr`)  
-3. Computes B×C matrix multiplication with V-loop accumulation
-4. Outputs **B×C FP16 results** as a **flat 1D stream**
+1. Reads `leftUgdLen` lines from BRAM starting at `leftAddr`
+2. Reads `rightUgdLen` lines from BRAM starting at `rightAddr`
+3. Computes matrix multiplication with `vecLen`-deep V-loop accumulation
+4. Outputs FP16 results as a **flat 1D stream**
 
-**Key insight**: Hardware is **completely agnostic** to multi-tile concepts. It just performs one B×C matmul per command.
+**Key insights**:
+- Hardware is **completely agnostic** to multi-tile concepts
+- Software has **full control** over addressing and data selection
+- One side may advance faster than the other (asymmetric strides allowed)
+- No restrictions on tile patterns - software decides everything
 
 ### Result Output Format
 
@@ -47,98 +96,148 @@ result[B-1][0], result[B-1][1], ..., result[B-1][C-1]
 
 ## Software's View: Multi-Tile Orchestration
 
-### 4D Tensor Structure
+### Complete Addressing Freedom
 
-For a given (B, C, V) configuration, the logical result structure is:
+**CRITICAL INSIGHT**: Hardware is completely address-agnostic. Software has **absolute freedom** to:
+- Start from **any valid BRAM address** (0-2047 lines)
+- Read **any valid length** (1-128 Native Vectors per side)
+- Use **any V-loop depth** (1-128)
+- Issue commands in **any order**
+
+The hardware is a **generic matmul primitive** - it doesn't know or care about "tiles", "grid patterns", or "sequential processing". It only executes:
 ```
-[num_left_tile, num_right_tile, B, C]
+matmul(leftAddr, rightAddr, leftLen, rightLen, vecLen) → results
 ```
 
-Where:
-- `num_left_tile = 128 / (B×V)` - Number of left tile groups
-- `num_right_tile = 128 / (C×V)` - Number of right tile groups  
-- `B`, `C` - Actual matrix dimensions per tile
+### Test Case Pattern (Sequential Tiling)
 
-### Multi-Tile Command Sequence
+For **systematic testing**, we use a sequential tiling pattern based on available data:
 
-Software issues **multiple sequential TILE commands** to cover all tile combinations:
-
+**Bottleneck Principle** (determines how many tiles we can compute):
+```python
+# Given 128 Native Vectors total in reference matrices
+max_left_tiles = 128 // (B × V)   # How many left chunks available
+max_right_tiles = 128 // (C × V)  # How many right chunks available
+num_tiles = min(max_left_tiles, max_right_tiles)  # Limited by bottleneck
 ```
-FOR left_tile_idx = 0 to num_left_tile-1:
-    FOR right_tile_idx = 0 to num_right_tile-1:
-        left_addr = (left_tile_idx * B * V) * 4
-        right_addr = (right_tile_idx * C * V) * 4
-        Issue TILE command with (left_addr, right_addr, B, C, V)
-        Collect B×C results from hardware
-        Append to flat result array
+
+**Sequential addressing pattern**:
+```python
+left_stride = (B × V) × 4   # Lines per left tile
+right_stride = (C × V) × 4  # Lines per right tile
+
+FOR tile_idx = 0 to num_tiles-1:
+    left_addr = tile_idx × left_stride
+    right_addr = tile_idx × right_stride
+    TILE(left_addr, right_addr, B, C, V)
+    # Produces B×C results
+```
+
+**Key points**:
+- This is **our test pattern choice**, not a hardware requirement
+- Both sides advance together (lockstep) with potentially different strides
+- We stop when the limiting side runs out of data (bottleneck principle)
+- In production, you can use **any addressing pattern you want**
+
+### Test Case Examples (Bottleneck Principle)
+
+**Example 1: Symmetric** (B=2, C=2, V=32):
+```
+max_left_tiles  = 128 / (2×32) = 2
+max_right_tiles = 128 / (2×32) = 2
+num_tiles = min(2, 2) = 2 tiles
+total_results = 2 × (2×2) = 8 results ✓
+```
+
+**Example 2: Asymmetric - right bottleneck** (B=2, C=4, V=16):
+```
+max_left_tiles  = 128 / (2×16) = 4
+max_right_tiles = 128 / (4×16) = 2  ← bottleneck
+num_tiles = min(4, 2) = 2 tiles
+total_results = 2 × (2×4) = 16 results ✓
+```
+
+**Example 3: Maximum tiles** (B=1, C=1, V=1):
+```
+max_left_tiles  = 128 / (1×1) = 128
+max_right_tiles = 128 / (1×1) = 128
+num_tiles = min(128, 128) = 128 tiles
+total_results = 128 × (1×1) = 128 results ✓
 ```
 
 ### Result Assembly
 
-Software collects results from each TILE command and assembles them into the 4D tensor:
-- Each TILE produces B×C results
-- Total results = `num_left_tile × num_right_tile × B × C`
+Software collects results from each TILE command:
+- Each TILE produces `B × C` results (where B,C derived from ugd_len parameters)
+- Total results = `num_tiles × (B × C)`
 - Hardware delivers as flat 1D stream
-- Software interprets as 4D tensor based on tile ordering
+- Software interprets structure based on chosen tiling pattern
 
 ---
 
-## Concrete Example: B=2, C=1, V=32
+## Concrete Example: Simple Tiling Test Case
 
-### Configuration Analysis
+### Configuration
 
-- `num_left_tile = 128 / (2×32) = 128 / 64 = 2`
-- `num_right_tile = 128 / (1×32) = 128 / 32 = 4`
-- **Total tiles**: 2 × 4 = 8 tiles
-- **Total results**: 8 tiles × 2 results/tile = 16 FP16 values
+Testing parameters:
+- `B=2, C=1, V=32` (2×1 output per tile, 32 Native Vectors accumulated)
+- Left matrix: Uses `B*V = 2*32 = 64` Native Vectors per tile
+- Right matrix: Uses `C*V = 1*32 = 32` Native Vectors per tile
 
-### Command Sequence
+Available BRAM:
+- 128 Native Vectors total (512 lines @ 4 lines/NV)
+- Can fit 2 left chunks (64 NVs each = 128 total)
+- Can fit 4 right chunks (32 NVs each = 128 total)
 
-| Tile | left_tile | right_tile | left_addr | right_addr | Results |
-|------|-----------|------------|-----------|------------|---------|
-| 0 | 0 | 0 | 0 | 0 | 2 results |
-| 1 | 0 | 1 | 0 | 128 | 2 results |
-| 2 | 0 | 2 | 0 | 256 | 2 results |
-| 3 | 0 | 3 | 0 | 384 | 2 results |
-| 4 | 1 | 0 | 256 | 0 | 2 results |
-| 5 | 1 | 1 | 256 | 128 | 2 results |
-| 6 | 1 | 2 | 256 | 256 | 2 results |
-| 7 | 1 | 3 | 256 | 384 | 2 results |
+**Bottleneck principle**:
+```
+max_left_tiles  = 128 / (2*32) = 2
+max_right_tiles = 128 / (1*32) = 4
+num_tiles = min(2, 4) = 2 (left is bottleneck)
+```
+
+**Lockstep advancement strategy**:
+```
+left_stride  = (2 * 32) * 4 = 256 lines
+right_stride = (1 * 32) * 4 = 128 lines
+Both sides advance together, stop when left runs out
+```
+
+### Actual Hardware Commands (Corrected with Bottleneck Principle)
+
+**Configuration**: B=2, C=1, V=32
+
+**Bottleneck calculation**:
+```
+max_left_tiles  = 128 / (2×32) = 2
+max_right_tiles = 128 / (1×32) = 4
+num_tiles = min(2, 4) = 2 tiles (left is bottleneck!)
+```
+
+**Lockstep addressing**:
+```
+left_stride  = (2×32) × 4 = 256 lines
+right_stride = (1×32) × 4 = 128 lines
+```
+
+| Tile | left_addr | right_addr | leftUgdLen | rightUgdLen | vecLen | Results |
+|------|-----------|------------|------------|-------------|--------|---------|
+| 0 | 0×256=0 | 0×128=0 | 2 | 1 | 32 | 2 results |
+| 1 | 1×256=256 | 1×128=128 | 2 | 1 | 32 | 2 results |
+
+**Note**:
+- Both sides advance together (lockstep)
+- Left runs out after 2 tiles (bottleneck)
+- Right has 4 tiles available but only 2 are used
 
 ### Hardware Output (Flat 1D Stream)
 
 ```
-Index 0:  result[0][0][0][0]  (from tile 0)
-Index 1:  result[0][0][1][0]  (from tile 0)
-Index 2:  result[0][1][0][0]  (from tile 1)
-Index 3:  result[0][1][1][0]  (from tile 1)
-Index 4:  result[0][2][0][0]  (from tile 2)
-Index 5:  result[0][2][1][0]  (from tile 2)
-Index 6:  result[0][3][0][0]  (from tile 3)
-Index 7:  result[0][3][1][0]  (from tile 3)
-Index 8:  result[1][0][0][0]  (from tile 4)
-Index 9:  result[1][0][1][0]  (from tile 4)
-Index 10: result[1][1][0][0]  (from tile 5)
-Index 11: result[1][1][1][0]  (from tile 5)
-Index 12: result[1][2][0][0]  (from tile 6)
-Index 13: result[1][2][1][0]  (from tile 6)
-Index 14: result[1][3][0][0]  (from tile 7)
-Index 15: result[1][3][1][0]  (from tile 7)
+Index 0-1: result from tile 0 (left @ addr 0, right @ addr 0)
+Index 2-3: result from tile 1 (left @ addr 256, right @ addr 128)
 ```
 
-### 4D Tensor Interpretation
-
-When reshaped as `[2, 4, 2, 1]`:
-```
-result[0][0] = [result[0][0][0][0], result[0][0][1][0]]  # Left tile 0, Right tile 0
-result[0][1] = [result[0][1][0][0], result[0][1][1][0]]  # Left tile 0, Right tile 1
-result[0][2] = [result[0][2][0][0], result[0][2][1][0]]  # Left tile 0, Right tile 2
-result[0][3] = [result[0][3][0][0], result[0][3][1][0]]  # Left tile 0, Right tile 3
-result[1][0] = [result[1][0][0][0], result[1][0][1][0]]  # Left tile 1, Right tile 0
-result[1][1] = [result[1][1][0][0], result[1][1][1][0]]  # Left tile 1, Right tile 1
-result[1][2] = [result[1][2][0][0], result[1][2][1][0]]  # Left tile 1, Right tile 2
-result[1][3] = [result[1][3][0][0], result[1][3][1][0]]  # Left tile 1, Right tile 3
-```
+**Total**: 4 FP16 values (2 tiles × 2 results/tile)
 
 ---
 
@@ -146,98 +245,45 @@ result[1][3] = [result[1][3][0][0], result[1][3][1][0]]  # Left tile 1, Right ti
 
 ### BRAM Structure
 
-Each memory block contains:
-- **512 lines total** (0-511)
-- **128 Native Vectors** (each NV = 128 elements)
-- **4 lines per Native Vector** (128 elements ÷ 32 elements/line = 4 lines)
+Dispatcher BRAM holds pre-fetched matrix data:
+- **128 Native Vectors capacity** (each NV = 4 lines)
+- **Line address units**: Hardware addresses are in BRAM line units (0-512)
 
-### Address Calculation
-
-For a tile at `(left_tile_idx, right_tile_idx)`:
-
-**Left matrix address**:
+**Native Vector to Line mapping**:
 ```
-left_addr = (left_tile_idx * B * V) * 4
-```
-
-**Right matrix address**:
-```
-right_addr = (right_tile_idx * C * V) * 4
+NV_0:  lines 0-3    (4 lines, one per group: exp + 32 mantissas each)
+NV_1:  lines 4-7
+NV_2:  lines 8-11
+...
+NV_127: lines 508-511
 ```
 
-**Example**: B=2, C=1, V=32
-- Left tile 1: `left_addr = (1 * 2 * 32) * 4 = 256`
-- Right tile 2: `right_addr = (2 * 1 * 32) * 4 = 256`
+### Address Calculation for Tiles
 
-### Native Vector Access
+**Software controls addressing** - hardware just reads lines starting at given address:
 
-Within each tile, Native Vectors are accessed as:
+```cpp
+// For a tile processing B Native Vectors from left, C from right, V-deep accumulation:
+left_addr = nv_start_left * 4;           // Convert NV index to line address
+right_addr = nv_start_right * 4;         // Convert NV index to line address
+leftUgdLen = B;                          // Read B Native Vectors (B*4 lines)
+rightUgdLen = C;                         // Read C Native Vectors (C*4 lines)
+vecLen = V;                              // V-loop accumulation depth
 ```
-nv_idx = addr / 4
-nv_line = nv_idx * 4 + group_idx  (where group_idx = 0,1,2,3)
-```
-
----
-
-## Command Sequencing Patterns
-
-### Pattern 1: Sequential Tile Processing
-
-```
-FETCH left_block
-FETCH right_block
-FOR each tile:
-    DISP left (tile_addr)
-    WAIT_DISP
-    DISP right (tile_addr)  
-    WAIT_DISP
-    TILE (left_addr, right_addr, B, C, V)
-    WAIT_TILE
-    Collect B×C results
-```
-
-### Pattern 2: Optimized (Reuse FETCH)
-
-```
-FETCH left_block
-FETCH right_block
-FOR left_tile_idx = 0 to num_left_tile-1:
-    FOR right_tile_idx = 0 to num_right_tile-1:
-        TILE (left_addr, right_addr, B, C, V)
-        WAIT_TILE
-        Collect B×C results
-```
-
----
-
-## Key Benefits
-
-### Hardware Simplicity
-- **Stateless**: No multi-tile coordination logic
-- **Fast**: Optimized for single B×C matmul
-- **Flexible**: Works with any valid (B, C, V) configuration
-
-### Software Control
-- **Full orchestration**: Software controls tiling strategy
-- **Optimization**: Can optimize for different matrix sizes
-- **Scalability**: Same hardware works for any tile count
-
-### Clean Separation
-- **Hardware**: "I compute B×C matmul, here are the results"
-- **Software**: "I'll call you multiple times with different addresses"
-- **Result**: Complex multi-tile operations from simple hardware
 
 ---
 
 ## References
 
-- **Hardware Command Format**: [COMMAND_SEQUENCE_CORRECTED.md](../gemm/COMMAND_SEQUENCE_CORRECTED.md)
+- **Hardware Interface**: [vp815_gemm_device.hpp](../gemm/sw_test/vp815_gemm_device.hpp) - Actual command API
 - **Test Data Generation**: [generate_nv_hex.py](generate_nv_hex.py)
 - **Golden Reference**: [hardware_gfp_reference.py](hardware_gfp_reference.py)
 - **RTL Implementation**: [gfp8_bcv_controller.sv](../gemm/src/rtl/gfp8_bcv_controller.sv)
+- **Compute Engine**: [compute_engine_modular.sv](../gemm/src/rtl/compute_engine_modular.sv)
 
 ---
 
-**Maintained by**: Claude Code (claude.ai/code)  
+**Maintained by**: Claude Code (claude.ai/code)
 **Project**: Elastix GEMM Engine - MS2.0 Multi-Tile Software Orchestration
+**Last Updated**: November 1, 2025 - Corrected to reflect actual hardware interface
 

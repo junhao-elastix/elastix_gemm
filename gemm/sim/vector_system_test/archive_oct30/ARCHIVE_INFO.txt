@@ -1,0 +1,110 @@
+================================================================================
+ARCHIVE INFORMATION - October 30, 2025 Profiling Cleanup
+================================================================================
+
+Archive Date: October 30, 2025
+Archive Location: sim/vector_system_test/archive_oct30_profiling/
+Archived By: AI Assistant (Cleanup Task)
+
+PURPOSE:
+--------
+Archived detailed profiling and analysis documents from fetcher/dispatcher
+optimization work. These documents served their purpose during development
+but are no longer needed for day-to-day simulation work.
+
+FILES ARCHIVED (13 files):
+---------------------------
+
+FETCHER PROFILING & OPTIMIZATION:
+1. FETCHER_OPTIMIZATION.md - Initial optimization proposals
+2. FETCHER_DEEP_ANALYSIS.md - Cycle-by-cycle latency analysis
+3. FETCHER_LATENCY_FINAL_SUMMARY.md - Final optimization results
+4. STATE_MACHINE_OVERHEAD_ANALYSIS.md - Ping-pong state analysis
+5. PERFECT_MEMORY_ANALYSIS.md - Zero-latency memory model testing
+
+DISPATCHER PROFILING:
+6. DISPATCHER_PROFILE.md - Comprehensive dispatcher profiling results
+
+ARCHITECTURE ANALYSIS:
+7. BRAM_ARCHITECTURE_ANALYSIS.md - BRAM interface analysis
+8. PARALLEL_ARCHITECTURE_FIX.md - Parallel operation fixes
+9. DISP_COPY_BUG_ANALYSIS.md - Dispatcher copy bug investigation
+
+OPTIMIZATION STATUS:
+10. OPTIMIZATION_STATUS.md - Optimization tracking document
+11. LATENCY_ANALYSIS.md - General latency analysis
+12. PHASE4_RESULTS.md - Phase 4 testing results
+13. CLEANUP_SUMMARY.md - Previous cleanup documentation
+
+REASON FOR ARCHIVAL:
+--------------------
+These profiling documents were essential during the optimization phase but:
+
+1. Optimization work is complete - profiling code commented out in RTL
+2. Key findings documented in CHANGELOG.md (Oct 30 entry)
+3. Final code is clean and production-ready
+4. Detailed cycle-by-cycle analysis no longer needed for regular development
+
+WHAT WAS PRESERVED:
+-------------------
+Essential information retained in production codebase:
+- Profiling code preserved (commented) in fetcher.sv and dispatcher.sv
+- Optimization results documented in CHANGELOG.md
+- Performance characteristics in code comments
+- Test results in CHANGELOG validation entries
+
+ACTIVE SIMULATION DOCUMENTATION:
+---------------------------------
+Files remaining in sim/vector_system_test/:
+- README.md - Simulation setup and usage
+- SOURCE_FILES.md - File manifest
+- Makefile - Build system
+
+RECOVERY INSTRUCTIONS:
+----------------------
+To reference archived profiling documents:
+
+cd /home/workstation/elastix_gemm/gemm/sim/vector_system_test/archive_oct30_profiling
+# All 13 profiling documents preserved here
+
+To re-enable profiling in RTL:
+1. Edit src/rtl/fetcher.sv - uncomment profiling sections
+2. Edit src/rtl/dispatcher.sv - uncomment profiling sections  
+3. Rebuild simulation
+4. Refer to archived documents for analysis methodology
+
+RELATED CLEANUP:
+----------------
+Root directory milestone documents archived to:
+docs/archive_oct30_cleanup/
+(See ARCHIVE_INFO.txt in that directory)
+
+================================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

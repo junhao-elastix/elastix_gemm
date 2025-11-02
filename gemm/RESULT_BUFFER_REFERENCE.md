@@ -113,12 +113,13 @@ used_entries[13:0] = (wr_ptr >= rd_ptr) ?
 
 #### Almost Full Flag
 ```systemverilog
-almost_full = (used_entries >= 7936)
+THRESHOLD = 8192 - MARGIN
+almost_full = (used_entries >= THRESHOLD)
 ```
-- **Threshold**: 7936 FP16 results (256 results / 16 lines remaining)
+- **Threshold**: THRESHOLD FP16 results
 - **Purpose**: Trigger backpressure before buffer completely fills
 - **Action**: Master control blocks command FIFO
-- **Margin**: 256 FP16 safety margin allows in-flight results to drain
+- **Margin**: MARGIN FP16 safety margin allows in-flight results to drain before threshold is reached
 
 #### Empty Flag
 ```systemverilog
@@ -132,11 +133,11 @@ empty = (wr_ptr == rd_ptr)
 
 **Flow:**
 1. Engine writes results → `wr_ptr` increments → `used_entries` increases
-2. When `used_entries >= 7936` → `almost_full` asserts
+2. When `used_entries >= THRESHOLD` → `almost_full` asserts
 3. Master control sees `almost_full` → blocks `cmd_fifo` reads
 4. No new commands issued → engine starves → stops producing results
 5. Host reads results via DMA → updates `rd_ptr` → `used_entries` decreases
-6. When `used_entries < 7936` → `almost_full` deasserts
+6. When `used_entries < THRESHOLD` → `almost_full` deasserts
 7. Master control resumes → new commands issued → engine continues
 
 **Master Control Integration** (`master_control.sv:163-164`):

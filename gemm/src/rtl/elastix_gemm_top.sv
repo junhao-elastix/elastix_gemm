@@ -268,8 +268,8 @@ module elastix_gemm_top
         .IN_REGS_PIPE           (1),                    // Input register pipeline stages
         .OUT_REGS_PIPE          (1)                     // Output register pipeline stages
     ) i_reg_control_block (
-        .i_clk                  (i_reg_clk),            // CHANGED: Use NAP clock instead of reg_clk
-        .i_reset_n              (nap_rstn),             // CHANGED: Use NAP reset instead of reg_rstn
+        .i_clk                  (i_reg_clk),
+        .i_reset_n              (reg_rstn),
         .i_user_regs_in         (user_regs_read),
         .o_user_regs_out        (user_regs_write),
         .o_write_strobes        (write_strobes)         // NEW: Write strobes for each register
@@ -421,8 +421,8 @@ module elastix_gemm_top
         .PROBE_NAME         ("bram_rsp_dma")
     ) i_axi_bram_rsp_dma (
         // Inputs
-        .i_clk              (i_reg_clk),  // FIXED: Match engine clock domain (was i_reg_clk)
-        .i_reset_n          (nap_rstn),   // FIXED: Match engine reset domain (was reg_rstn)
+        .i_clk              (i_reg_clk),
+        .i_reset_n          (reg_rstn),
         .i_bram_inc42_en       (1'b0),       // +42 processing disabled
         // Internal write ports from MS2.0 Engine result writer
         .i_internal_wr_en      (engine_bram_wr_en),
@@ -562,10 +562,11 @@ module elastix_gemm_top
                     // Soft-reset for engine (Oct 10, 2025 - Allow software reset between tests)
                     // Control Register bit 1: Engine soft reset (active high)
                     // Clears all FSM states (MC, DC, CE) and command FIFOs
+                    // ✅ engine_rstn combines reg_rstn and soft reset from control register
                     logic engine_soft_reset;
-                    logic engine_reset_n;
+                    logic engine_rstn;
                     assign engine_soft_reset = user_regs_write[CONTROL_REG][1];
-                    assign engine_reset_n = nap_rstn & ~engine_soft_reset;
+                    assign engine_rstn = reg_rstn & ~engine_soft_reset;
 
                     // =====================================================================
                     // MS2.0 GEMM Engine Integration (Oct 12, 2025 - Validated Architecture)
@@ -582,7 +583,7 @@ module elastix_gemm_top
 
                     csr_to_fifo_bridge i_csr_bridge (
                         .i_clk         (i_reg_clk),
-                        .i_reset_n     (engine_reset_n),
+                        .i_reset_n     (engine_rstn),
                         .i_cmd_word0   (user_regs_write[ENGINE_CMD_WORD0]),
                         .i_cmd_word1   (user_regs_write[ENGINE_CMD_WORD1]),
                         .i_cmd_word2   (user_regs_write[ENGINE_CMD_WORD2]),
@@ -610,7 +611,7 @@ module elastix_gemm_top
                         .AXI_ADDR_WIDTH (42)
                     ) i_engine_top (
                         .i_clk              (i_reg_clk),
-                        .i_reset_n          (engine_reset_n),
+                        .i_reset_n          (engine_rstn),
                         // Command FIFO interface
                         .i_cmd_fifo_wdata   (cmd_fifo_wdata),
                         .i_cmd_fifo_wen     (cmd_fifo_wen),
@@ -646,18 +647,17 @@ module elastix_gemm_top
 
                     // Local signals for capturing results
                     logic [15:0] local_result_0, local_result_1, local_result_2, local_result_3;
-                    logic [12:0] result_write_top;       // Write position counter (0-8191) [DEPRECATED - kept for compatibility]
-                    logic        result_write_top_reset; // Host reset signal
                     logic        result_almost_full;     // Backpressure signal
-                    // Circular buffer interface signals
-                    logic [12:0] result_rd_ptr;          // Read pointer register (host-controlled)
-                    logic [12:0] result_wr_ptr;          // Write pointer from hardware
-                    logic [13:0] result_used_entries;    // Used entries from hardware (0-8192)
-                    logic        result_empty;           // Empty flag from hardware
+                    
+                    // Circular buffer interface signals (direct connections, no intermediate registers)
+                    logic [12:0] result_rd_ptr;          // Read pointer to module (direct from CSR write register)
+                    logic [12:0] result_wr_ptr;          // Write pointer from hardware (registered in module)
+                    logic [13:0] result_used_entries;     // Used entries from hardware (combinational in module)
+                    logic        result_empty;            // Empty flag from hardware (combinational in module)
 
                     result_fifo_to_simple_bram i_result_adapter (
                         .i_clk              (i_reg_clk),
-                        .i_reset_n          (engine_reset_n),
+                        .i_reset_n          (engine_rstn),
                         .i_fifo_rdata       (result_fifo_rdata),
                         .o_fifo_ren         (result_fifo_ren),
                         .i_fifo_empty       (result_fifo_empty),
@@ -674,7 +674,6 @@ module elastix_gemm_top
                         .o_wr_ptr           (result_wr_ptr),
                         .o_used_entries     (result_used_entries),
                         .o_empty            (result_empty),
-                        .i_write_top_reset  (result_write_top_reset),
                         .o_almost_full      (result_almost_full)
                     );
 
@@ -702,15 +701,17 @@ module elastix_gemm_top
                     assign user_regs_read[ENGINE_RESULT_COUNT] = engine_result_count;
                     assign user_regs_read[ENGINE_DEBUG] = engine_debug;  // FIXED: Use actual engine_wrapper debug signals
 
-                    // Circular buffer registers (updated for circular buffer optimization)
-                    assign user_regs_read[ENGINE_WRITE_TOP] = {19'h0, result_wr_ptr};  // Now reads hardware wr_ptr (was result_write_top)
-                    assign result_write_top_reset = write_strobes[ENGINE_WRITE_TOP] && (user_regs_write[ENGINE_WRITE_TOP] == 32'h0);
-                    // New circular buffer registers
-                    assign result_rd_ptr = user_regs_write[REG_RD_PTR][12:0];  // RW: Host writes rd_ptr via this register
-                    assign user_regs_read[REG_RD_PTR] = {19'h0, result_rd_ptr};  // RW: Host-controlled read pointer
-                    assign user_regs_read[REG_WR_PTR] = {19'h0, result_wr_ptr};  // RO: Hardware write pointer
-                    assign user_regs_read[REG_USED_ENTRIES] = {18'h0, result_used_entries};  // RO: Used entries (0-8192)
-                    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, result_empty};  // RO: Empty flag
+                    // Circular buffer interface - direct connections (no intermediate registers)
+                    // ✅ SIMPLIFIED: Direct connections from CSR writes and hardware outputs
+                    // Read pointer: Direct from CSR write register (host-controlled)
+                    assign result_rd_ptr = user_regs_write[REG_RD_PTR][12:0];
+                    
+                    // Circular buffer register mappings (direct from hardware signals)
+                    assign user_regs_read[ENGINE_WRITE_TOP] = {19'h0, result_wr_ptr};      // RO: Hardware write pointer (0x22C)
+                    assign user_regs_read[REG_RD_PTR] = {19'h0, result_rd_ptr};            // RW: Host-controlled read pointer (0x230)
+                    assign user_regs_read[REG_WR_PTR] = {19'h0, result_wr_ptr};            // RO: Hardware write pointer (0x234)
+                    assign user_regs_read[REG_USED_ENTRIES] = {18'h0, result_used_entries}; // RO: Used entries (0x238)
+                    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, result_empty};        // RO: Empty flag (0x23C)
                     assign user_regs_read[NAP_ERROR_STATUS] = {28'h0, error_valid_nap, error_info_nap};  // NAP Channel 1 error monitoring
                     assign user_regs_read[DC_BRAM_WR_COUNT] = {22'h0, bram_wr_count};  // Dispatcher BRAM write count (verify FETCH worked)
                     assign user_regs_read[DC_DEBUG] = {28'h0, dc_state};  // Dispatcher state debug

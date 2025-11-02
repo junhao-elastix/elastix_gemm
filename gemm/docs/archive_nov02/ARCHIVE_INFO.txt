@@ -1,0 +1,157 @@
+Archive: archive_nov02
+Date: November 2, 2025
+Reason: Project documentation housekeeping - archived experimental/historical development notes
+
+================================================================================
+Archived Files Summary
+================================================================================
+Total: 7 markdown files (~54KB)
+- Experimental feature documentation: 5 files (Ping-Pong BCV)
+- Historical development notes: 2 files (BCV refactoring)
+
+================================================================================
+Experimental Feature Documentation (Ping-Pong BCV)
+================================================================================
+
+Context: The dual-FSM ping-pong BCV controller was implemented and achieved 45%
+performance improvement in standalone testing. However, integration with the full
+compute engine revealed timing issues. The project decided to keep the single-FSM
+optimized version (gfp8_bcv_controller_opt.sv) for production reliability.
+
+Status: Experimental work NOT in production, archived for historical reference
+
+1. PINGPONG_INTEGRATION_STATUS.md (5KB, Oct 30)
+   - Content: Integration status and timing issues found
+   - Key Finding: Standalone test passed (45% improvement), integration failed
+   - Decision: Keep single-FSM for production reliability
+   - Why Archived: Documents experimental work that didn't make production
+
+2. PINGPONG_V2_SUCCESS.md (8KB, Oct 30)
+   - Content: Standalone test results showing 45% improvement
+   - Tests: V=4 (30-47%), V=128 (45%)
+   - Formula: Achieved 6 cycles/V vs 10 cycles/V single-FSM
+   - Why Archived: Documents successful experiment, not current production
+
+3. bcv_pingpong_v2_design.md (9KB, Oct 30)
+   - Content: Dual-FSM ping-pong design specification
+   - Details: State sharing, handshake protocol, backpressure
+   - Why Archived: Design doc for experimental implementation
+
+4. bcv_pingpong.md (6KB, Oct 29)
+   - Content: Earlier ping-pong design notes
+   - Why Archived: Superseded by v2 design
+
+5. bcv_dual_fsm_progress.md (3KB, Oct 29)
+   - Content: Implementation progress notes "IN PROGRESS (60% complete)"
+   - Why Archived: Incomplete development notes
+
+================================================================================
+Historical Development Notes (BCV Refactoring)
+================================================================================
+
+Context: Before attempting ping-pong, the single-FSM BCV controller was optimized
+from 9 cycles to 5 cycles for BRAM fill by fixing BRAM latency assumptions.
+
+Status: Completed work, current production uses optimized version
+
+6. bcv_refactor_status.md (4KB, Oct 29)
+   - Content: Refactoring status showing 5-cycle fill optimization
+   - Achievement: 44% faster fill (9→5 cycles), 23% faster per-V (13→10 cycles)
+   - Why Archived: Historical development notes, optimization now in production
+
+7. bcv_refactor_analysis.md (2KB, Oct 29)
+   - Content: Root cause analysis for BRAM latency
+   - Key Finding: BRAM read is 1-cycle, not 2-cycle
+   - Why Archived: Historical development notes
+
+================================================================================
+Current Production Documentation (Remaining in docs/)
+================================================================================
+
+1. HOST_DMA_RESULT_READ.md (13KB, Oct 31)
+   - Content: Current circular buffer result read protocol
+   - Status: ✅ PRODUCTION - Documents current architecture
+
+2. MODEL_CONVERTER_INTEGRATION.md (15KB, Nov 2)
+   - Content: Integration with ElastiCore model_converter project
+   - Status: ✅ PRODUCTION - Documents current integration
+
+3. NAP_Architecture_Analysis.md (4KB, Oct 21)
+   - Content: NAP initiator vs responder architecture for GDDR6
+   - Key Lesson: User logic needs NAP initiator to read from GDDR6
+   - Status: ✅ EDUCATIONAL REFERENCE - Kept for future GDDR6 development
+   - Note: References archived G2B processor, but principles remain valid
+
+================================================================================
+Production Implementation Status
+================================================================================
+
+Current BCV Controller: gfp8_bcv_controller_opt.sv
+- Architecture: Single-FSM with 5-cycle fill optimization
+- Performance: 10 cycles per V iteration
+- Status: ✅ Production, tested and validated
+- Trade-off: Chose reliability over 45% speedup from experimental ping-pong
+
+Archived Experimental: gfp8_bcv_controller_pingpong_v2.sv
+- Architecture: Dual-FSM with ping-pong buffering
+- Performance: 6 cycles per V iteration (45% faster)
+- Status: ⚠️ Standalone success, integration timing issues
+- Location: src/rtl/archive_nov02/ (archived with other experimental variants)
+
+================================================================================
+Key Decisions Documented
+================================================================================
+
+1. Ping-Pong Decision (Oct 30, 2025):
+   - Standalone testing: ✅ 45% improvement proven
+   - Integration testing: ❌ Timing issues with loop indices
+   - Decision: Keep single-FSM for production reliability
+   - Rationale: Simplicity and proven stability over performance
+
+2. NAP Architecture Learning (Oct 6, 2025):
+   - Problem: G2B processor couldn't read from GDDR6
+   - Solution: Use NAP initiator, not NAP responder
+   - Outcome: G2B processor eventually archived, lesson documented
+
+================================================================================
+Archive Statistics
+================================================================================
+
+Documentation Archived: 7 files (~54KB)
+- Experimental features: 5 files (Ping-Pong BCV)
+- Development notes: 2 files (BCV refactoring)
+
+Current Documentation: 3 files (~32KB)
+- Production protocols: HOST_DMA_RESULT_READ.md
+- Integration guides: MODEL_CONVERTER_INTEGRATION.md
+- Educational reference: NAP_Architecture_Analysis.md
+
+Documentation Reduction: 70% (10 files → 3 files)
+
+================================================================================
+Future Reference
+================================================================================
+
+If considering ping-pong architecture in the future:
+1. Review PINGPONG_V2_SUCCESS.md for performance benefits (45% proven)
+2. Review PINGPONG_INTEGRATION_STATUS.md for timing issues encountered
+3. Consider: Is the 45% speedup worth the integration complexity?
+4. Standalone BCV test available: sim/gfp8_bcv_controller/Makefile.pingpong
+
+Educational NAP reference (kept in docs/):
+- NAP_Architecture_Analysis.md explains initiator vs responder
+- Critical for any new GDDR6 access modules
+- Status: Moved back to production docs for easy reference
+
+================================================================================
+Related Archives
+================================================================================
+
+RTL Archives:
+- src/rtl/archive_nov02/ - Contains archived BCV variants including pingpong_v2
+- src/rtl/archive_oct30/ - Contains G2B processor mentioned in NAP doc
+
+Simulation Archives:
+- Multiple archive directories from Oct development iterations
+
+================================================================================

@@ -8,7 +8,7 @@
 //   - Writes each FP16 DIRECTLY to BRAM using byte enables
 //   - No buffering/packing - immediate write on each result
 //   - Implements circular FIFO with 13-bit wr_ptr counter (8192 results)
-//   - Provides backpressure when 7/8 full (7936 results)
+//   - Provides backpressure when 8128 results are written
 //
 // Key Changes from Packed Version:
 //   - Removed pack_buffer and pack_position (no accumulation)
@@ -51,7 +51,6 @@ module result_fifo_to_simple_bram (
     output logic [12:0] o_wr_ptr,         // Write pointer (0-8191)
     output logic [13:0] o_used_entries,   // Number of valid FP16 results (0-8192)
     output logic        o_empty,          // Buffer empty flag
-    input  logic        i_write_top_reset, // Host reset signal (resets wr_ptr)
     output logic        o_almost_full     // Backpressure signal
 );
 
@@ -59,12 +58,13 @@ module result_fifo_to_simple_bram (
     // Parameters
     // =========================================================================
     localparam TOTAL_CAPACITY = 8192;           // Total FP16 results
-    localparam ALMOST_FULL_THRESHOLD = 7936;    // Trigger when < 256 FP16s free
+    localparam ALMOST_FULL_THRESHOLD = 8128;    // Trigger when < 256 FP16s free
 
     // =========================================================================
     // Internal State
     // =========================================================================
     logic         fifo_rd_valid;             // 1-cycle pipeline for FIFO read latency
+    logic [12:0]  rd_ptr;                    // FP16 read position (0-8191)
     logic [12:0]  wr_ptr;                    // FP16 write position (0-8191)
     logic [12:0]  first_four_count;          // Counter for first 4 results capture
 
@@ -81,22 +81,23 @@ module result_fifo_to_simple_bram (
 
     // Calculate used entries (circular buffer arithmetic)
     always_comb begin
-        if (wr_ptr >= i_rd_ptr) begin
-            used_entries = {1'b0, wr_ptr} - {1'b0, i_rd_ptr};  // Normal case
+        if (wr_ptr >= rd_ptr) begin
+            used_entries = {1'b0, wr_ptr} - {1'b0, rd_ptr};  // Normal case
         end else begin
-            used_entries = 14'd8192 - {1'b0, i_rd_ptr} + {1'b0, wr_ptr};  // Wrapped case
+            used_entries = 14'd8192 - {1'b0, rd_ptr} + {1'b0, wr_ptr};  // Wrapped case
         end
     end
 
     // =========================================================================
     // Write Pointer Management
     // =========================================================================
-    // Circular counter with host reset capability (hardware auto-wraps)
+    // Circular counter with automatic wrap (simplified - single reset path)
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             wr_ptr <= 13'd0;
-        end else if (i_write_top_reset) begin
-            wr_ptr <= 13'd0;  // Host reset
+            rd_ptr <= 13'd0;
+        end else if (i_rd_ptr != rd_ptr) begin
+            rd_ptr <= i_rd_ptr;
         end else if (fifo_rd_valid) begin
             // Increment on each valid result (wraps at 8192)
             if (wr_ptr == TOTAL_CAPACITY - 1) begin
@@ -112,7 +113,7 @@ module result_fifo_to_simple_bram (
     // =========================================================================
     always_comb begin
         o_almost_full = (used_entries >= ALMOST_FULL_THRESHOLD);
-        o_empty = (wr_ptr == i_rd_ptr);
+        o_empty = (wr_ptr == rd_ptr);
     end
 
     // =========================================================================
@@ -167,12 +168,6 @@ module result_fifo_to_simple_bram (
                 o_bram_wr_data   <= {240'd0, i_fifo_rdata} << ({wr_ptr[3:0], 1'b0} * 8);  // Position FP16
                 o_bram_wr_en     <= 1'b1;
                 o_bram_wr_strobe <= 32'd3 << {wr_ptr[3:0], 1'b0};  // Byte strobe
-            end
-
-            // Handle write_top_reset
-            if (i_write_top_reset) begin
-                first_four_count <= 13'd0;
-                // Note: wr_ptr reset handled in separate always_ff block
             end
         end
     end

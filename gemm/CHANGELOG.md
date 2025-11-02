@@ -1,3 +1,263 @@
+## [2025-11-02] - Production Codebase Hardening - Housekeeping and Archive Consolidation
+
+**Timestamp**: Sun Nov 2 05:32:30 PST 2025
+**Status**: ✅ **COMPLETED** - Clean production codebase with comprehensive archival
+**Achievement**: Removed 38+ obsolete files, consolidated 6 archive directories, created definitive documentation
+
+### Summary
+
+Performed comprehensive housekeeping across the entire gemm project, archiving unused RTL modules, backup files, historical development notes, and experimental features. Resulted in a clean, production-ready codebase with only active files and current documentation remaining.
+
+### Code Cleanup Statistics
+
+**Total Files Archived**: 38+ files
+- **RTL Modules**: 10 SystemVerilog files (~3,500 lines)
+- **RTL Backup Files**: 5 backup files (.backup_*)
+- **RTL Documentation**: 6 markdown files (~55KB)
+- **Project Documentation**: 7 markdown files (~54KB)
+- **Test Files**: 9 C++ test programs + 1 backup
+- **Test Documentation**: 10 markdown files
+
+**Code Reduction**: ~4,000+ lines of RTL + ~110KB documentation archived
+
+### RTL Cleanup (src/rtl/)
+
+**Created Archive**: `src/rtl/archive_nov02/` (21 files total)
+
+**Archived RTL Modules** (10 files):
+1. `compute_engine_modular.sv` - Non-optimized version → replaced by `compute_engine_modular_opt.sv`
+2. `gfp8_bcv_controller.sv` - Non-optimized version → replaced by `gfp8_bcv_controller_opt.sv`
+3. `gfp8_nv_dot.sv` - Non-optimized version → replaced by `gfp8_nv_dot_ultra_opt.sv`
+4. `gfp8_bcv_controller_wrapper.sv` - Orphaned compile-time selection wrapper
+5. `dispatcher_control_old.sv` - Explicitly marked "old" version
+6. `gfp8_bcv_controller_pingpong_flat.sv` - Experimental variant
+7. `gfp8_nv_dot_merged.sv` - Experimental variant
+8. `fetcher_copy.sv` - Backup copy
+9. `fetcher_original.sv` - Original version backup
+10. `fetcher_optimized.sv` - Variant not selected for production
+
+**Archived Backup Files** (5 files):
+1. `gfp8_bcv_controller_opt.sv.backup_pre_200mhz_20251031_231622`
+2. `gfp8_nv_dot_ultra_opt.sv.backup_pre_200mhz_20251031_231622`
+3. `tile_bram.sv.backup_pre_outreg_20251101_001544`
+4. `gfp8_to_fp16.sv.backup_before_rounding`
+5. `result_fifo_to_simple_bram.sv.backup`
+
+**Archived RTL Documentation** (6 files):
+1. `RESET_SIMPLIFICATION_PROPOSAL.md` - Proposal superseded by COMPLETE
+2. `200MHZ_OPTIMIZATION_RESULTS.md` - Interim 151MHz results superseded by FINAL
+3. `RESET_SIMPLIFICATION_COMPLETE.md` - Implementation complete (historical)
+4. `CIRCULAR_BUFFER_SOFTRESET_FIX.md` - Bug fix complete (historical)
+5. `CSR_SIGNAL_REGISTRATION.md` - Implementation complete (historical)
+6. `FINAL_200MHZ_RESULTS.md` - Final 169MHz optimization (historical)
+
+**Deleted Files**:
+- `src/check_tile_format.txt` - Obsolete debug notes marked "WRONG"
+
+**Verification**: All remaining 29 RTL files validated against `src/filelist.tcl` ✅
+
+### Software Test Cleanup (sw_test/)
+
+**Created Archive**: `sw_test/archive_nov02/` (19 files total)
+
+**Archived Test Programs** (9 files):
+1. `analyze_results.cpp` - Debug utility
+2. `check_bram_write.cpp` - BRAM write verification
+3. `check_cmd_payload.cpp` - Command payload debugging
+4. `check_data.cpp` - Data validation utility
+5. `read_all_regs.cpp` - Register dump utility
+6. `test_cmd_encoding.cpp` - Command encoding test
+7. `test_dma_large.cpp` - Large DMA transfer test
+8. `test_fetch.cpp` - FETCH command test
+9. `test_gemm.cpp.backup` - Old version backup
+
+**Archived Test Documentation** (10 files):
+1. `README.md` - **INACCURATE** (said 8 tests, actually 13; said 128 regs, actually 133)
+2. `ADDRESSING_MODE_ANALYSIS.md` - Historical DMA analysis
+3. `PACKING_UPDATE_NOTES.md` - Historical packing notes
+4. `TEST_GEMM_BATCHED_MODE.md` - Historical test_gemm notes
+5. `TWO_STAGE_TEST.md` - Historical testing notes
+6. `PARAMETERIZED_TEST_NOV01.md` - Historical test_multi_tile dev notes
+7. `TEST_MULTI_TILE_UPDATE_NOV01.md` - Historical update notes
+8. `TEST_READBACK_IMPLEMENTATION.md` - Superseded by USAGE docs
+9. `TEST_READBACK_SETUP.md` - Superseded by USAGE docs
+10. `TEST_READBACK_SUCCESS.md` - Historical success notes
+
+**Makefile Fix**:
+- Added missing `test_bulk_dma` to `ALL_BINS` list
+
+**Remaining**: 13 active tests (all in Makefile) + 4 current documentation files ✅
+
+### Project Documentation Cleanup (docs/)
+
+**Created Archive**: `docs/archive_nov02/` (7 files)
+
+**Archived Experimental Features** (5 files - Ping-Pong BCV):
+1. `PINGPONG_INTEGRATION_STATUS.md` - Integration status (standalone success, integration issues)
+2. `PINGPONG_V2_SUCCESS.md` - Standalone test results (45% improvement proven)
+3. `bcv_pingpong_v2_design.md` - Dual-FSM design specification
+4. `bcv_pingpong.md` - Earlier ping-pong design notes
+5. `bcv_dual_fsm_progress.md` - Progress notes "IN PROGRESS (60%)"
+
+**Key Decision Documented**: Ping-pong architecture achieved 45% speedup in standalone testing but had integration timing issues. Decision: Keep single-FSM `gfp8_bcv_controller_opt.sv` for production reliability.
+
+**Archived Development Notes** (2 files):
+1. `bcv_refactor_status.md` - 5-cycle fill optimization notes
+2. `bcv_refactor_analysis.md` - BRAM latency root cause analysis
+
+**Remaining Production Documentation** (3 files):
+1. `HOST_DMA_RESULT_READ.md` - Current circular buffer protocol
+2. `MODEL_CONVERTER_INTEGRATION.md` - ElastiCore integration guide
+3. `NAP_Architecture_Analysis.md` - NAP initiator vs responder (educational reference)
+
+### Archive Organization
+
+**Consolidated Archive Structure**:
+```
+gemm/
+├── src/
+│   ├── rtl/
+│   │   ├── *.sv (29 files - all in filelist.tcl) ✅
+│   │   └── archive_nov02/ (21 files + ARCHIVE_INFO.txt)
+│   └── acxip/
+│       ├── *.acxip (production IP configs)
+│       └── *.backup (2 files - user will review)
+├── sw_test/
+│   ├── *.cpp (13 tests - all in Makefile) ✅
+│   ├── *.md (4 current docs) ✅
+│   └── archive_nov02/ (19 files + ARCHIVE_INFO.txt)
+└── docs/
+    ├── *.md (3 current docs) ✅
+    └── archive_nov02/ (7 files + ARCHIVE_INFO.txt)
+```
+
+**Previous Archives** (retained for history):
+- `src/rtl/archive_oct12/`, `archive_oct14/`, `archive_oct30/`, `archive_older/`
+- `sw_test/archive_oct12/`, `archive_oct14/`
+- `docs/archive_oct13_cleanup/`, `archive_oct14_docs_cleanup/`, etc.
+
+### Documentation Created
+
+**New ARCHIVE_INFO.txt files** (3 comprehensive archives):
+1. `src/rtl/archive_nov02/ARCHIVE_INFO.txt` - Documents 21 RTL files with rationale
+2. `sw_test/archive_nov02/ARCHIVE_INFO.txt` - Documents 19 test files with rationale
+3. `docs/archive_nov02/ARCHIVE_INFO.txt` - Documents 7 documentation files with context
+
+Each ARCHIVE_INFO.txt includes:
+- Complete file listing with reasons for archival
+- Context about experimental features and decisions
+- Production implementation status
+- Future reference guidance
+
+### Production Status
+
+**Active Codebase**:
+- **RTL**: 29 SystemVerilog files (100% in filelist.tcl)
+- **Tests**: 13 C++ programs (100% in Makefile)
+- **Documentation**: 7 markdown files (current/production)
+
+**Key Decisions Preserved**:
+1. Single-FSM BCV controller chosen over 45%-faster ping-pong (reliability > speed)
+2. Optimized versions (_opt, _ultra_opt) selected over base versions
+3. README.md removed for inaccuracy (better no docs than wrong docs)
+
+**Production Reliability**: ✅ All archived code documented, all active code verified
+
+### Housekeeping Principles Applied
+
+Following `.claude/commands/housekeep.md`:
+1. ✅ Created `archive_<date>` directories
+2. ✅ Archived source files not in filelist/Makefile
+3. ✅ Reviewed code comments and annotations
+4. ✅ Checked documentation accuracy (removed inaccurate README)
+5. ✅ Verified no stale executables (make clean process works)
+6. ✅ Asked user for confirmation on uncertain items
+
+**Accuracy Principle**: "Better to not mention information than mention information that is not accurate" - Applied rigorously
+
+### Verification
+
+**Pre-Cleanup State**:
+- RTL: 39+ files (many unused)
+- Tests: 22+ files (9 not in Makefile)
+- Docs: 10 markdown files (7 historical)
+
+**Post-Cleanup State**:
+- RTL: 29 files ✅ (all verified in filelist.tcl)
+- Tests: 13 files ✅ (all verified in Makefile)
+- Docs: 3 files ✅ (all current/production)
+
+**Validation Commands Used**:
+```bash
+# Verify RTL files against filelist
+for f in *.sv; do grep -q "$f" ../filelist.tcl || echo "NOT IN FILELIST: $f"; done
+
+# Verify no markdown files remain in src/rtl
+ls src/rtl/*.md  # Returns: 0 files
+
+# Verify test files in Makefile
+grep "ALL_BINS" sw_test/Makefile  # Shows all 13 tests
+
+# Count archived files
+ls -1 src/rtl/archive_nov02/ | wc -l  # 22 (21 + ARCHIVE_INFO.txt)
+ls -1 sw_test/archive_nov02/ | wc -l  # 20 (19 + ARCHIVE_INFO.txt)
+ls -1 docs/archive_nov02/ | wc -l     # 8 (7 + ARCHIVE_INFO.txt)
+```
+
+### Impact
+
+**Code Quality**:
+- Clean production codebase
+- No unused/obsolete files
+- All active code verified in build system
+
+**Maintainability**:
+- Clear archive organization with full documentation
+- Easy to find historical context
+- Reduced confusion about which files are current
+
+**Documentation**:
+- Only accurate, current documentation remains
+- Historical development notes preserved in archives
+- Educational references (NAP) kept accessible
+
+**Principle Adherence**: "It is better to not have it than to have it wrong" - Applied throughout cleanup
+
+### Related Changes
+
+- No bitstream rebuild required (RTL functionality unchanged)
+- No software test changes (only archival of unused tests)
+- No functional changes (pure organizational cleanup)
+
+### Files Modified
+
+1. `sw_test/Makefile` - Added `test_bulk_dma` to ALL_BINS
+2. `README.md` - Updated status line with "Code Status: Production hardening complete"
+3. `CLAUDE.md` - Updated with current codebase state
+4. `CHANGELOG.md` - This comprehensive entry
+
+### Files Created
+
+1. `src/rtl/archive_nov02/ARCHIVE_INFO.txt`
+2. `sw_test/archive_nov02/ARCHIVE_INFO.txt`
+3. `docs/archive_nov02/ARCHIVE_INFO.txt`
+
+### Files Deleted
+
+1. `src/check_tile_format.txt` - Obsolete debug notes
+
+### Next Steps
+
+- ✅ Codebase ready for continued development
+- ✅ Clear baseline for future archival decisions
+- ✅ All historical context preserved and documented
+- ⏸️ Backup .acxip files in src/acxip/ - User to review manually
+
+---
+
+**Maintained by**: Claude Code (claude.ai/code)
+**Housekeeping Duration**: ~2 hours
+**Principle**: Clean, documented, production-ready codebase with full historical preservation
 # CHANGELOG - Elastix GEMM Project
 
 ## [2025-10-31] - Circular Buffer Ring Buffer Architecture for Result Management

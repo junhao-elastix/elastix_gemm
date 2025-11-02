@@ -1,0 +1,95 @@
+Archive: archive_nov02
+Date: November 2, 2025
+Reason: Housekeeping - removed test files not in Makefile and obsolete documentation
+
+================================================================================
+Archived Files
+================================================================================
+
+Test Files (not in Makefile):
+------------------------------
+1. analyze_results.cpp          - Debug utility for result analysis
+2. check_bram_write.cpp         - BRAM write verification utility
+3. check_cmd_payload.cpp        - Command payload debugging tool
+4. check_data.cpp               - Data validation utility
+5. read_all_regs.cpp            - Register dump utility
+6. test_cmd_encoding.cpp        - Command encoding test
+7. test_dma_large.cpp           - Large DMA transfer test
+8. test_fetch.cpp               - FETCH command test
+
+Backup Files:
+-------------
+9. test_gemm.cpp.backup         - Old version of test_gemm.cpp
+
+Documentation (obsolete/superseded/inaccurate):
+------------------------------------------------
+10. README.md                        - Main test suite overview (Oct 20 - INACCURATE)
+                                       Reason: Says 8 tests (actually 13), 128 regs (actually 133),
+                                       missing 5 current tests, outdated archive references
+11. ADDRESSING_MODE_ANALYSIS.md      - DMA addressing analysis (Oct 31 - historical)
+12. PACKING_UPDATE_NOTES.md          - Packing implementation notes (Oct 31 - historical)
+13. TEST_GEMM_BATCHED_MODE.md        - test_gemm batched mode notes (Oct 31 - historical)
+14. TWO_STAGE_TEST.md                - Two-stage testing notes (Oct 31 - historical)
+15. PARAMETERIZED_TEST_NOV01.md      - test_multi_tile dev notes (Nov 1 - historical)
+16. TEST_MULTI_TILE_UPDATE_NOV01.md  - test_multi_tile update notes (Nov 1 - historical)
+17. TEST_READBACK_IMPLEMENTATION.md  - test_readback dev notes (Nov 2 - superseded)
+18. TEST_READBACK_SETUP.md           - test_readback setup notes (Nov 1 - superseded)
+19. TEST_READBACK_SUCCESS.md         - test_readback success notes (Nov 2 - historical)
+
+================================================================================
+Active Tests (remain in sw_test/)
+================================================================================
+
+Essential Tests:
+  - test_registers      - Device health and register interface
+  - test_gddr6          - GDDR6 channel status
+  - scan_registers      - Register address space scanner
+  - test_bram           - BRAM DMA testing
+
+Core Tests:
+  - test_gemm           - MS2.0 GEMM engine 3-stage validation
+  - test_gemm_full      - Full GEMM integration test
+  - test_multi_tile     - Multi-tile configuration testing
+  - test_readback       - Circular buffer batched readback (with -v/-t/-s options)
+
+DMA Tests:
+  - dma_example         - Advanced DMA with performance measurement
+  - dma_simple_example  - Basic DMA round-trip validation
+  - test_dma_access     - DMA access testing
+  - test_bulk_dma       - Bulk DMA address validation
+
+Utilities:
+  - test_mem_endpoints  - Memory address space scanner
+
+================================================================================
+Current Documentation (remain in sw_test/)
+================================================================================
+
+Production Documentation:
+  - README.md                              - Main test suite overview (needs update)
+  - ARGUMENT_PARSING_IMPLEMENTATION.md     - test_readback.cpp arg parsing docs
+  - LOG_FILE_INFO.md                       - test_readback.cpp log file docs
+  - TEST_READBACK_USAGE.md                 - test_readback.cpp user guide
+  - TEST_SUITE_COMPLETE.md                 - 14 test configurations reference
+
+================================================================================
+Makefile Update
+================================================================================
+
+Added test_bulk_dma to ALL_BINS (was missing but had build rule)
+
+Total Active Tests: 13
+Total Archived: 18 (9 .cpp + 9 .md)
+
+================================================================================
+Notes
+================================================================================
+
+- Archived tests were early debug/development utilities
+- All archived tests lack documentation and Makefile integration
+- Archived markdown files are historical development notes
+- Current documentation supersedes archived notes
+- Active tests are production-validated and documented
+- Archive can be restored if needed for reference
+
+================================================================================

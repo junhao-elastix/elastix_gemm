@@ -165,7 +165,6 @@ module tb_engine_top;
     logic [12:0]  result_wr_ptr;          // Write pointer (hardware)
     logic [13:0]  result_used_entries;    // Used entries (0-8192)
     logic         result_empty;           // Empty flag
-    logic         result_write_top_reset; // Reset signal
     logic         result_bram_almost_full; // Backpressure signal
 
     // BRAM model for packed results (512 lines × 256 bits)
@@ -175,7 +174,6 @@ module tb_engine_top;
     // Initialize result_rd_ptr
     initial begin
         result_rd_ptr = 13'b0;
-        result_write_top_reset = 1'b0;
     end
 
     result_fifo_to_simple_bram u_result_packer (
@@ -204,7 +202,6 @@ module tb_engine_top;
         .o_wr_ptr           (result_wr_ptr),
         .o_used_entries     (result_used_entries),
         .o_empty            (result_empty),
-        .i_write_top_reset  (result_write_top_reset),
         .o_almost_full      (result_bram_almost_full)
     );
 
@@ -531,18 +528,10 @@ module tb_engine_top;
         @(posedge clk);
         @(posedge clk);  // Additional safety margin
 
-        // Flush partial BRAM line if needed (for tests with < 16 results)
-        if ((expected_results % 16) != 0) begin
-            $display("[TB] Flushing partial BRAM line (%0d results not yet written)...", expected_results % 16);
-            result_write_top_reset = 1'b1;
-            @(posedge clk);
-            result_write_top_reset = 1'b0;
-            @(posedge clk);
-            @(posedge clk);  // Wait for flush to complete
-            $display("[TB] Flush complete. BRAM lines written: %0d", result_bram_lines_written);
-        end else begin
-            $display("[TB] No flush needed. BRAM lines written: %0d", result_bram_lines_written);
-        end
+        // Note: Partial BRAM line flush removed - no longer needed with simplified reset
+        // The async reset (reset_n) now handles all buffer clearing
+        // For tests with < 16 results, they remain in the packing buffer until next result or reset
+        $display("[TB] BRAM lines written: %0d", result_bram_lines_written);
 
         // Read and verify packed results from BRAM model
         for (int result_idx = 0; result_idx < expected_results; result_idx++) begin

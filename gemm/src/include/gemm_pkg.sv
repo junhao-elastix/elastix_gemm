@@ -4,6 +4,32 @@
 `endif
 
 package gemm_pkg;
+// Simple package for GEMM module definitions
+
+    // GFP8 mantissa width (7 bits + 1 sign bit)
+    parameter int GFP8_MANTISSA_WIDTH = 8;
+    
+    // GFP8 shared exponent width
+    parameter int GFP8_EXPONENT_WIDTH = 8;
+    
+    // FP16 format
+    parameter int FP16_WIDTH = 16;
+    parameter int FP16_MANTISSA_WIDTH = 10;
+    parameter int FP16_EXPONENT_WIDTH = 5;
+    parameter int FP16_BIAS = 15;
+    
+    // Native vector width (number of GFP8 pairs)
+    parameter int NV_WIDTH = 128;
+    
+    // Group size for group dot product
+    parameter int GROUP_SIZE = 32;
+    
+    // BRAM parameters
+    parameter int BRAM_ADDR_WIDTH = 9;
+    parameter int BRAM_DATA_WIDTH = 256;
+    
+    // Tile dimensions
+    parameter int MAX_TILE_DIM = 256;
 
     // tensor block parameters
     localparam block_size_gp = 128;
@@ -46,7 +72,7 @@ package gemm_pkg;
     localparam tile_right_bias_gp = 15;
     localparam tile_out_bias_gp = 15;
 
-    localparam tile_out_fifo_els_gp = 256;  // Result FIFO depth (increased for large tests, was 64)
+    localparam tile_out_fifo_els_gp = 4096;  // Result FIFO depth (increased for large tests, was 64)
     localparam tile_out_cnt_width_gp = $clog2(tile_out_fifo_els_gp+1);
 
     localparam tile_max_mwidth_gp = 8;

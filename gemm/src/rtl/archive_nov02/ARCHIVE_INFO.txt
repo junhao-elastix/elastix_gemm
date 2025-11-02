@@ -1,0 +1,206 @@
+Archive: archive_nov02
+Date: November 2, 2025
+Reason: RTL housekeeping - archived unused development variants, backup files, and completed implementation documentation
+
+================================================================================
+Archived Files Summary
+================================================================================
+- SystemVerilog Modules: 10 files
+- Backup Files: 5 files (.backup, .backup_*)
+- Documentation: 6 markdown files
+- Total: 21 files
+
+================================================================================
+SystemVerilog Modules (10 files)
+================================================================================
+
+Development Variants (Non-Optimized Versions):
+----------------------------------------------
+1. compute_engine_modular.sv
+   - Reason: Non-optimized version, replaced by compute_engine_modular_opt.sv in filelist
+   - Status: Base version before optimization pass
+
+2. gfp8_bcv_controller.sv
+   - Reason: Non-optimized version, replaced by gfp8_bcv_controller_opt.sv in filelist
+   - Status: Base version before optimization pass
+
+3. gfp8_nv_dot.sv
+   - Reason: Non-optimized version, replaced by gfp8_nv_dot_ultra_opt.sv in filelist
+   - Status: Base version before ultra optimization pass
+
+Orphaned Wrapper:
+----------------
+4. gfp8_bcv_controller_wrapper.sv
+   - Reason: Compile-time selection wrapper NOT in filelist, references archived modules
+   - Status: Wrapper for +define+ selection between BCV variants (all variants archived)
+   - Note: Module name "gfp8_bcv_controller" (no _wrapper suffix), not instantiated
+
+Old/Superseded Versions:
+------------------------
+5. dispatcher_control_old.sv
+   - Reason: Explicitly marked as "old", replaced by dispatcher_control.sv
+   - Status: Historical version kept for reference
+
+Experimental Variants:
+---------------------
+6. gfp8_bcv_controller_pingpong_flat.sv
+   - Reason: Experimental pingpong flat architecture variant
+   - Status: Development experiment, not selected for production
+
+7. gfp8_nv_dot_merged.sv
+   - Reason: Experimental merged architecture variant
+   - Status: Development experiment, not selected for production
+
+Backup/Copy Files:
+-----------------
+8. fetcher_copy.sv
+   - Reason: Backup copy of fetcher.sv
+   - Status: Development backup
+
+9. fetcher_original.sv
+   - Reason: Original version of fetcher.sv before modifications
+   - Status: Historical backup
+
+10. fetcher_optimized.sv
+   - Reason: Optimized variant not selected for production
+   - Status: Development variant, current production uses fetcher.sv
+
+================================================================================
+Active RTL Files (remain in src/rtl/)
+================================================================================
+
+Production Modules (in filelist.tcl):
+-------------------------------------
+Core Infrastructure:
+  - elastix_gemm_top.sv              - Top-level integration
+  - flr_responder.sv                 - FLR responder block
+  - irq_gen.sv                       - MSI-X interrupt support
+  - acx_device_manager.sv            - PCIe enumeration and memory training
+
+NAP Wrappers:
+  - nap_initiator_wrapper.sv         - NAP initiator for BRAM bridges
+  - nap_responder_wrapper.sv         - NAP responder for BRAM bridges
+
+MS2.0 GEMM Engine (Optimized Versions):
+  - cmd_fifo.sv                      - Command FIFO
+  - compute_engine_modular_opt.sv    - Optimized modular compute engine ✅
+  - csr_to_fifo_bridge.sv           - CSR to FIFO bridge
+  - dispatcher_bram.sv               - Dual-read BRAM module
+  - fetcher.sv                       - GDDR6 fetch module (current production)
+  - dispatcher.sv                    - Dispatcher module
+  - dispatcher_control.sv            - Dispatcher control (current version)
+  - dma_bram_bridge.sv              - BRAM responder with byte strobe
+  - engine_top.sv                    - Engine integration wrapper
+  - gfp8_bcv_controller_opt.sv      - Optimized BCV controller ✅
+  - gfp8_group_dot_mlp.sv           - Group dot product MLP
+  - gfp8_nv_dot_ultra_opt.sv        - Ultra-optimized native vector dot ✅
+  - gfp8_to_fp16.sv                 - GFP8 to FP16 conversion
+  - master_control.sv                - Command parsing FSM
+  - msix_irq_handler.sv             - MSI-X IRQ handler
+  - reg_control_block.sv            - PCIe register interface (133 regs)
+  - reset_processor_v2.sv           - Reset processing
+  - result_bram.sv                  - Result FIFO buffer
+  - result_fifo_to_simple_bram.sv   - Result packer with byte-granular writes
+  - shift_reg.sv                    - Shift register utility
+  - tile_bram.sv                    - Tile BRAM
+  - tile_result_fifo.sv             - Tile result FIFO
+
+Support Files:
+  - default_nettype.v                - Verilog default nettype
+  - axi_bram_responder.sv           - AXI BRAM responder (ATU demo)
+
+Package:
+  - ../include/gemm_pkg.sv          - SystemVerilog package (moved from rtl/)
+
+================================================================================
+Backup Files (5 files)
+================================================================================
+
+11. gfp8_bcv_controller_opt.sv.backup_pre_200mhz_20251031_231622
+    - Reason: Pre-200MHz optimization backup (Oct 31)
+    - Status: Historical version before 7-stage pipeline
+
+12. gfp8_nv_dot_ultra_opt.sv.backup_pre_200mhz_20251031_231622
+    - Reason: Pre-200MHz optimization backup (Oct 31)
+    - Status: Historical version before extended pipeline
+
+13. tile_bram.sv.backup_pre_outreg_20251101_001544
+    - Reason: Pre-output register backup (Nov 1)
+    - Status: Historical version before registered outputs
+
+14. gfp8_to_fp16.sv.backup_before_rounding
+    - Reason: Pre-rounding implementation backup
+    - Status: Historical version before rounding logic
+
+15. result_fifo_to_simple_bram.sv.backup
+    - Reason: General backup (date unknown)
+    - Status: Historical backup
+
+================================================================================
+Documentation (6 markdown files)
+================================================================================
+
+Superseded Proposals/Interim Results:
+-------------------------------------
+16. RESET_SIMPLIFICATION_PROPOSAL.md (6KB, Nov 1)
+    - Reason: Proposal superseded by COMPLETE document
+    - Status: Completed implementation archived
+
+17. 200MHZ_OPTIMIZATION_RESULTS.md (6KB, Nov 1)
+    - Reason: Interim results (151.2 MHz) superseded by FINAL document
+    - Status: Early optimization results archived
+
+Completed Implementation Notes:
+-------------------------------
+18. RESET_SIMPLIFICATION_COMPLETE.md (9KB, Nov 1)
+    - Content: Removed redundant i_write_top_reset signal
+    - Status: ✅ Implementation complete, archived as historical reference
+
+19. CIRCULAR_BUFFER_SOFTRESET_FIX.md (8KB, Nov 1)
+    - Content: Fixed soft reset to clear circular buffer pointers
+    - Status: ✅ Bug fix complete, archived as historical reference
+
+20. CSR_SIGNAL_REGISTRATION.md (8KB, Nov 1)
+    - Content: Registered CSR outputs for timing closure
+    - Status: ✅ Implementation complete, archived as historical reference
+
+21. FINAL_200MHZ_RESULTS.md (16KB, Nov 1)
+    - Content: Final 200MHz optimization (169 MHz achieved, +24%)
+    - Status: ✅ Optimization complete, archived as historical reference
+
+================================================================================
+Archive Statistics
+================================================================================
+
+Total Archived: 21 files
+  - SystemVerilog modules: 10 files (~3,500 lines)
+  - Backup files: 5 files
+  - Documentation: 6 files (~55KB)
+
+Active RTL Files: 29 SystemVerilog files (all in filelist.tcl)
+Active Documentation: 0 markdown files in src/rtl/ (cleaned up)
+
+Code/Documentation Reduction: ~3,500 lines + 55KB docs archived
+
+================================================================================
+Notes
+================================================================================
+
+- All archived files are development variants, backups, or superseded versions
+- Production codebase uses optimized versions (*_opt.sv, *_ultra_opt.sv)
+- No functionality lost - all features in active optimized versions
+- Archive can be restored if needed for reference or comparison
+- Archived files validated as NOT in filelist.tcl (verified Nov 2, 2025)
+
+Optimization Progression:
+  compute_engine_modular → compute_engine_modular_opt
+  gfp8_bcv_controller → gfp8_bcv_controller_opt
+  gfp8_nv_dot → gfp8_nv_dot_ultra_opt (via merged variant)
+
+Development History:
+  - Oct 30: Previous cleanup (archive_oct30_cleanup/)
+  - Oct 14: Comprehensive cleanup (archive_oct14_cleanup/)
+  - Oct 12: Initial cleanup (archive_oct12_cleanup/)
+  - Nov 2: Final production hardening (archive_nov02_cleanup/)
+
+================================================================================

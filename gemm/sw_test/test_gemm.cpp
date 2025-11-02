@@ -168,6 +168,7 @@ int main(int argc, char* argv[]) {
         cout << "\n[Initialization] Opening VP815 device " << device_id << "..." << endl;
         VP815 device(device_id);
         VP815GemmDevice gemm_device(device);
+        gemm_device.soft_reset();
 
         uint32_t bitstream_id = gemm_device.mmio_read32(0, 0x214);
         cout << "  Bitstream ID: 0x" << hex << bitstream_id << dec

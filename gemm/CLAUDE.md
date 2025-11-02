@@ -1,10 +1,11 @@
 # CLAUDE.md - Elastix GEMM Engine Project
 
 **Project Status**: ✅ **PRODUCTION READY** - MS2.0 Modular GEMM Engine with Circular Buffer Architecture
-**Last Updated**: Fri Oct 31 13:15:00 PDT 2025
+**Last Updated**: Sun Nov 2 05:36:46 PST 2025
 **Current Bitstream**: Bitstream ID 0x10311646 (validated Oct 31)
 **Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - 10/10 tests passing (100%)
 **Top-Level Module**: `elastix_gemm_top.sv`
+**Code Status**: Production hardening complete - Clean codebase (Nov 2)
 
 ## Quick Start
 
@@ -37,6 +38,20 @@ Elastix GEMM (General Matrix Multiply) Engine for Achronix AC7t1500 Speedster7t 
 - **PCIe Gen5 x16** - High-bandwidth host interface
 - **133 Memory-Mapped Registers** - Full control and status via PCIe BAR0
 - **Command-Driven Interface** - 7-register CSR interface for matrix operations
+
+### Model Converter Integration
+
+The **elastix_gemm** hardware is actively used by the **model_converter** project - a compiler/runtime framework for optimizing ML inference on FPGA accelerators.
+
+**Integration Points**:
+- **Shared API**: `elastiapi.hpp` provides production runtime on top of MS2.0 GEMM engine
+- **Command Interface**: Both projects use identical 5-opcode microcode (0xF0-0xF4)
+- **Circular Buffer**: Shared register interface (0x230, 0x234, 0x238)
+- **Testing**: `test_readback.cpp` validates patterns used by `elastiapi.hpp`
+
+**Location**: `/home/workstation/ElastiCore/projects/model_converter/`
+
+See [MODEL_CONVERTER_INTEGRATION.md](MODEL_CONVERTER_INTEGRATION.md) for complete integration documentation.
 
 ---
 
