@@ -27,6 +27,11 @@
 
 `include "nap_interfaces.svh"
 
+// Memory model latency configuration (from Makefile)
+`ifndef LATENCY_CYCLES
+    `define LATENCY_CYCLES 0  // Default: 0 for fast simulation
+`endif
+
 module tb_engine_top;
 
     import gemm_pkg::*;
@@ -228,14 +233,18 @@ module tb_engine_top;
     // ===================================================================
     // Memory Model Instantiation
     // ===================================================================
-    logic [31:0] mem_read_count;
-    logic [31:0] mem_last_addr;
+    logic [31:0] mem_outstanding_count;
+    logic [31:0] mem_total_ar_received;
+    logic [31:0] mem_total_r_issued;
 
-    tb_memory_model #(
+    tb_memory_model_realistic #(
         .DATA_WIDTH         (TGT_DATA_WIDTH),
         .ADDR_WIDTH         (AXI_ADDR_WIDTH),
         .LINES_PER_BLOCK    (528),
-        .NUM_BLOCKS         (2)
+        .NUM_BLOCKS         (2),
+        .LATENCY_CYCLES     (`LATENCY_CYCLES),  // Configurable from Makefile (default: 0)
+        .MAX_OUTSTANDING    (32),               // Support 32 outstanding ARs (realistic GDDR6)
+        .VERBOSITY          (0)                 // Quiet mode for clean test output
     ) u_memory_model (
         .i_clk              (clk),
         .i_reset_n          (reset_n),
@@ -243,9 +252,10 @@ module tb_engine_top;
         // AXI interface
         .axi_mem_if         (axi_ddr_if.responder),
 
-        // Debug
-        .o_read_count       (mem_read_count),
-        .o_last_addr        (mem_last_addr)
+        // Debug/Statistics
+        .o_outstanding_count  (mem_outstanding_count),
+        .o_total_ar_received  (mem_total_ar_received),
+        .o_total_r_issued     (mem_total_r_issued)
     );
 
     // ===================================================================

@@ -41,7 +41,7 @@ package gemm_pkg;
     localparam cmd_flags_width_gp = 8;
 
     localparam cmd_buf_width_gp = 32;
-    localparam cmd_buf_els_gp = 64;  // Command FIFO depth (user configurable)
+    localparam cmd_buf_els_gp = 1024;  // Command FIFO depth (user configurable)
 
     // AXI parameters
     localparam axi_addr_width_gp = 64;

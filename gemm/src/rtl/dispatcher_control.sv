@@ -105,7 +105,7 @@ import gemm_pkg::*;
     
     // Fetcher → Dispatcher BRAM Write Interface
     logic [MAN_WIDTH-1:0]         fetcher_bram_wr_data;
-    logic [BRAM_ADDR_WIDTH+2:0]   fetcher_bram_wr_addr;  // 11-bit for 0-527
+    logic [BRAM_ADDR_WIDTH+1:0]   fetcher_bram_wr_addr;  // 11-bit for 0-527 (9+1+1=11)
     logic                         fetcher_bram_wr_en;
     logic                         fetcher_bram_wr_target;
 
@@ -137,8 +137,9 @@ import gemm_pkg::*;
     logic [EXP_WIDTH-1:0]         dispatcher_bram_exp_right_rd_data;
 
     // ====================================================================
-    // Fetcher Module Instantiation
+    // Fetcher Module Instantiation (OPTIMIZED - comparing vs baseline)
     // ====================================================================
+    // fetcher_opt #(
     fetcher #(
         .MAN_WIDTH      (MAN_WIDTH),
         .EXP_WIDTH      (EXP_WIDTH),

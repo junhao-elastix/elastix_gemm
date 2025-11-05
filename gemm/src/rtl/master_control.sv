@@ -229,6 +229,7 @@ import gemm_pkg::*;
 
             ST_WAIT_FETCH: begin
                 if (i_dc_fetch_done) begin
+                    $display("[MC] @%0t WAIT_FETCH: Dispatcher fetch complete", $time);
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_FETCH;
@@ -249,7 +250,18 @@ import gemm_pkg::*;
                 end
             end
 
-            // ST_WAIT_DISP_OP removed - DISPATCH returns immediately per MS2.0 async model
+            ST_WAIT_DISP: begin
+                // WAIT_DISPATCH barrier: Block until dispatcher operation completes
+                // MS2.0 ASYNC MODEL: Check BOTH state and done signal
+                if (i_dc_state == 4'd0 && i_dc_disp_done) begin
+                    state_next = ST_CMD_COMPLETE;
+                    $display("[MC] @%0t WAIT_DISP: Dispatcher complete (state=IDLE, done=1), barrier released", $time);
+                end else begin
+                    state_next = ST_WAIT_DISP; // Keep blocking
+                    $display("[MC] @%0t WAIT_DISP blocking: i_dc_state=%0d, i_dc_disp_done=%0b (waiting for completion)",
+                             $time, i_dc_state, i_dc_disp_done);
+                end
+            end
 
             ST_EXEC_TILE: begin
                 // MS2.0 ASYNC MODEL: Trigger MATMUL and return immediately (no blocking!)
@@ -257,19 +269,6 @@ import gemm_pkg::*;
                 if (ce_tile_params_set) begin
                     state_next = ST_CMD_COMPLETE;  // Return immediately after trigger (async)
                     $display("[MC] @%0t EXEC_TILE: Triggered MATMUL, returning immediately (async)", $time);
-                end
-            end
-
-            ST_WAIT_DISP: begin
-                // WAIT_DISPATCH barrier: Block until dispatcher returns to IDLE
-                // MS2.0 ASYNC MODEL: Check state machine directly (not ID comparison)
-                if (i_dc_state == 4'd0) begin  // Check: i_dc_state == IDLE
-                    state_next = ST_CMD_COMPLETE;
-                    $display("[MC] @%0t WAIT_DISP: Dispatcher IDLE, barrier released", $time);
-                end else begin
-                    state_next = ST_WAIT_DISP; // Keep blocking
-                    $display("[MC] @%0t WAIT_DISP blocking: i_dc_state=%0d (waiting for IDLE)",
-                             $time, i_dc_state);
                 end
             end
 
@@ -595,6 +594,7 @@ import gemm_pkg::*;
                 ST_READ_PAYLOAD3: begin
                     // All 4 words read, no more FIFO reads until next command
                     cmd_fifo_ren_reg <= 1'b0;
+                    $display("[MC_RDEN] @%0t ST_READ_PAYLOAD3: setting rd_en=0", $time);
                 end
             endcase
         end

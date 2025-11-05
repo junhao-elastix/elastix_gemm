@@ -136,6 +136,7 @@ file delete -force ./ace/$implName
 create_project $projectPath -impl $implName
 set_impl_option -project $projectName -impl $implName  "partname"  $device
 set_impl_option -project $projectName -impl $implName  "speed_grade"  $speedGrade
+report_impl_options -project $projectName -impl $implName -outputfile "impl_options.txt" -text -show_standard -diff_options
 
 # Constraint files do not have variables, so no need for subst
 if { [info exists ace_constraints_files] } {

@@ -141,9 +141,9 @@ module gfp8_nv_dot_ultra_opt (
                 );
             end
 
-            // Group accumulator: sum 4 MLP partial results
-            assign group_accumulator[g] = mlp_result[g][0] + mlp_result[g][1] +
-                                         mlp_result[g][2] + mlp_result[g][3];
+            // // Group accumulator: sum 4 MLP partial results
+            // assign group_accumulator[g] = mlp_result[g][0] + mlp_result[g][1] +
+            //                              mlp_result[g][2] + mlp_result[g][3];
         end
     endgenerate
 
@@ -168,7 +168,8 @@ module gfp8_nv_dot_ultra_opt (
             
             // Register MLP results after they're computed
             for (int i = 0; i < 4; i++) begin
-                group_mantissa_reg[i] <= group_accumulator[i];
+                // group_mantissa_reg[i] <= group_accumulator[i];
+                group_mantissa_reg[i] <= mlp_result[i][0] + mlp_result[i][1] + mlp_result[i][2] + mlp_result[i][3];
                 group_exponent_reg[i] <= group_exp_sum[i];
             end
         end

@@ -563,6 +563,7 @@ module elastix_gemm_top
                     // Control Register bit 1: Engine soft reset (active high)
                     // Clears all FSM states (MC, DC, CE) and command FIFOs
                     // ✅ engine_rstn combines reg_rstn and soft reset from control register
+                    // engine_rstn is LOW when reg_rstn is LOW OR engine_soft_reset is HIGH
                     logic engine_soft_reset;
                     logic engine_rstn;
                     assign engine_soft_reset = user_regs_write[CONTROL_REG][1];

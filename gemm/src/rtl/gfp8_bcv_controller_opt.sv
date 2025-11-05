@@ -110,7 +110,7 @@ module gfp8_bcv_controller_opt (
 
     // Enable signal: pulse high on first cycle IN ST_COMPUTE_NV
     logic nv_dot_input_valid;
-    assign nv_dot_input_valid = (state_reg == ST_COMPUTE_NV) && (compute_wait == 2'd0);
+    assign nv_dot_input_valid = (state_reg == ST_COMPUTE_NV) && (compute_wait == 3'd0);
 
     // DIRECT PATH: tile_bram outputs → Ultra-optimized NV dot product (no capture!)
     gfp8_nv_dot_ultra_opt u_nv_dot (
@@ -152,7 +152,7 @@ module gfp8_bcv_controller_opt (
             ST_COMPUTE_NV: begin
                 // Wait for 4-cycle gfp8_nv_dot pipeline (timing-fixed version)
                 // Cycle 0: input capture, Cycle 1: MLP, Cycle 2: align, Cycle 3: output
-                if (compute_wait == 3'd3) begin  // Wait 4 cycles total (0→1→2→3)
+                if (compute_wait == 3'd2) begin  // Wait 4 cycles total (0→1→2→3)
                     state_next = ST_ACCUM;
                 end
             end
@@ -201,7 +201,7 @@ module gfp8_bcv_controller_opt (
         end else begin
             case (state_reg)
                 ST_COMPUTE_NV: begin
-                    if (compute_wait < 3'd3) begin
+                    if (compute_wait < 3'd2) begin
                         compute_wait <= compute_wait + 1;  // Count: 0→1→2→3 (4 cycles total)
                     end
                 end

@@ -47,6 +47,8 @@ public:
     void soft_reset() {
         mmio_write32(0, 0x0, 0x2);  // Assert reset
         mmio_write32(0, 0x0, 0x0);  // Deassert
+        
+        mmio_write32(0, 0x230, 0x0);  // rd_ptr = 0
     }
 
     // ---------------------- Wait for Engine Idle ----------------------------

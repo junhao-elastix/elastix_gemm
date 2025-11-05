@@ -8,7 +8,7 @@ set_project_option flow_mode normal
 set_project_option hdl_defines ACX_USE_SNAPSHOT=1
 set_impl_option pnr_optimize_corners 1
 set_impl_option report_unconstrained_timing_paths 1
-set_impl_option syn_default_frequency 500
+# set_impl_option syn_default_frequency 500
 set_project_option top_module elastix_gemm_top
 
 # # -------------------------------------------------------------------------
@@ -16,7 +16,7 @@ set_project_option top_module elastix_gemm_top
 # # -------------------------------------------------------------------------
 
 # # Reduce P&R effort for faster builds (compromise: speed vs. optimal results) 
-# set_impl_option pnr_effort_level medium
+# set_impl_option pnr_effort_level high
 
 # # Enable aggressive placement strategy for faster convergence
 # set_impl_option pnr_placement_effort medium

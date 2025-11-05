@@ -1,0 +1,70 @@
+# KERNEL: [BRAM_WR] @685 LEFT exp_packed[0] <= 0x0101010101010101000001010101010101010101010100010101010101010100 (first 8 bytes: 00 01 01 01 01 01 01 01)
+# KERNEL: [BRAM_WR] @855 LEFT man[0] <- 0x50d52ea9100ea0f5d1e7201397d2fa34bd15a4eae8ce3af2e1fc2c04c60bdff9 (hex line 16, first 4 bytes: 0xf9df0bc6)
+# KERNEL: [BRAM_RD_MAN_LEFT] @6415 Requesting addr=0, data will be valid next cycle: 0x50d52ea9100ea0f5d1e7201397d2fa34bd15a4eae8ce3af2e1fc2c04c60bdff9
+# KERNEL: [BRAM_RD_EXP_LEFT] @6415 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @6425 Requesting addr=0, data will be valid next cycle: 0x50d52ea9100ea0f5d1e7201397d2fa34bd15a4eae8ce3af2e1fc2c04c60bdff9
+# KERNEL: [BRAM_RD_EXP_LEFT] @6425 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B1_C1_V1 (B=1, C=1, V=1)
+# KERNEL: [BRAM_WR] @14045 LEFT exp_packed[0] <= 0x23f32813feed15b3e7cefaee07fec809022743eb040ad2d907fedde7f5422939 (first 8 bytes: 39 29 42 f5 e7 dd fe 07)
+# KERNEL: [BRAM_WR] @14205 LEFT man[0] <- 0xe5febdf7e204eefbdff2e4defef448f40c04f8fa1f08b82bef3efc29241833cc (hex line 16, first 4 bytes: 0xcc331824)
+# KERNEL: [BRAM_RD_MAN_LEFT] @19775 Requesting addr=0, data will be valid next cycle: 0xe5febdf7e204eefbdff2e4defef448f40c04f8fa1f08b82bef3efc29241833cc
+# KERNEL: [BRAM_RD_EXP_LEFT] @19775 Requesting addr=0, exp=0x39 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @19785 Requesting addr=0, data will be valid next cycle: 0xe5febdf7e204eefbdff2e4defef448f40c04f8fa1f08b82bef3efc29241833cc
+# KERNEL: [BRAM_RD_EXP_LEFT] @19785 Requesting addr=0, exp=0x39 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B2_C2_V2 (B=2, C=2, V=2)
+# KERNEL: [BRAM_WR] @27715 LEFT exp_packed[0] <= 0x0007f70a26e02120c42311defdc8de1201ce381dfa3532dce51b1ec92608bcd2 (first 8 bytes: d2 bc 08 26 c9 1e 1b e5)
+# KERNEL: [BRAM_WR] @27875 LEFT man[0] <- 0x3412dc2d0c23fb100cc9181cd9ac21d832f4f20a01e0ba2848e60ef210172ef7 (hex line 16, first 4 bytes: 0xf72e1710)
+# KERNEL: [BRAM_RD_MAN_LEFT] @33445 Requesting addr=0, data will be valid next cycle: 0x3412dc2d0c23fb100cc9181cd9ac21d832f4f20a01e0ba2848e60ef210172ef7
+# KERNEL: [BRAM_RD_EXP_LEFT] @33445 Requesting addr=0, exp=0xd2 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @33455 Requesting addr=0, data will be valid next cycle: 0x3412dc2d0c23fb100cc9181cd9ac21d832f4f20a01e0ba2848e60ef210172ef7
+# KERNEL: [BRAM_RD_EXP_LEFT] @33455 Requesting addr=0, exp=0xd2 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B4_C4_V4 (B=4, C=4, V=4)
+# KERNEL: [BRAM_WR] @43745 LEFT exp_packed[0] <= 0x01c5ef14ea1904141dd302f20b0dd0f0b4e8faf3cff1203b3bfad2caf4f7302b (first 8 bytes: 2b 30 f7 f4 ca d2 fa 3b)
+# KERNEL: [BRAM_WR] @43905 LEFT man[0] <- 0xf4dfca56f8e83100e541d6ff1a25fce9f3df0403eedbf839fadf13183b0914f1 (hex line 16, first 4 bytes: 0xf114093b)
+# KERNEL: [BRAM_RD_MAN_LEFT] @49475 Requesting addr=0, data will be valid next cycle: 0xf4dfca56f8e83100e541d6ff1a25fce9f3df0403eedbf839fadf13183b0914f1
+# KERNEL: [BRAM_RD_EXP_LEFT] @49475 Requesting addr=0, exp=0x2b (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @49485 Requesting addr=0, data will be valid next cycle: 0xf4dfca56f8e83100e541d6ff1a25fce9f3df0403eedbf839fadf13183b0914f1
+# KERNEL: [BRAM_RD_EXP_LEFT] @49485 Requesting addr=0, exp=0x2b (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B2_C2_V64 (B=2, C=2, V=64)
+# KERNEL: [BRAM_WR] @67335 LEFT exp_packed[0] <= 0x2c0b38e9eee3f819dc131d07092811bc09d8d0332bc411efe929defaffd6dd04 (first 8 bytes: 04 dd d6 ff fa de 29 e9)
+# KERNEL: [BRAM_WR] @67495 LEFT man[0] <- 0x02f1dfd7f1fb023717f4efe2adcafee205fb1000fc16fa06fff90816fa0bf634 (hex line 16, first 4 bytes: 0x34f60bfa)
+# KERNEL: [BRAM_RD_MAN_LEFT] @73065 Requesting addr=0, data will be valid next cycle: 0x02f1dfd7f1fb023717f4efe2adcafee205fb1000fc16fa06fff90816fa0bf634
+# KERNEL: [BRAM_RD_EXP_LEFT] @73065 Requesting addr=0, exp=0x04 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @73075 Requesting addr=0, data will be valid next cycle: 0x02f1dfd7f1fb023717f4efe2adcafee205fb1000fc16fa06fff90816fa0bf634
+# KERNEL: [BRAM_RD_EXP_LEFT] @73075 Requesting addr=0, exp=0x04 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B4_C4_V32 (B=4, C=4, V=32)
+# KERNEL: [BRAM_WR] @101285 LEFT exp_packed[0] <= 0x0000000000000000000000000000000000000000000000000000000000000000 (first 8 bytes: 00 00 00 00 00 00 00 00)
+# KERNEL: [BRAM_WR] @101445 LEFT man[0] <- 0x0000000000000000000000000000000000000000000000000000000000000000 (hex line 16, first 4 bytes: 0x00000000)
+# KERNEL: [BRAM_RD_MAN_LEFT] @107015 Requesting addr=0, data will be valid next cycle: 0x0000000000000000000000000000000000000000000000000000000000000000
+# KERNEL: [BRAM_RD_EXP_LEFT] @107015 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @107025 Requesting addr=0, data will be valid next cycle: 0x0000000000000000000000000000000000000000000000000000000000000000
+# KERNEL: [BRAM_RD_EXP_LEFT] @107025 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B8_C8_V16 (B=8, C=8, V=16)
+# KERNEL: [BRAM_WR] @156195 LEFT exp_packed[0] <= 0xdce816dd07eddd00d813edd4f5e54732f74e050f145e2020fef10cf1e815f6da (first 8 bytes: da f6 15 e8 f1 0c f1 fe)
+# KERNEL: [BRAM_WR] @156355 LEFT man[0] <- 0xe8d0defbc7dcfb1bc82ee0ed18bf28200ce42efc0310bfdf3aeacd2121e7f7f2 (hex line 16, first 4 bytes: 0xf2f7e721)
+# KERNEL: [BRAM_RD_MAN_LEFT] @161925 Requesting addr=0, data will be valid next cycle: 0xe8d0defbc7dcfb1bc82ee0ed18bf28200ce42efc0310bfdf3aeacd2121e7f7f2
+# KERNEL: [BRAM_RD_EXP_LEFT] @161925 Requesting addr=0, exp=0xda (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @161935 Requesting addr=0, data will be valid next cycle: 0xe8d0defbc7dcfb1bc82ee0ed18bf28200ce42efc0310bfdf3aeacd2121e7f7f2
+# KERNEL: [BRAM_RD_EXP_LEFT] @161935 Requesting addr=0, exp=0xda (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B16_C16_V8 (B=16, C=16, V=8)
+# KERNEL: [BRAM_WR] @253985 LEFT exp_packed[0] <= 0x470cfa180529ee33e6c30511e2e8baf901ea293015dfc0efe83808e12105f012 (first 8 bytes: 12 f0 05 21 e1 08 38 e8)
+# KERNEL: [BRAM_WR] @254145 LEFT man[0] <- 0xf1198f161818f36dc23bd51cc48c0bf6170cf6da55c7dee2ef3a028ef22508d8 (hex line 16, first 4 bytes: 0xd80825f2)
+# KERNEL: [BRAM_RD_MAN_LEFT] @259715 Requesting addr=0, data will be valid next cycle: 0xf1198f161818f36dc23bd51cc48c0bf6170cf6da55c7dee2ef3a028ef22508d8
+# KERNEL: [BRAM_RD_EXP_LEFT] @259715 Requesting addr=0, exp=0x12 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @259725 Requesting addr=0, data will be valid next cycle: 0xf1198f161818f36dc23bd51cc48c0bf6170cf6da55c7dee2ef3a028ef22508d8
+# KERNEL: [BRAM_RD_EXP_LEFT] @259725 Requesting addr=0, exp=0x12 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B1_C128_V1 (B=1, C=128, V=1)
+# KERNEL: [BRAM_WR] @273695 LEFT exp_packed[0] <= 0x0000000000000000000000000000000000000000000000000000000000000000 (first 8 bytes: 00 00 00 00 00 00 00 00)
+# KERNEL: [BRAM_WR] @273855 LEFT man[0] <- 0x0000000000000000000000000000000000000000000000000000000000000000 (hex line 16, first 4 bytes: 0x00000000)
+# KERNEL: [BRAM_RD_MAN_LEFT] @279425 Requesting addr=0, data will be valid next cycle: 0x0000000000000000000000000000000000000000000000000000000000000000
+# KERNEL: [BRAM_RD_EXP_LEFT] @279425 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @279435 Requesting addr=0, data will be valid next cycle: 0x0000000000000000000000000000000000000000000000000000000000000000
+# KERNEL: [BRAM_RD_EXP_LEFT] @279435 Requesting addr=0, exp=0x00 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B128_C1_V1 (B=128, C=1, V=1)
+# KERNEL: [BRAM_WR] @293405 LEFT exp_packed[0] <= 0x34543220a46b82cd0821a6da4bedd873ef3223d2d10eda45a51532bade9f3613 (first 8 bytes: 13 36 9f de ba 32 15 a5)
+# KERNEL: [BRAM_WR] @293565 LEFT man[0] <- 0xb5b7350d25081d0cdaef0524d4da40ee2854ff1a0a2c26240d12390e0d0b0102 (hex line 16, first 4 bytes: 0x02010b0d)
+# KERNEL: [BRAM_RD_MAN_LEFT] @299135 Requesting addr=0, data will be valid next cycle: 0xb5b7350d25081d0cdaef0524d4da40ee2854ff1a0a2c26240d12390e0d0b0102
+# KERNEL: [BRAM_RD_EXP_LEFT] @299135 Requesting addr=0, exp=0x13 (will be valid next cycle)
+# KERNEL: [BRAM_RD_MAN_LEFT] @299145 Requesting addr=0, data will be valid next cycle: 0xb5b7350d25081d0cdaef0524d4da40ee2854ff1a0a2c26240d12390e0d0b0102
+# KERNEL: [BRAM_RD_EXP_LEFT] @299145 Requesting addr=0, exp=0x13 (will be valid next cycle)
+# KERNEL: [TB] TIMING BREAKDOWN FOR B1_C1_V128 (B=1, C=1, V=128)

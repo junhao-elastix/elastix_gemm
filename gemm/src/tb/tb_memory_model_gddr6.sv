@@ -23,7 +23,7 @@
 
 `include "nap_interfaces.svh"
 
-module tb_memory_model_gddr6
+module tb_memory_model
 #(
     parameter DATA_WIDTH = 256,        // 256-bit AXI data width
     parameter ADDR_WIDTH = 42,         // AXI address width
@@ -127,41 +127,85 @@ module tb_memory_model_gddr6
 
         // Load Block 0: Left matrix from hex file
         fd_left = $fopen("/home/workstation/elastix_gemm/hex/left.hex", "r");
-        if (fd_left) begin
+        if (fd_left == 0) begin
+            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/workstation/elastix_gemm/hex/left.hex");
+            $display("[TB_GDDR6_MODEL] Using zero-initialized memory for left matrix");
+        end else begin
             line_idx = 0;
             while (!$feof(fd_left) && line_idx < LINES_PER_BLOCK) begin
                 if ($fgets(line_str, fd_left)) begin
-                    for (byte_idx = 0; byte_idx < 32 && byte_idx*2 < line_str.len(); byte_idx = byte_idx + 1) begin
-                        scan_result = $sscanf(line_str.substr(byte_idx*2, byte_idx*2+1), "%h", byte_val);
-                        if (scan_result == 1) begin
-                            mem_array[line_idx][byte_idx*8 +: 8] = byte_val;
+                    // Parse hex line: expects 32 hex bytes separated by spaces
+                    automatic logic [7:0] hex_bytes[0:31];
+                    scan_result = $sscanf(line_str,
+                        "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+                        hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
+                        hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
+                        hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
+                        hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
+                        hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
+                        hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
+                        hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
+                        hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
+
+                    if (scan_result == 32) begin
+                        for (byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
+                            mem_array[line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
                         end
                     end
                     line_idx = line_idx + 1;
                 end
             end
             $fclose(fd_left);
-            $display("[TB_GDDR6_MODEL] Loaded %0d lines into Block 0 (left) from hex file", line_idx);
+            $display("[TB_GDDR6_MODEL] Loaded %0d lines from left.hex (Block 0)", line_idx);
         end
 
         // Load Block 1: Right matrix from hex file
+        // Right matrix starts at line offset 528 (LINES_PER_BLOCK)
         fd_right = $fopen("/home/workstation/elastix_gemm/hex/right.hex", "r");
-        if (fd_right) begin
+        if (fd_right == 0) begin
+            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/workstation/elastix_gemm/hex/right.hex");
+            $display("[TB_GDDR6_MODEL] Using zero-initialized memory for right matrix");
+        end else begin
             line_idx = 0;
             while (!$feof(fd_right) && line_idx < LINES_PER_BLOCK) begin
                 if ($fgets(line_str, fd_right)) begin
-                    for (byte_idx = 0; byte_idx < 32 && byte_idx*2 < line_str.len(); byte_idx = byte_idx + 1) begin
-                        scan_result = $sscanf(line_str.substr(byte_idx*2, byte_idx*2+1), "%h", byte_val);
-                        if (scan_result == 1) begin
-                            mem_array[LINES_PER_BLOCK + line_idx][byte_idx*8 +: 8] = byte_val;
+                    // Parse hex line: expects 32 hex bytes separated by spaces
+                    automatic logic [7:0] hex_bytes[0:31];
+                    scan_result = $sscanf(line_str,
+                        "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+                        hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
+                        hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
+                        hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
+                        hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
+                        hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
+                        hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
+                        hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
+                        hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
+
+                    if (scan_result == 32) begin
+                        for (byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
+                            // Write to Block 1 starting at line 528
+                            mem_array[LINES_PER_BLOCK + line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
                         end
                     end
                     line_idx = line_idx + 1;
                 end
             end
             $fclose(fd_right);
-            $display("[TB_GDDR6_MODEL] Loaded %0d lines into Block 1 (right) from hex file", line_idx);
+            $display("[TB_GDDR6_MODEL] Loaded %0d lines from right.hex (Block 1)", line_idx);
         end
+
+        $display("[TB_GDDR6_MODEL] Memory initialization complete");
+        $display("[TB_GDDR6_MODEL]   Total: %0d blocks x %0d lines = %0d lines",
+                 NUM_BLOCKS, LINES_PER_BLOCK, NUM_BLOCKS*LINES_PER_BLOCK);
+        $display("[TB_GDDR6_MODEL]   Block 0 (Left matrix):  Lines 0-%0d", LINES_PER_BLOCK-1);
+        $display("[TB_GDDR6_MODEL]   Block 1 (Right matrix): Lines %0d-%0d", LINES_PER_BLOCK, 2*LINES_PER_BLOCK-1);
+
+        // Display first few bytes for verification
+        $display("[TB_GDDR6_MODEL] Left matrix first line[7:0]: 0x%02h %02h %02h %02h",
+                 mem_array[0][7:0], mem_array[0][15:8], mem_array[0][23:16], mem_array[0][31:24]);
+        $display("[TB_GDDR6_MODEL] Right matrix first line[7:0]: 0x%02h %02h %02h %02h",
+                 mem_array[528][7:0], mem_array[528][15:8], mem_array[528][23:16], mem_array[528][31:24]);
     end
 
     // ===================================================================
@@ -214,14 +258,8 @@ module tb_memory_model_gddr6
 
         case (axi_state_reg)
             AXI_IDLE: begin
-                if (axi_mem_if.arvalid) begin
-                    axi_state_next = AXI_ARREADY_DELAY;
-                end
-            end
-
-            AXI_ARREADY_DELAY: begin
-                // Small delay for NoC arbitration
-                if (latency_counter_reg >= 2) begin
+                if (axi_mem_if.arvalid && axi_mem_if.arready) begin
+                    // Transition directly to ROW_ACTIVATE after accepting AR
                     axi_state_next = AXI_ROW_ACTIVATE;
                 end
             end
@@ -276,7 +314,7 @@ module tb_memory_model_gddr6
             ar_size_reg <= '0;
             ar_burst_reg <= '0;
         end else begin
-            if (axi_state_reg == AXI_IDLE && axi_mem_if.arvalid) begin
+            if (axi_mem_if.arvalid && axi_mem_if.arready) begin
                 ar_addr_reg <= axi_mem_if.araddr[ADDR_WIDTH-1:0];
                 ar_id_reg <= axi_mem_if.arid;
                 ar_len_reg <= axi_mem_if.arlen;
@@ -286,8 +324,8 @@ module tb_memory_model_gddr6
         end
     end
 
-    // ARREADY after initial delay
-    assign axi_mem_if.arready = (axi_state_reg == AXI_ARREADY_DELAY) && (latency_counter_reg >= 2);
+    // ARREADY: Accept immediately when in IDLE (no initial delay needed for memory model)
+    assign axi_mem_if.arready = (axi_state_reg == AXI_IDLE);
 
     // ===================================================================
     // AXI Read Data Channel
@@ -308,9 +346,14 @@ module tb_memory_model_gddr6
 
             case (axi_state_reg)
                 AXI_IDLE: begin
+                    // Reset beat counter when AR handshake completes
                     if (axi_mem_if.arvalid && axi_mem_if.arready) begin
                         beat_count_reg <= '0;
                     end
+                end
+
+                AXI_ROW_ACTIVATE: begin
+                    // No special handling needed - just waiting for latency
                 end
 
                 AXI_CAS_LATENCY: begin
@@ -392,4 +435,4 @@ module tb_memory_model_gddr6
         end
     end
 
-endmodule : tb_memory_model_gddr6
+endmodule : tb_memory_model

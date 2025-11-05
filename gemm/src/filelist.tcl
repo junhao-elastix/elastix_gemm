@@ -18,6 +18,7 @@ compute_engine_modular_opt.sv
 csr_to_fifo_bridge.sv
 dispatcher_bram.sv
 fetcher.sv
+fetcher_opt.sv
 dispatcher.sv
 dispatcher_control.sv
 dma_bram_bridge.sv

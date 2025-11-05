@@ -203,6 +203,12 @@ module dispatcher_bram #(
     always_ff @(posedge i_clk) begin
         if (i_man_left_rd_en) begin
             man_left_rd_data_reg <= man_left[i_man_left_rd_addr];
+            `ifdef SIMULATION
+            if (i_man_left_rd_addr == 0) begin
+                $display("[BRAM_RD_MAN_LEFT] @%0t Requesting addr=0, data will be valid next cycle: 0x%064x",
+                         $time, man_left[0]);
+            end
+            `endif
         end
     end
     assign o_man_left_rd_data = man_left_rd_data_reg;
@@ -225,6 +231,12 @@ module dispatcher_bram #(
     always_ff @(posedge i_clk) begin
         if (i_exp_left_rd_en) begin
             exp_left_rd_data_reg <= exp_left_aligned[i_exp_left_rd_addr];
+            `ifdef SIMULATION
+            if (i_exp_left_rd_addr == 0) begin
+                $display("[BRAM_RD_EXP_LEFT] @%0t Requesting addr=0, exp=0x%02x (will be valid next cycle)",
+                         $time, exp_left_aligned[0]);
+            end
+            `endif
         end
     end
     assign o_exp_left_rd_data = exp_left_rd_data_reg;
