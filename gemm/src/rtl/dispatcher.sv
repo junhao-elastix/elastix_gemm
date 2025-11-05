@@ -274,8 +274,9 @@ import gemm_pkg::*;
             first_write_detected <= 1'b0;
             */
         end else begin
-            disp_done_reg <= 1'b0;  // Default
-            
+            // disp_done_reg <= 1'b0;  // REMOVED: Was clearing done signal every cycle, causing race condition
+            // FIX: Keep disp_done_reg sticky until next DISPATCH starts (cleared at line 316)
+
             // Performance: Track first read and first write (COMMENTED OUT)
             /*
             // Detect first read

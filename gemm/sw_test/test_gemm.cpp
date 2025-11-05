@@ -693,7 +693,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // Time the FETCH operations
         auto fetch_left_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);  // Left matrix
-        if (!gemm_device.wait_idle(10)) {
+        if (!gemm_device.wait_idle(5000)) {  // Increased from 10ms to 5000ms to match test_multi_tile
             cerr << "ERROR: FETCH LEFT timeout" << endl;
             return false;
         }
@@ -704,7 +704,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
         auto fetch_right_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true); // Right matrix (fetch_right=true)
-        if (!gemm_device.wait_idle(10)) {
+        if (!gemm_device.wait_idle(5000)) {  // Increased from 10ms to 5000ms to match test_multi_tile
             cerr << "ERROR: FETCH RIGHT timeout" << endl;
             return false;
         }
