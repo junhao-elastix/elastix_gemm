@@ -1,15 +1,17 @@
 gemm/build/results/
 gemm_simple/build/results/
-**/*.flash
-**/*.hex
+# **/*.flash
+# **/*.hex
+**/ioring/**
 **/*.tmp
 **/*.log
 **/*.o
 **/*.mgf
 **/*.asdb
 **/work/**
+**/*.asdbw
 dma_ddr_ref
-gddr_ref_design
+# gddr_ref_design
 llm_vp_demo_pcie_orig
 shell_demo
 **/__pycache__/**

@@ -17,6 +17,8 @@ The following rules are critical to development and needs to be **STRICTLY FOLLO
 <!-- ### **Always invoke agents (MANDATORY)** 
 You always want to invoke agents when dealing with specific tasks. You need to invoke **fpga-architect** when working with FPGA hardware designs. You need to invoke **hardware-ml-software-engineer** when working with software system and hardware tests in the host. -->
 
+- **Git Commands (MANDATORY):** You are absolute NOT allowed to do any git commands without my explicit permission. It can cause catastrophic consequences. Everything related to Git is FORBIDDEN.
+
 - **Rigorous Thinking (MANDATORY):** You need to think step-by-step as a scientist and a engineer carefully and rigorously. Often ask yourself, what if we do this? Then, you need to acticipate the outcomes and analyze. You may also want to think about edge cases or multiple test cases when appropriate. 
 
 - **Find references (CRITICAL):** Always read the reference manuals in the projects. It will be named with "REFERENCE". For example, [SINGLE_ROW_REFERENCE](/home/dev/Dev/elastix_gemm/gemm/SINGLE_ROW_REFERENCE.md) and [STATE_TRANSITION_REFERENCE](/home/dev/Dev/elastix_gemm/gemm/STATE_TRANSITIONS_REFERENCE.md). You should read it everytime when you attempt to debug. If you think the reference needs adjustments, you need to check with the user first. Challenge yourself to see if you understand everything. Ask yourself: Is this fix compliant to the reference manual? Should I ask the user to clarify?
@@ -53,6 +55,8 @@ pip install <package>        # Use pip if conda fails
     - **Changelog Maintenance**: After EVERY successful compilation, update CHANGELOG.md with timestamp from `date` command
     - **Timestamp Requirements**: ALWAYS use `date` command for accurate timestamps in documentation
     - **Documentation Verification**: Read existing README.md, CLAUDE.md, and CHANGELOG.md before making changes
+    - **Results and Numbers (CRITICAL)**: Do not make up results and numbers. Unless required by the user, do not mention the results and numbers in the documentation, as they can go stale and inaccurate very quickly.
+    - **Accurate and Concise (CRITICAL)**: Always be accurate and concise in your documentation. Do not over-explain. You can say "refer to the code" or "refer to the reference". Do not say "this is how things should work" and then put some expected numbers to show the results are matching the reference, but these numbers are not produced by the actual dut. **It is better to not mention the information than to mention the information that is not accurate.**
 
 - **SystemVerilog Conventions:**
     - **Use `logic`** instead of `wire` or `reg` (modern SystemVerilog), `always_comb` and `always_ff` for combinational (non-blocking) and registered (blocking) logics.

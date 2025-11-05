@@ -11,7 +11,11 @@
       "Bash(sudo:*)",
       "Bash(sed:*)",
       "Bash(cp:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(make clean:*)",
+      "Bash(make run:*)",
+      "Bash(./test_registers)",
+      "Bash(tee:*)"
     ]
   },
   "outputStyle": "concise-technical"
