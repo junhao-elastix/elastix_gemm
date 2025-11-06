@@ -1,0 +1,23 @@
+Archive: Fetcher Test Documentation
+Date: Thu Nov 6 2025
+Reason: Cleanup - Archive historical documentation, keep only essential files
+
+Files Archived:
+- BASELINE_SUMMARY.md - Baseline performance characterization
+- COMPILATION_NOTES.md - Compilation setup notes
+- CYCLE_MEASUREMENT_ANALYSIS.md - Cycle-by-cycle analysis
+- FETCHER_OPT_RESULTS.md - Optimization results documentation
+- FETCHER_OPT_V2_ANALYSIS.md - Failed optimization attempt analysis
+- FINAL_STATUS.md - Final status documentation
+- INTEGRATION_NOTES.md - Integration notes
+- INTERFACE_MISMATCHES.md - Interface debugging notes
+- REALISTIC_BASELINE.md - Realistic memory model baseline
+- VERIFICATION_FIX.md - Verification fixes documentation
+
+Active Files Retained:
+- README.md - Updated concise documentation
+- Makefile - Build system
+- tb_fetcher.sv - Testbench source
+- library.cfg - Riviera-PRO library config
+
+Status: Testbench functional and validated (all tests passing)

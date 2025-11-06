@@ -427,7 +427,7 @@ module tb_engine_gddr6;
         $display("[TB]   right.hex -> Block 1 (lines 528-1055)");
         $display("[TB] Memory preload complete\n");
         // Memory model loads data in its initial block
-        // Note: The tb_memory_model automatically loads from /home/workstation/elastix_gemm/hex/left.hex and right.hex
+        // Note: The tb_memory_model automatically loads from /home/dev/Dev/elastix_gemm/hex/left.hex and right.hex
         // This provides consistent test data for all configurations
     endtask
 
@@ -660,7 +660,7 @@ module tb_engine_gddr6;
         integer scan_result;
         integer idx;
         
-        golden_filename = $sformatf("/home/workstation/elastix_gemm/hex/golden_%s.hex", test_name);
+        golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
         golden_file = $fopen(golden_filename, "r");
         if (golden_file == 0) begin
             $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);

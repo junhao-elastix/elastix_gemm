@@ -14,9 +14,9 @@ VLIB = vlib
 VLOG = vlog
 VSIM = vsim
 
-# Memory model: Realistic GDDR6 (40-cycle latency, 32 outstanding ARs)
-# Required for fetcher_opt validation (pipelined AR issuing)
-LATENCY ?= 40                   # Realistic GDDR6 latency (100ns @ 400MHz) for fetcher_opt
+# Memory model: GDDR6 Realistic (40-cycle latency, 32 outstanding ARs)
+# Always uses tb_memory_model_realistic.sv for accurate GDDR6 timing
+LATENCY ?= 40                   # Realistic GDDR6 latency (100ns @ 400MHz)
 VLOG_DEFINES = +define+LATENCY_CYCLES=$(LATENCY)
 
 # Achronix environment setup (for ACX primitives)
@@ -28,10 +28,7 @@ DSM_COMPILE_FILE := $(ACX_DEVICE_INSTALL_DIR)/sim/$(BASE_NAME)_dsm_filelist.v
 DEVICE_MODELS := $(ACE_INSTALL_DIR)/libraries/device_models/$(DEVICE)_simmodels.sv
 ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
 
-# Source directories  
-CE_W8A8_TB = /home/workstation/compute_engine_w8a8/src/tb
-CE_W8A8_RTL = /home/workstation/compute_engine_w8a8/src/rtl
-CE_W8A8_INC = /home/workstation/compute_engine_w8a8/src/include
+# Source directories 
 GEMM_RTL = ../../src/rtl
 GEMM_INC = ../../src/include
 GEMM_TB = ../../src/tb  # Local testbench directory
@@ -39,7 +36,7 @@ GEMM_TB = ../../src/tb  # Local testbench directory
 # Include paths (added ACX paths for primitives)
 INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)/libraries/ +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim +incdir+$(ACX_LIB_S7T)/common
 
-# Testbench sources - Using REALISTIC GDDR6 model for fetcher_opt support
+# Testbench sources - Always uses GDDR6 realistic memory model
 TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv tb_engine_top.sv
 
 # RTL sources (from gemm - MS2.0 FIFO architecture!)
@@ -66,10 +63,7 @@ RTL_SOURCES = \
 # NAP wrapper (contains t_AXI4 interface)
 NAP_WRAPPER = $(GEMM_RTL)/nap_responder_wrapper.sv
 
-# Include GDDR6-specific Makefile rules
-include Makefile.gddr6
-
-.PHONY: all clean run run_behav run_realistic compile debug view-log summary help
+.PHONY: all clean run run_realistic compile debug view-log summary help
 
 all: run
 
@@ -127,21 +121,11 @@ run: compile
 	@echo ""
 	@echo "Full log available in: $(LOG_FILE)"
 
-# Run with legacy behavioral memory model (manual: restore tb_memory_model_legacy.sv first)
-run_behav:
-	@echo "======================================================================"
-	@echo "  LEGACY BEHAVIORAL MEMORY MODEL (Single Outstanding AR)"
-	@echo "======================================================================"
-	@echo "NOTE: To use legacy model, first run:"
-	@echo "  cp ../../src/tb/tb_memory_model_legacy.sv ../../src/tb/tb_memory_model.sv"
-	@echo "  make clean && make run"
-	@echo "Then restore: cp ../../src/tb/tb_memory_model_realistic.sv ../../src/tb/tb_memory_model.sv"
-	@echo ""
-
-# Run with realistic GDDR6 timing (40-cycle latency)
+# Run with explicit GDDR6 realistic timing (40-cycle latency)
+# Note: Default 'run' target already uses GDDR6 realistic model
 run_realistic: clean
 	@echo "======================================================================" | tee $(LOG_FILE)
-	@echo "  REALISTIC GDDR6 MEMORY MODEL (40-cycle latency, 32 outstanding ARs)" | tee -a $(LOG_FILE)
+	@echo "  GDDR6 REALISTIC MEMORY MODEL (40-cycle latency, 32 outstanding ARs)" | tee -a $(LOG_FILE)
 	@echo "======================================================================" | tee -a $(LOG_FILE)
 	@$(MAKE) LATENCY=40 run
 
@@ -193,11 +177,10 @@ help:
 	@echo "         MS2.0 architecture with command/result FIFOs"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              - Compile and run with realistic GDDR6 model (LATENCY=0)"
-	@echo "  make run          - Same as make (default: zero-latency, 32 outstanding ARs)"
-	@echo "  make run LATENCY=N - Run with N-cycle memory latency (0=fast, 40=realistic)"
-	@echo "  make run_realistic - Run with realistic GDDR6 timing (LATENCY=40)"
-	@echo "  make run_behav     - Instructions for legacy behavioral model"
+	@echo "  make              - Compile and run with GDDR6 realistic model (default)"
+	@echo "  make run          - Same as make (uses tb_memory_model_realistic.sv)"
+	@echo "  make run LATENCY=N - Run with N-cycle memory latency (default: 40)"
+	@echo "  make run_realistic - Explicitly run with 40-cycle GDDR6 latency"
 	@echo "  make compile      - Compile only (no simulation)"
 	@echo "  make debug        - Run with GUI for debugging"
 	@echo "  make summary      - Show test results summary"
@@ -205,13 +188,15 @@ help:
 	@echo "  make clean        - Remove all generated files"
 	@echo "  make help         - Show this help message"
 	@echo ""
-	@echo "Memory Model Configuration:"
-	@echo "  LATENCY=0  (default) - Zero latency, 32 outstanding ARs (fast sim)"
-	@echo "  LATENCY=40           - 100ns GDDR6 latency, 32 outstanding ARs (realistic)"
+	@echo "Memory Model:"
+	@echo "  Always uses: tb_memory_model_realistic.sv (GDDR6 realistic)"
+	@echo "  - 40-cycle latency (100ns @ 400MHz)"
+	@echo "  - 32 outstanding AR transactions"
+	@echo "  - Realistic GDDR6+NoC timing characteristics"
 	@echo ""
 	@echo "Key Features:"
-	@echo "  - Realistic GDDR6 memory model (32 outstanding AR support)"
-	@echo "  - Configurable latency for fast or realistic simulation"
+	@echo "  - GDDR6 realistic memory model (32 outstanding AR support)"
+	@echo "  - Configurable latency via LATENCY parameter"
 	@echo "  - Direct FIFO interface (no CSR bridge)"
 	@echo "  - Command FIFO: 4096x32-bit"
 	@echo "  - Result FIFO: 16384x16-bit (FP16)"

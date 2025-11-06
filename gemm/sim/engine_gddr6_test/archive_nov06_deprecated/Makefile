@@ -197,7 +197,7 @@ help:
 	@echo ""
 	@echo "Test Configuration:"
 	@echo "  B=2, C=2, V=2"
-	@echo "  Test data: /home/workstation/elastix_gemm/hex/left.hex, right.hex"
+	@echo "  Test data: /home/dev/Dev/elastix_gemm/hex/left.hex, right.hex"
 	@echo "  Golden: golden_B2_C2_V2.hex"
 	@echo ""
 	@echo "Requirements:"

@@ -1,0 +1,20 @@
+DEPRECATION NOTICE: engine_gddr6_test
+Date: Thu Nov 6 2025
+Status: OBSOLETE - Replaced by vector_system_test
+
+Reason for Deprecation:
+- Uses obsolete tb_memory_model.sv (behavioral model)
+- Uses CSR register interface (legacy)
+- Replaced by vector_system_test which:
+  * Uses tb_memory_model_realistic.sv (100% compliant with reference model)
+  * Uses modern FIFO interface
+  * All 10 tests passing
+  * Cleaner, more maintainable architecture
+
+Current Standard:
+- Use: gemm/sim/vector_system_test/
+- Memory Model: gemm/src/tb/tb_memory_model_realistic.sv
+- Testbench: gemm/sim/vector_system_test/tb_engine_top.sv
+
+This directory is preserved for historical reference only.
+Do not use for new development or testing.

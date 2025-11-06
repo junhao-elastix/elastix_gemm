@@ -29,19 +29,19 @@ echo "  [OK] Model directory: $GDDR_MODEL_DIR"
 # Verify test data exists
 echo ""
 echo "Checking test data..."
-if [ -f "/home/workstation/elastix_gemm/hex/left.hex" ]; then
+if [ -f "/home/dev/Dev/elastix_gemm/hex/left.hex" ]; then
     echo "  ✓ left.hex found"
 else
     echo "  ✗ left.hex NOT found"
 fi
 
-if [ -f "/home/workstation/elastix_gemm/hex/right.hex" ]; then
+if [ -f "/home/dev/Dev/elastix_gemm/hex/right.hex" ]; then
     echo "  ✓ right.hex found"
 else
     echo "  ✗ right.hex NOT found"
 fi
 
-if [ -f "/home/workstation/elastix_gemm/hex/golden_B2_C2_V2.hex" ]; then
+if [ -f "/home/dev/Dev/elastix_gemm/hex/golden_B2_C2_V2.hex" ]; then
     echo "  ✓ golden_B2_C2_V2.hex found"
 else
     echo "  ✗ golden_B2_C2_V2.hex NOT found"

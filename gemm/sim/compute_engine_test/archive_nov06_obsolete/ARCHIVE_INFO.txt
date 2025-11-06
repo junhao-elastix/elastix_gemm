@@ -1,0 +1,17 @@
+Archive: Obsolete Compute Engine Test Files
+Date: Thu Nov 6 2025
+Reason: Cleanup - Archive obsolete Makefiles and testbench variants
+
+Files Archived:
+- Makefile.bak - Backup of baseline Makefile (uses compute_engine_modular.sv)
+- Makefile.opt - Duplicate of current Makefile (obsolete)
+- Makefile.pingpong - Ping-pong variant Makefile (obsolete)
+- Makefile.flat - Flat variant Makefile (obsolete)
+- tb_compute_engine_modular.sv - Baseline testbench (replaced by tb_compute_engine_modular_opt.sv)
+
+Active Files Retained:
+- Makefile - Current active Makefile (uses compute_engine_modular_opt.sv)
+- tb_compute_engine_modular_opt.sv - Current testbench (optimized version)
+- library.cfg - Riviera-PRO library config
+
+Status: Current Makefile functional and validated (compiles successfully)

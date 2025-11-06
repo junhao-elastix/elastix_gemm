@@ -52,13 +52,13 @@ else
 fi
 
 # Check hex test files
-if [ -f "/home/workstation/elastix_gemm/hex/left.hex" ]; then
+if [ -f "/home/dev/Dev/elastix_gemm/hex/left.hex" ]; then
     echo "✓ left.hex test data found"
 else
     echo "❌ left.hex test data NOT found"
 fi
 
-if [ -f "/home/workstation/elastix_gemm/hex/right.hex" ]; then
+if [ -f "/home/dev/Dev/elastix_gemm/hex/right.hex" ]; then
     echo "✓ right.hex test data found"
 else
     echo "❌ right.hex test data NOT found"
