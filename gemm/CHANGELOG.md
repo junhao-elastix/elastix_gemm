@@ -1,3 +1,92 @@
+## [2025-11-06] - Simulation Cleanup - Cleaned up fetcher_test and deprecated engine_gddr6_test
+
+**Timestamp**: Thu Nov 6 10:47:14 PST 2025
+**Status**: ✅ **COMPLETED** - Cleaned up fetcher_test, deprecated obsolete engine_gddr6_test
+
+### Summary
+
+Cleaned up `sim/fetcher_test/` by archiving historical documentation while keeping the testbench functional. Also deprecated `sim/engine_gddr6_test/` as obsolete.
+
+### Fetcher Test Cleanup
+
+**Directory**: `gemm/sim/fetcher_test/`
+
+**Action Taken**:
+- Archived 10 documentation files to `archive_nov06_docs/`
+- Updated README.md with concise, current documentation
+- Verified testbench still functional (compiles and runs successfully)
+- Kept only essential files: `Makefile`, `tb_fetcher.sv`, `README.md`, `library.cfg`
+
+**Files Archived** (10 files):
+- `BASELINE_SUMMARY.md`, `COMPILATION_NOTES.md`, `CYCLE_MEASUREMENT_ANALYSIS.md`
+- `FETCHER_OPT_RESULTS.md`, `FETCHER_OPT_V2_ANALYSIS.md`, `FINAL_STATUS.md`
+- `INTEGRATION_NOTES.md`, `INTERFACE_MISMATCHES.md`, `REALISTIC_BASELINE.md`, `VERIFICATION_FIX.md`
+
+**Status**: ✅ Testbench functional - Uses `tb_memory_model_realistic.sv` (100% compliant), all tests passing
+
+### Compute Engine Test Cleanup
+
+**Directory**: `gemm/sim/compute_engine_test/`
+
+**Action Taken**:
+- Fixed Makefile to use only current optimized RTL modules (removed obsolete references)
+- Archived 5 obsolete Makefiles to `archive_nov06_obsolete/`
+- Archived obsolete baseline testbench (`tb_compute_engine_modular.sv`)
+- Archived documentation directory
+- Updated README.md with concise, current documentation
+- Verified testbench functional (compiles and runs successfully, all 10 tests passing)
+
+**Files Archived** (6 files):
+- `Makefile.bak` - Backup baseline Makefile
+- `Makefile.opt` - Duplicate of current Makefile
+- `Makefile.pingpong` - Ping-pong variant (obsolete)
+- `Makefile.flat` - Flat variant (obsolete)
+- `tb_compute_engine_modular.sv` - Baseline testbench (replaced by optimized version)
+- `docs/` - Documentation directory
+
+**Makefile Updates**:
+- Removed obsolete RTL references: `gfp8_nv_dot_merged.sv`, `gfp8_nv_dot_opt.sv`, `compute_engine_modular.sv`, `gfp8_bcv_controller.sv`
+- Uses only current optimized modules: `compute_engine_modular_opt.sv`, `gfp8_bcv_controller_opt.sv`, `gfp8_nv_dot_ultra_opt.sv`
+
+**Status**: ✅ Testbench functional - All 10 tests passing, uses current optimized RTL modules
+
+---
+
+## [2025-11-06] - Simulation Cleanup - Deprecated engine_gddr6_test
+
+**Timestamp**: Thu Nov 6 10:46:05 PST 2025
+**Status**: ✅ **COMPLETED** - Deprecated obsolete simulation directory
+
+### Summary
+
+Deprecated `sim/engine_gddr6_test/` simulation directory as it has been fully replaced by `sim/vector_system_test/` with superior architecture and 100% compliant memory model.
+
+### Deprecation Details
+
+**Obsolete Directory**: `gemm/sim/engine_gddr6_test/`
+
+**Reasons for Deprecation**:
+- Uses obsolete `tb_memory_model.sv` (behavioral model)
+- Uses legacy CSR register interface
+- Replaced by `vector_system_test` which has:
+  * ✅ `tb_memory_model_realistic.sv` (100% compliant with reference model)
+  * ✅ Modern FIFO interface
+  * ✅ All 10 tests passing
+  * ✅ Cleaner, more maintainable architecture
+
+**Replacement**: `gemm/sim/vector_system_test/`
+
+**Action Taken**:
+- Archived all source files to `archive_nov06_deprecated/`
+- Created deprecation notice in archive
+- Updated README.md with deprecation notice
+- Preserved for historical reference only
+
+**Files Archived** (9 files):
+- `Makefile`, `tb_engine_gddr6.sv`, `run_sim`, `run_sim.sh`, `setup.sh`, `test_env.sh`, `wave.do`, `README.md`, `DEPRECATION_NOTICE.txt`
+
+---
+
 ## [2025-11-02] - Production Codebase Hardening - Housekeeping and Archive Consolidation
 
 **Timestamp**: Sun Nov 2 05:32:30 PST 2025

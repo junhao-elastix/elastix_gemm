@@ -1,6 +1,6 @@
 #!/bin/bash
-cd /home/workstation/elastix_gemm/gemm/demo/11030039
-# cd /home/workstation/elastix_gemm/gemm/demo/bitstream/
+cd /home/dev/Dev/elastix_gemm/gemm/demo/11030039
+# cd /home/dev/Dev/elastix_gemm/gemm/demo/bitstream/
 echo "Copying flash.tcl to build directory"
 pwd
 
@@ -9,7 +9,7 @@ if [ ! -f ./elastix_gemm_top.VP815.1.1.hex ]; then
     exit 1
 fi
 
-cp /home/workstation/elastix_gemm/gemm/hex.tcl .
+cp /home/dev/Dev/elastix_gemm/gemm/hex.tcl .
 /opt/achronix/ACE_10_3_1/Achronix-linux/ace -b -lab_mode -script_file hex.tcl
 
 echo "=== Checking PCIe device visibility (MANDATORY safety check) ==="

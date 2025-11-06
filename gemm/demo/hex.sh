@@ -1,7 +1,7 @@
 #!/bin/bash
 bid="bitstream"
 cd ./${bid}
-# cd /home/workstation/elastix_gemm/gemm/demo/bitstream/
+# cd /home/dev/Dev/elastix_gemm/gemm/demo/bitstream/
 echo "Copying hex.tcl to build directory"
 pwd
 
