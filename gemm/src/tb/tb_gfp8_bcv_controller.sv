@@ -180,9 +180,9 @@ module tb_gfp8_bcv_controller;
         logic [7:0]   right_exp_data [0:527];
         
         $display("  Loading BRAM from hex files...");
-        // Note: Using workstation path instead of /home/dev/Dev
-        $readmemh("/home/workstation/elastix_gemm/hex/left.hex", left_man_data);
-        $readmemh("/home/workstation/elastix_gemm/hex/right.hex", right_man_data);
+        // Note: Using dev/Dev path instead of /home/dev/Dev
+        $readmemh("/home/dev/Dev/elastix_gemm/hex/left.hex", left_man_data);
+        $readmemh("/home/dev/Dev/elastix_gemm/hex/right.hex", right_man_data);
         
         // Copy mantissa data to BRAM models (first 512 lines)
         for (int i = 0; i < 512; i++) begin

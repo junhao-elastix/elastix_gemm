@@ -126,9 +126,9 @@ module tb_memory_model
         end
 
         // Load Block 0: Left matrix from hex file
-        fd_left = $fopen("/home/workstation/elastix_gemm/hex/left.hex", "r");
+        fd_left = $fopen("/home/dev/Dev/elastix_gemm/hex/left.hex", "r");
         if (fd_left == 0) begin
-            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/workstation/elastix_gemm/hex/left.hex");
+            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/dev/Dev/elastix_gemm/hex/left.hex");
             $display("[TB_GDDR6_MODEL] Using zero-initialized memory for left matrix");
         end else begin
             line_idx = 0;
@@ -161,9 +161,9 @@ module tb_memory_model
 
         // Load Block 1: Right matrix from hex file
         // Right matrix starts at line offset 528 (LINES_PER_BLOCK)
-        fd_right = $fopen("/home/workstation/elastix_gemm/hex/right.hex", "r");
+        fd_right = $fopen("/home/dev/Dev/elastix_gemm/hex/right.hex", "r");
         if (fd_right == 0) begin
-            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/workstation/elastix_gemm/hex/right.hex");
+            $display("[TB_GDDR6_MODEL] ERROR: Could not open /home/dev/Dev/elastix_gemm/hex/right.hex");
             $display("[TB_GDDR6_MODEL] Using zero-initialized memory for right matrix");
         end else begin
             line_idx = 0;

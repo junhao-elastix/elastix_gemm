@@ -1,0 +1,16 @@
+Archive: Legacy Memory Model Files
+Date: Thu Nov 6 2025
+Reason: Deprecated in favor of tb_memory_model_realistic.sv (GDDR6 realistic model)
+
+Files Archived:
+- tb_memory_model.sv - Zero-latency model (legacy)
+- tb_memory_model_behavioral.sv - Behavioral model (legacy)
+- tb_memory_model_legacy.sv - Legacy model
+- tb_memory_model_test.sv - Test file
+- tb_memory_model_gddr6.sv - Alternative GDDR6 model (module name conflicts with generic)
+
+Current Standard:
+- tb_memory_model_realistic.sv - GDDR6 realistic model (32 outstanding ARs, 40-cycle latency)
+  This is the only memory model used in production simulations.
+
+All simulations now use tb_memory_model_realistic.sv exclusively.
