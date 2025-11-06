@@ -1,17 +1,27 @@
-gemm/build/results/
-gemm_simple/build/results/
+#reference projects
+dma_ddr_ref
+gddr_ref_design
+llm_vp_demo_pcie_orig
+shell_demo
+
+#build results
+**/build/results/**
 # **/*.flash
 # **/*.hex
+**/demo/**/*.hex
 **/ioring/**
+**/work/**
+**/__pycache__/**
+hex/*.hex
+hex/*.txt
+**/sw_test/*
+!**/sw_test/Makefile
+!**/sw_test/*.*
+
+#build artifacts
 **/*.tmp
 **/*.log
 **/*.o
 **/*.mgf
 **/*.asdb
-**/work/**
 **/*.asdbw
-dma_ddr_ref
-# gddr_ref_design
-llm_vp_demo_pcie_orig
-shell_demo
-**/__pycache__/**

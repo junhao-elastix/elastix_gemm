@@ -1,7 +1,8 @@
 #!/bin/bash
-cd ./11030039
+bid="bitstream"
+cd ./${bid}
 # cd /home/workstation/elastix_gemm/gemm/demo/bitstream/
-echo "Copying flash.tcl to build directory"
+echo "Copying hex.tcl to build directory"
 pwd
 
 if [ ! -f ./elastix_gemm_top.VP815.1.1.hex ]; then
@@ -9,7 +10,7 @@ if [ ! -f ./elastix_gemm_top.VP815.1.1.hex ]; then
     exit 1
 fi
 
-cp /home/workstation/elastix_gemm/gemm/hex.tcl .
+cp ../hex.tcl .
 /opt/achronix/ACE_10_3_1/Achronix-linux/ace -b -lab_mode -script_file hex.tcl
 
 echo "=== Checking PCIe device visibility (MANDATORY safety check) ==="
@@ -32,7 +33,7 @@ fi
 echo "✅ Device still visible - proceeding with rescan"
 
 sleep 10
-Safe to rescan now
+# Safe to rescan now
 source /home/dev/rescan
 
 # Test device status
