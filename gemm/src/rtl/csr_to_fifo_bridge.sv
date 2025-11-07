@@ -10,8 +10,8 @@
 //  - Handles multi-cycle CSR strobes with edge detection
 //  - Provides backpressure via o_bridge_busy signal
 //
-// Author: Integration for MS2.0 GEMM Engine
-// Date: Sun Oct 12 19:00 PDT 2025
+// Author: Junhao Pan
+// Date: 10/12/2025
 // ------------------------------------------------------------------
 
 module csr_to_fifo_bridge

@@ -13,8 +13,8 @@
 //  - Independent state machines for FETCH and DISPATCH operations
 //  - No compute engine read ports (removed per refactoring requirements)
 //
-// Author: Refactored from monolithic dispatcher_control.sv
-// Date: $(date +"%Y-%m-%d")
+// Author: Junhao Pan
+// Date: 10/27/2025
 // ------------------------------------------------------------------
 
 `include "nap_interfaces.svh"
@@ -24,11 +24,11 @@ import gemm_pkg::*;
 #(
     parameter MAN_WIDTH = 256,         // Mantissa data width
     parameter EXP_WIDTH = 8,           // Exponent data width
-    parameter BRAM_DEPTH = 512,        // Dispatcher BRAM depth
-    parameter TILE_DEPTH = 512,        // Tile BRAM depth per side
+    parameter DISP_BRAM_DEPTH = 512,        // Dispatcher BRAM depth
+    parameter TILE_BRAM_DEPTH = 512,        // Tile BRAM depth per side
     parameter AXI_ADDR_WIDTH = 42,     // AXI address width
-    parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),  // 9-bit for 512 depth
-    parameter TILE_ADDR_WIDTH = $clog2(TILE_DEPTH),  // 9-bit for 512 depth
+    parameter BRAM_ADDR_WIDTH = $clog2(DISP_BRAM_DEPTH),  // 9-bit for 512 depth
+    parameter TILE_ADDR_WIDTH = $clog2(TILE_BRAM_DEPTH),  // 9-bit for 512 depth
     parameter [8:0] GDDR6_PAGE_ID = 9'd2  // GDDR6 Page ID for NoC routing
 )
 (
@@ -137,13 +137,12 @@ import gemm_pkg::*;
     logic [EXP_WIDTH-1:0]         dispatcher_bram_exp_right_rd_data;
 
     // ====================================================================
-    // Fetcher Module Instantiation (OPTIMIZED - comparing vs baseline)
+    // Fetcher Module Instantiation
     // ====================================================================
-    // fetcher_opt #(
     fetcher #(
         .MAN_WIDTH      (MAN_WIDTH),
         .EXP_WIDTH      (EXP_WIDTH),
-        .BRAM_DEPTH     (BRAM_DEPTH),
+        .DISP_BRAM_DEPTH     (DISP_BRAM_DEPTH),
         .AXI_ADDR_WIDTH (AXI_ADDR_WIDTH),
         .BRAM_ADDR_WIDTH(BRAM_ADDR_WIDTH),
         .TILE_ADDR_WIDTH(TILE_ADDR_WIDTH),
@@ -181,8 +180,8 @@ import gemm_pkg::*;
     dispatcher #(
         .MAN_WIDTH       (MAN_WIDTH),
         .EXP_WIDTH       (EXP_WIDTH),
-        .BRAM_DEPTH      (BRAM_DEPTH),
-        .TILE_DEPTH      (TILE_DEPTH),
+        .DISP_BRAM_DEPTH      (DISP_BRAM_DEPTH),
+        .TILE_BRAM_DEPTH      (TILE_BRAM_DEPTH),
         .BRAM_ADDR_WIDTH (BRAM_ADDR_WIDTH),
         .TILE_ADDR_WIDTH (TILE_ADDR_WIDTH)
     ) u_dispatcher (
@@ -233,7 +232,7 @@ import gemm_pkg::*;
         .MAN_WIDTH           (MAN_WIDTH),
         .EXP_WIDTH           (EXP_WIDTH),
         .EXP_PACKED_DEPTH    (16),
-        .BRAM_DEPTH          (BRAM_DEPTH),
+        .DISP_BRAM_DEPTH          (DISP_BRAM_DEPTH),
         .WR_ADDR_WIDTH       (BRAM_ADDR_WIDTH + 2),  // 11-bit for 0-527
         .RD_ADDR_WIDTH       (BRAM_ADDR_WIDTH)
     ) u_dispatcher_bram (

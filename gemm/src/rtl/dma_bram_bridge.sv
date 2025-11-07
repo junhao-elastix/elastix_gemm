@@ -22,6 +22,9 @@
 // - Lower 144 bits stored in xact_mem_lo
 // - Upper 144 bits stored in xact_mem_hi (with 32-bit padding)
 // - 9-bit address space (512 locations) for transaction storage
+//
+// Author: Junhao Pan
+// Date:
 // ------------------------------------------------------------------
 
 `include "nap_interfaces.svh"

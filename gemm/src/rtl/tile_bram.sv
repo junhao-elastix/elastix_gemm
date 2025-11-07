@@ -18,15 +18,15 @@
 //  - Combinational (0-latency) access to complete NVs
 //  - Old line-based interface REMOVED
 //
-// Author: NV Packing Optimization
-// Date: Thu Oct 31, 2024
+// Author: Junhao Pan
+// Date: 10/31/2024
 // ------------------------------------------------------------------
 
 module tile_bram #(
     parameter MAN_WIDTH = 256,          // Mantissa line width
     parameter EXP_WIDTH = 8,            // Exponent width
-    parameter BRAM_DEPTH = 512,         // 512 lines per side
-    parameter ADDR_WIDTH = $clog2(BRAM_DEPTH) // 9-bit address width
+    parameter BRAM_DEPTH = 512,
+    parameter ADDR_WIDTH = $clog2(BRAM_DEPTH)
 )
 (
     input  logic                     i_clk,
@@ -61,12 +61,12 @@ module tile_bram #(
     // Combinational reads - complete NV in single cycle
     // ====================================================================
     // Left NV read
-    input  logic [6:0]                  i_nv_left_rd_idx,      // NV index [0-127]
+    input  logic [6:0]                  i_nv_left_rd_idx,
     output logic [31:0]                 o_nv_left_exp,         // Packed exponents
     output logic [MAN_WIDTH-1:0]        o_nv_left_man [0:3],   // 4 mantissa groups
 
     // Right NV read
-    input  logic [6:0]                  i_nv_right_rd_idx,     // NV index [0-127]
+    input  logic [6:0]                  i_nv_right_rd_idx,
     output logic [31:0]                 o_nv_right_exp,        // Packed exponents
     output logic [MAN_WIDTH-1:0]        o_nv_right_man [0:3]   // 4 mantissa groups
 );
@@ -75,11 +75,11 @@ module tile_bram #(
     // NV-PACKED STORAGE (128 Native Vectors per side)
     // ===================================================================
     // Left side: 128 Native Vectors
-    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_left [0:127][0:3];  // 128 NVs × 4 groups
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_left [0:127][0:3];
     (* ram_style = "block" *) logic [31:0]          nv_exp_left [0:127];       // 128 NVs × packed exp
     
     // Right side: 128 Native Vectors  
-    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_right [0:127][0:3]; // 128 NVs × 4 groups
+    (* ram_style = "block" *) logic [MAN_WIDTH-1:0] nv_man_right [0:127][0:3];
     (* ram_style = "block" *) logic [31:0]          nv_exp_right [0:127];      // 128 NVs × packed exp
 
     // ===================================================================

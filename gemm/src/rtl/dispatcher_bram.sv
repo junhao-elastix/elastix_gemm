@@ -8,26 +8,26 @@
 //    RIGHT: exp_packed (256x16), exp_aligned (8x512), man (256x512)
 //
 // FETCH Operation Flow:
-//  1. Lines 0-15:   Write to exp_packed buffer (256-bit staging)
-//  2. Lines 16-527: Write to man buffer (256-bit mantissas, stored at [0-511])
+//  1. Lines 0 to EXP_PACKED_DEPTH-1: Write to exp_packed buffer
+//  2. Lines EXP_PACKED_DEPTH to EXP_PACKED_DEPTH+BRAM_DEPTH-1: Write to man buffer
 //  3. During step 2: Unpack exp_packed -> exp_aligned (done by fetcher)
 //
 // Four Read Ports (to dispatcher for DISPATCH operation):
-//  1. left_exp (8-bit) - From exp_left_aligned
-//  2. left_man (256-bit) - From man_left
-//  3. right_exp (8-bit) - From exp_right_aligned
-//  4. right_man (256-bit) - From man_right
+//  1. left_exp (EXP_WIDTH) - From exp_left_aligned
+//  2. left_man (MAN_WIDTH) - From man_left
+//  3. right_exp (EXP_WIDTH) - From exp_right_aligned
+//  4. right_man (MAN_WIDTH) - From man_right
 //
 // Write Interface (from fetcher for FETCH operation):
 //  - i_wr_target: 0=left, 1=right
-//  - Address [0-15]:   Write to exp_packed
-//  - Address [16-527]: Write to man (stored at [addr-16])
+//  - Address [0:EXP_PACKED_DEPTH-1]: Write to exp_packed
+//  - Address [EXP_PACKED_DEPTH:EXP_PACKED_DEPTH+BRAM_DEPTH-1]: Write to man
 //  - Exponents: Written separately via dedicated exp_aligned write ports
 //
 // Reference: Speedster7t Component Library UG086, BRAM_SDP chapter p.248
 //
-// Author: 3-buffer architecture implementation
-// Date: October 13, 2025
+// Author: Junhao Pan
+// Date: 10/13/2025
 // ------------------------------------------------------------------
 
 module dispatcher_bram #(
@@ -36,8 +36,8 @@ module dispatcher_bram #(
     parameter EXP_PACKED_DEPTH = 16,                    // 16 lines for packed exponents
     parameter BRAM_DEPTH = 512,                         // 512 lines for mantissas and aligned exponents
     parameter WR_ADDR_WIDTH = 11,                       // Write address width (covers 0-527)
-    parameter RD_ADDR_WIDTH = $clog2(BRAM_DEPTH),       // Read address width (9-bit for 512)
-    parameter EXP_PACKED_ADDR_WIDTH = $clog2(EXP_PACKED_DEPTH)  // Packed exp read addr (4-bit)
+    parameter RD_ADDR_WIDTH = $clog2(BRAM_DEPTH),
+    parameter EXP_PACKED_ADDR_WIDTH = $clog2(EXP_PACKED_DEPTH)
 )
 (
     input  logic                            i_clk,
@@ -143,7 +143,7 @@ module dispatcher_bram #(
     
     always_ff @(posedge i_clk) begin
         if (i_wr_en) begin
-            // Address [0-15]: Write to exp_packed
+            // Address [0:EXP_PACKED_DEPTH-1]: Write to exp_packed
             if (i_wr_addr < 11'd16) begin
                 if (i_wr_target == 1'b0) begin
                     exp_left_packed[i_wr_addr[3:0]] <= i_wr_data;
@@ -184,7 +184,7 @@ module dispatcher_bram #(
         end
     end
     
-    // Exponent aligned write logic (from unpacking in dispatcher_control)
+    // Exponent aligned write logic (from unpacking in fetcher)
     always_ff @(posedge i_clk) begin
         if (i_exp_left_wr_en) begin
             exp_left_aligned[i_exp_left_wr_addr] <= i_exp_left_wr_data;

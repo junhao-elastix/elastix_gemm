@@ -6,10 +6,10 @@
 //  - DISPATCH state machine: IDLE → DISP_BUSY → DISP_DONE
 //  - Multi-tile dispatch with broadcast/distribute modes
 //  - Reads from dispatcher_bram, writes to tile_bram
-//  - Supports French parallel data paths (mantissa + exponent)
+//  - Parallel data paths (mantissa + exponent)
 //
-// Author: Refactored from dispatcher_control.sv
-// Date: $(date +"%Y-%m-%d")
+// Author: Junhao Pan
+// Date: 10/31/2025
 // ------------------------------------------------------------------
 
 `include "nap_interfaces.svh"
@@ -21,8 +21,8 @@ import gemm_pkg::*;
     parameter EXP_WIDTH = 8,           // Exponent data width
     parameter BRAM_DEPTH = 512,        // Dispatcher BRAM depth
     parameter TILE_DEPTH = 512,        // Tile BRAM depth per side
-    parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),  // 9-bit for 512 depth
-    parameter TILE_ADDR_WIDTH = $clog2(TILE_DEPTH)   // 9-bit for 512 depth
+    parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),
+    parameter TILE_ADDR_WIDTH = $clog2(TILE_DEPTH)
 )
 (
     // Clock and Reset
@@ -66,7 +66,7 @@ import gemm_pkg::*;
     // ====================================================================
     // Tile BRAM Write Interface
     // ====================================================================
-    // FOUR PARALLEL OUTPUTS - All driven by same counter [0-511]
+    // FOUR PARALLEL OUTPUTS - All driven by same counter
     // Left mantissa write
     output logic [TILE_ADDR_WIDTH-1:0]   o_tile_man_left_wr_addr,
     output logic                         o_tile_man_left_wr_en,
@@ -127,25 +127,25 @@ import gemm_pkg::*;
     logic [4:0]   disp_col_start_reg;        // Distribution start column
     logic [7:0]   disp_ugd_vec_size_reg;     // UGD vector size (NVs per batch)
 
-    // Multi-tile dispatch control (per SINGLE_ROW_REFERENCE.md lines 144-154)
-    logic [4:0]   disp_current_tile_idx_reg;     // Current tile being written (0-23)
+    // Multi-tile dispatch control
+    logic [4:0]   disp_current_tile_idx_reg;
     logic [7:0]   disp_num_enabled_tiles_reg;    // Count of enabled tiles (popcount of col_en)
     logic [8:0]   disp_tile_start_reg;           // Source pointer in dispatcher_bram
     logic [15:0]  disp_receive_tile_start_reg;   // Destination pointer in tile_bram
-    logic [9:0]   disp_ugd_batch_lines_reg;      // Lines per batch (ugd_vec_size × 4, max=512)
+    logic [9:0]   disp_ugd_batch_lines_reg;
     logic [7:0]   disp_batch_cnt_reg;            // Current batch being dispatched
     logic [7:0]   disp_total_batches_reg;        // Total batches to dispatch (man_nv_cnt / ugd_vec_size)
-    logic [9:0]   disp_within_batch_cnt_reg;     // Lines within current batch (0 to ugd_batch_lines-1, max=511)
+    logic [9:0]   disp_within_batch_cnt_reg;
 
     // Address calculation signals
     logic [10:0]  dispatcher_read_addr;          // Final read address in dispatcher_bram
     logic [10:0]  tile_write_addr;               // Final write address in tile_bram
 
     // DISPATCH pipeline signals
-    logic [9:0] man_rd_addr_pipe;    // Pipeline for source address [0-511]
-    logic [9:0] man_wr_addr_pipe;    // Pipeline for destination address [0-511]
-    logic [9:0] exp_rd_addr_pipe;    // Pipeline for source address [0-511]
-    logic [9:0] exp_wr_addr_pipe;    // Pipeline for destination address [0-511]
+    logic [9:0] man_rd_addr_pipe;
+    logic [9:0] man_wr_addr_pipe;
+    logic [9:0] exp_rd_addr_pipe;
+    logic [9:0] exp_wr_addr_pipe;
     logic signed [10:0] disp_write_cnt;  // Signed to allow -1 initial value
     logic       man_wr_valid_pipe;   // Valid signal for mantissa write
     logic       exp_wr_valid_pipe;   // Valid signal for exponent write
@@ -163,22 +163,6 @@ import gemm_pkg::*;
     // Status flags
     logic disp_done_reg;
 
-    // ===================================================================
-    // Performance Instrumentation (COMMENTED OUT)
-    // ===================================================================
-    /*
-    logic [31:0] disp_start_cycle;
-    logic [31:0] disp_end_cycle;
-    logic [31:0] total_disp_cycles;
-    logic [31:0] actual_copy_cycles;
-    logic [31:0] first_read_cycle;
-    logic [31:0] first_write_cycle;
-    logic [31:0] last_write_cycle;
-    logic [31:0] batch_transition_cycles;
-    logic [31:0] num_batch_transitions;
-    logic first_read_detected;
-    logic first_write_detected;
-    */
 
     // ===================================================================
     // Helper Functions
@@ -249,8 +233,8 @@ import gemm_pkg::*;
             // Initialize multi-tile dispatch variables
             disp_man_done_reg <= 1'b0;
             disp_exp_done_reg <= 1'b0;
-            disp_ugd_batch_lines_reg <= 10'd512;  // Initialize to safe maximum value
-            disp_num_enabled_tiles_reg <= 8'd1;  // Initialize to 1 to avoid divide-by-zero
+            disp_ugd_batch_lines_reg <= 10'd512;
+            disp_num_enabled_tiles_reg <= 8'd1;
             disp_current_tile_idx_reg <= '0;
             disp_tile_start_reg <= '0;
             disp_receive_tile_start_reg <= '0;
@@ -258,52 +242,7 @@ import gemm_pkg::*;
             disp_total_batches_reg <= '0;
             disp_within_batch_cnt_reg <= '0;
             batch_complete_pending <= 1'b0;
-            
-            // Performance counters (COMMENTED OUT)
-            /*
-            disp_start_cycle <= '0;
-            disp_end_cycle <= '0;
-            total_disp_cycles <= '0;
-            actual_copy_cycles <= '0;
-            first_read_cycle <= '0;
-            first_write_cycle <= '0;
-            last_write_cycle <= '0;
-            batch_transition_cycles <= '0;
-            num_batch_transitions <= '0;
-            first_read_detected <= 1'b0;
-            first_write_detected <= 1'b0;
-            */
         end else begin
-            // disp_done_reg <= 1'b0;  // REMOVED: Was clearing done signal every cycle, causing race condition
-            // FIX: Keep disp_done_reg sticky until next DISPATCH starts (cleared at line 316)
-
-            // Performance: Track first read and first write (COMMENTED OUT)
-            /*
-            // Detect first read
-            if (!first_read_detected && state_reg == ST_DISP_BUSY && 
-                (o_disp_man_left_rd_en || o_disp_man_right_rd_en)) begin
-                first_read_detected <= 1'b1;
-                first_read_cycle <= $time / 10;
-                $display("[DISPATCHER] @%0t PERF: First read at cycle=%0d, latency_from_start=%0d",
-                        $time, $time / 10, ($time / 10) - disp_start_cycle);
-            end
-            
-            // Detect first write
-            if (!first_write_detected && 
-                (o_tile_man_left_wr_en || o_tile_man_right_wr_en ||
-                 o_tile_exp_left_wr_en || o_tile_exp_right_wr_en)) begin
-                first_write_detected <= 1'b1;
-                first_write_cycle <= $time / 10;
-                $display("[DISPATCHER] @%0t PERF: First write at cycle=%0d, latency_from_first_read=%0d",
-                        $time, $time / 10, ($time / 10) - first_read_cycle);
-            end
-            
-            // Track last write (update every write)
-            if (o_tile_man_left_wr_en || o_tile_man_right_wr_en ||
-                o_tile_exp_left_wr_en || o_tile_exp_right_wr_en) begin
-                last_write_cycle <= $time / 10;
-            end
-            */
 
             case (state_reg)
                 ST_IDLE: begin
@@ -323,33 +262,18 @@ import gemm_pkg::*;
                         disp_col_start_reg <= i_disp_col_start;
                         disp_ugd_vec_size_reg <= i_disp_ugd_vec_size;
 
-                        // Calculate multi-tile dispatch parameters (per lines 144-154 of reference)
+                        // Calculate multi-tile dispatch parameters
                         disp_num_enabled_tiles_reg <= popcount_24bit(i_disp_col_en);
                         disp_ugd_batch_lines_reg <= {1'b0, i_disp_ugd_vec_size} << 2;  // ugd_vec_size × 4
                         disp_total_batches_reg <= i_disp_man_nv_cnt / i_disp_ugd_vec_size;
-                        disp_current_tile_idx_reg <= 5'd0;  // Always start at tile 0 (simplified assumption)
+                        disp_current_tile_idx_reg <= 5'd0;
 
-                        // Initialize pointers (use addresses from DISP command)
-                        disp_tile_start_reg <= '0;  // Always read from 0 in dispatcher_bram (FETCH always starts at 0)
-                        disp_receive_tile_start_reg <= i_disp_tile_addr;  // Write to tile BRAM at specified address
-                        disp_batch_cnt_reg <= '0;  // Start at batch 0
-                        disp_within_batch_cnt_reg <= '0;  // Start at line 0 within batch
-                        disp_write_cnt <= -11'sd1;  // Start at -1 so first write is to address 0
-                        
-                        // Performance: Start timer (COMMENTED OUT)
-                        /*
-                        disp_start_cycle <= $time / 10;  // Divide by 10 for 4ns clock period
-                        disp_end_cycle <= '0;
-                        total_disp_cycles <= '0;
-                        actual_copy_cycles <= '0;
-                        first_read_cycle <= '0;
-                        first_write_cycle <= '0;
-                        last_write_cycle <= '0;
-                        batch_transition_cycles <= '0;
-                        num_batch_transitions <= '0;
-                        first_read_detected <= 1'b0;
-                        first_write_detected <= 1'b0;
-                        */
+                        // Initialize pointers
+                        disp_tile_start_reg <= '0;
+                        disp_receive_tile_start_reg <= i_disp_tile_addr;
+                        disp_batch_cnt_reg <= '0;
+                        disp_within_batch_cnt_reg <= '0;
+                        disp_write_cnt <= -11'sd1;
 
                         $display("[DISPATCHER] @%0t DISP triggered: man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d, batch_lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
                                  $time, i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size,
@@ -368,9 +292,6 @@ import gemm_pkg::*;
 
                     // Copy one line per cycle (mantissa and exponent in parallel)
                     if (!disp_man_done_reg) begin
-                        // Performance: Count copy cycles (COMMENTED OUT)
-                        // actual_copy_cycles <= actual_copy_cycles + 1;
-                        
                         // Increment read counter
                         disp_within_batch_cnt_reg <= disp_within_batch_cnt_reg + 1;
                         // Increment write counter (lags read by 1 cycle initially due to -1 start)
@@ -378,9 +299,6 @@ import gemm_pkg::*;
 
                         // Check if current batch complete (ugd_vec_size × 4 lines)
                         if (disp_within_batch_cnt_reg == (disp_ugd_batch_lines_reg - 1)) begin
-                            // Performance: Count batch transitions (COMMENTED OUT)
-                            // num_batch_transitions <= num_batch_transitions + 1;
-                            
                             // Batch complete, reset counters
                             disp_within_batch_cnt_reg <= '0;
                             disp_write_cnt <= -11'sd1;  // Reset write counter for next batch
@@ -415,10 +333,8 @@ import gemm_pkg::*;
                                             $time, disp_current_tile_idx_reg + 1);
                                 end
                             end else begin
-                                // === DISTRIBUTE MODE (Per MULTI_TILE_DISPATCH_REFERENCE.md & dispatch.py) ===
+                                // === DISTRIBUTE MODE ===
                                 // Each tile gets different data batches in round-robin fashion
-                                // KEY: All tiles write to SAME address range, destination address only
-                                //      increments when wrapping back to tile 0
                                 $display("[DISPATCHER] @%0t DISTRIBUTE: Batch %0d to tile %0d complete",
                                         $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
 
@@ -426,10 +342,9 @@ import gemm_pkg::*;
                                 disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
                                 disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
 
-                                // CRITICAL FIX: Destination address increment logic per dispatch.py
+                                // Destination address increment logic:
                                 // - Multi-tile (num_tiles > 1): Only increment when wrapping to tile 0
-                                //   (per dispatch.py lines 142-144: "if t_idx == 0 and ugd_idx > 0")
-                                // - Single-tile (num_tiles == 1): Always increment (legacy behavior)
+                                // - Single-tile (num_tiles == 1): Always increment
                                 if (disp_num_enabled_tiles_reg == 8'd1) begin
                                     // Single-tile: Always increment destination address
                                     disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
@@ -463,15 +378,7 @@ import gemm_pkg::*;
                         disp_exp_done_reg <= 1'b1;
                         batch_complete_pending <= 1'b0;
                         
-                        // Performance: Mark end of copy phase (COMMENTED OUT)
-                        /*
-                        disp_end_cycle <= $time / 10;
-                        total_disp_cycles <= ($time / 10) - disp_start_cycle;
-                        */
-                        
                         $display("[DISPATCHER] @%0t Final delayed write complete, setting done", $time);
-                        // $display("[DISPATCHER] @%0t PERF: DISPATCH_END cycle=%0d, total_cycles=%0d, copy_cycles=%0d, batch_transitions=%0d",
-                        //         $time, $time / 10, ($time / 10) - disp_start_cycle, actual_copy_cycles, num_batch_transitions);
                     end else if (set_batch_complete) begin
                         batch_complete_pending <= 1'b1;
                     end
@@ -515,11 +422,10 @@ import gemm_pkg::*;
             // READ address uses current counter
             dispatcher_read_addr = disp_tile_start_reg + disp_within_batch_cnt_reg;
             // WRITE address uses lagging counter (compensates for BRAM latency)
-            // CRITICAL: Use signed arithmetic since disp_write_cnt starts at -1
-            // When disp_write_cnt = -1, bit selection gives unsigned value, so use $signed()
+            // Use signed arithmetic since disp_write_cnt starts at -1
             tile_write_addr = disp_receive_tile_start_reg[10:0] + $signed(disp_write_cnt);
 
-            // Assign to pipeline registers (truncate to 9-bit for pipe)
+            // Assign to pipeline registers
             man_rd_addr_pipe <= dispatcher_read_addr[9:0];
             man_wr_addr_pipe <= tile_write_addr[9:0];
             exp_rd_addr_pipe <= dispatcher_read_addr[9:0];
@@ -529,9 +435,7 @@ import gemm_pkg::*;
             man_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_man_done_reg;
             exp_wr_valid_pipe <= (state_reg == ST_DISP_BUSY) && !disp_exp_done_reg;
 
-            // CRITICAL: Delay write valid by 1 cycle to account for BRAM read latency
-            // Cycle N: Read address presented to BRAM
-            // Cycle N+1: BRAM data available, delayed write valid goes high
+            // Delay write valid by 1 cycle to account for BRAM read latency
             man_wr_valid_delayed <= man_wr_valid_pipe;
             exp_wr_valid_delayed <= exp_wr_valid_pipe;
         end
@@ -582,8 +486,6 @@ import gemm_pkg::*;
     end
 
     // Multi-tile write enable - COMBINATIONAL (no pipeline delay)
-    // CRITICAL: Must update in SAME cycle as disp_current_tile_idx_reg changes
-    // to avoid first write of new batch going to wrong tile
     always_comb begin
         if (state_reg == ST_DISP_BUSY) begin
             if (disp_broadcast_reg) begin
@@ -600,11 +502,10 @@ import gemm_pkg::*;
         end
     end
 
-    // Tile BRAM selective write (per SINGLE_ROW_REFERENCE.md)
+    // Tile BRAM selective write
     // SELECTIVE 2-PATH WRITE: Only write to selected side (left OR right)
     // disp_right_reg=0: Write to left side only
     // disp_right_reg=1: Write to right side only
-    // This allows separate DISPATCH commands for left and right matrices
 
     // Pipeline disp_right_reg for synchronization with write valid signals
     always_ff @(posedge i_clk) begin
@@ -615,7 +516,7 @@ import gemm_pkg::*;
         end
     end
 
-    // Tile BRAM write outputs (2-stage pipeline with BRAM read latency compensation)
+    // Tile BRAM write outputs
     // Left mantissa write (ONLY when disp_right_reg=0)
     assign o_tile_man_left_wr_addr = man_wr_addr_pipe[TILE_ADDR_WIDTH-1:0];
     assign o_tile_man_left_wr_data = i_disp_man_left_rd_data;        // From left BRAM read port
@@ -626,7 +527,7 @@ import gemm_pkg::*;
     assign o_tile_man_right_wr_data = i_disp_man_right_rd_data;      // From right BRAM read port
     assign o_tile_man_right_wr_en   = man_wr_valid_delayed && disp_right_pipe;   // DELAYED write
 
-    // Tile BRAM exponent writes (selective based on disp_right_reg)
+    // Tile BRAM exponent writes
     assign o_tile_exp_left_wr_addr  = exp_wr_addr_pipe[TILE_ADDR_WIDTH-1:0];
     assign o_tile_exp_left_wr_data  = i_disp_exp_left_rd_data;       // From left_exp_bram
     assign o_tile_exp_left_wr_en    = exp_wr_valid_delayed && !disp_right_pipe;  // DELAYED write
@@ -635,14 +536,8 @@ import gemm_pkg::*;
     assign o_tile_exp_right_wr_data = i_disp_exp_right_rd_data;      // From right_exp_bram
     assign o_tile_exp_right_wr_en   = exp_wr_valid_delayed && disp_right_pipe;   // DELAYED write
 
-    // Multi-tile write enable output (one-hot encoding of current tile)
-    // COMBINATIONAL: Updates immediately when disp_current_tile_idx_reg changes
+    // Multi-tile write enable output
     assign o_tile_wr_en = tile_wr_en_comb;
-
-    // ===================================================================
-    // Debug Outputs
-    // ===================================================================
     assign o_dispatcher_state = state_reg;
 
 endmodule : dispatcher
-

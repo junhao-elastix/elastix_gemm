@@ -12,8 +12,8 @@
 //    * WAIT_MATMUL barrier checks i_ce_state == IDLE
 //  - FSM: IDLE -> READ_HDR -> READ_PAYLOAD -> DECODE -> EXECUTE -> CMD_COMPLETE
 //
-// Author: MS2.0 Migration, MS2.0 Async Fix
-// Date: Mon Oct 27, 2025
+// Author: Junhao Pan
+// Date: 10/27/2025
 // ------------------------------------------------------------------
 
 module master_control
@@ -356,8 +356,6 @@ import gemm_pkg::*;
             endcase
         end
     end
-
-    // Removed payload_words_needed logic - all commands are now 4 words (header + 3 payload)
 
     // ===================================================================
     // Command Execution - Dispatcher Control (FETCH/DISP)

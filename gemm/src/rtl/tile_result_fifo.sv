@@ -3,13 +3,12 @@
 //
 // Purpose: Per-tile FIFO for buffering compute engine results
 // Features:
-//  - 128 entries x 16-bit width (FP16 results)
-//  - Parameterizable depth and width
+//  - Parameterizable depth and width (FP16 results)
 //  - Simple registered read (1-cycle latency)
 //  - Full/empty status flags for flow control
 //
-// Author: Multi-tile result collection architecture
-// Date: Tue Oct 28 19:20:00 PDT 2025
+// Author: Junhao Pan
+// Date: 10/28/2025
 // ------------------------------------------------------------------
 
 module tile_result_fifo #(
@@ -23,7 +22,7 @@ module tile_result_fifo #(
     input  logic [DATA_WIDTH-1:0]   i_wr_data,
     input  logic                    i_wr_en,
     output logic                    o_full,
-    output logic                    o_afull,  // Almost full (threshold at 120/128)
+    output logic                    o_afull,
 
     // Read Interface (to arbiter)
     output logic [DATA_WIDTH-1:0]   o_rd_data,

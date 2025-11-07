@@ -46,18 +46,17 @@ RTL_SOURCES = \
 	$(GEMM_RTL)/tile_result_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
 	$(GEMM_RTL)/fetcher.sv \
-	$(GEMM_RTL)/fetcher_opt.sv \
 	$(GEMM_RTL)/dispatcher.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram.sv \
 	$(GEMM_RTL)/tile_bram.sv \
-	$(GEMM_RTL)/compute_engine_modular_opt.sv \
-	$(GEMM_RTL)/gfp8_bcv_controller_opt.sv \
-	$(GEMM_RTL)/gfp8_nv_dot_ultra_opt.sv \
-	$(GEMM_RTL)/gfp8_group_dot_mlp.sv \
+	$(GEMM_RTL)/compute_engine_modular.sv \
+	$(GEMM_RTL)/gfp8_bcv_controller.sv \
+	$(GEMM_RTL)/gfp8_nv_dot.sv \
 	$(GEMM_RTL)/gfp8_to_fp16.sv \
 	$(GEMM_RTL)/result_bram.sv \
 	$(GEMM_RTL)/result_fifo_to_simple_bram.sv \
+	$(GEMM_RTL)/result_arbiter.sv \
 	$(GEMM_RTL)/engine_top.sv
 
 # NAP wrapper (contains t_AXI4 interface)

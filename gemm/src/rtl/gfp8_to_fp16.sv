@@ -23,8 +23,8 @@
 //
 // Latency: 1 cycle (registered outputs)
 //
-// Author: Refactoring from compute_engine.sv (lines 674-797)
-// Date: Fri Oct 10 2025
+// Author: Junhao Pan
+// Date: 10/10/2025
 // ------------------------------------------------------------------
 
 module gfp8_to_fp16 (

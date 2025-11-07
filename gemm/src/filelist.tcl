@@ -7,64 +7,44 @@ elastix_gemm_top.sv
 flr_responder.sv
 # MSI-X interrupt support
 irq_gen.sv
+msix_irq_handler.sv
 # PCIe enumeration and memory training
 acx_device_manager.sv
+# Other shell modules
+axi_bram_responder.sv
+default_nettype.v
+reg_control_block.sv
+reset_processor_v2.sv
 # NAP wrappers for BRAM bridges
 nap_initiator_wrapper.sv
 nap_responder_wrapper.sv
-# MS2.0 GEMM Engine modules
+# Elastix GEMM Engine modules
 cmd_fifo.sv
-compute_engine_modular_opt.sv
+compute_engine_modular.sv
 csr_to_fifo_bridge.sv
 dispatcher_bram.sv
-fetcher.sv
-fetcher_opt.sv
 dispatcher.sv
 dispatcher_control.sv
 dma_bram_bridge.sv
 engine_top.sv
-gfp8_bcv_controller_opt.sv
-gfp8_group_dot_mlp.sv
-gfp8_nv_dot_ultra_opt.sv
+fetcher.sv
+gfp8_bcv_controller.sv
+gfp8_nv_dot.sv
 gfp8_to_fp16.sv
 master_control.sv
-msix_irq_handler.sv
-reg_control_block.sv
-reset_processor_v2.sv
+result_arbiter.sv
 result_bram.sv
 result_fifo_to_simple_bram.sv
 shift_reg.sv
 tile_bram.sv
 tile_result_fifo.sv
-default_nettype.v
-# ARCHIVED modules (for reference/documentation, not included for synthesis)
-axi_bram_responder.sv
-# Note: axi_bram_responder.sv is used for ATU demonstration - needs to be included
-# axi_bw_monitor.sv - ARCHIVED
-# axi_latency_monitor.sv - ARCHIVED
-# axi_mem_pkt_gen_chk_channel.sv - ARCHIVED
-# axi_performance_monitor.sv - ARCHIVED
-# axi_pkt_chk.sv - ARCHIVED
-# axi_pkt_gen.sv - ARCHIVED
-# axi_reg_layer.sv - ARCHIVED
-# bram_vector_processor.sv - ARCHIVED
-# cmd_submit_pulser.sv - ARCHIVED
-# compute_engine.sv - ARCHIVED
-# csr_cmd_bridge.sv - ARCHIVED
-# dispatcher_bram.sv - ARCHIVED
-# engine_wrapper.sv - ARCHIVED
-# g2b_data_processor.sv - ARCHIVED
-# gddr6_to_bram_processor.sv - ARCHIVED
-# nap_initiator_readonly_wrapper.sv - ARCHIVED
-# nap_initiator_wrapper_fixed.sv - ARCHIVED
-# random_seq_engine.sv - ARCHIVED
-# result_bram_writer.sv - ARCHIVED
 }
 
-# No VHDL files in project
-# set rtl_vhdl_files {
-# }
+# WARNING: do not modify the files below this line unless you know what you are doing
+# WARNING: do not modify the files below this line unless you know what you are doing
+# WARNING: do not modify the files below this line unless you know what you are doing
 
+# synthesis constraints
 set synplify_constraints_files {
 synplify_constraints.sdc
 synplify_constraints.fdc

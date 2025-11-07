@@ -23,6 +23,9 @@
 //   - 13-bit FP16 addressing: {addr[12:0], 1'b0} for 2-byte alignment
 //   - BRAM line = addr[12:4], byte position = addr[3:0] * 2
 //   - Circular buffer wraps at 8192
+//
+// Author: Junhao Pan
+// Date:
 // =============================================================================
 
 module result_fifo_to_simple_bram (

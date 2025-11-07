@@ -3,13 +3,12 @@
 //
 // Purpose: Synchronous FIFO for buffering incoming uCode commands
 // Features:
-//  - 64 entries x 32-bit width (from gemm_pkg: cmd_buf_els_gp, cmd_buf_width_gp)
 //  - Simple registered read (1-cycle latency)
 //  - Full/empty status flags
 //  - Count output for monitoring available entries
 //
-// Author: MS2.0 Migration
-// Date: Thu Oct 2 00:06:48 AM PDT 2025
+// Author: Junhao Pan
+// Date: 10/02/2025
 // ------------------------------------------------------------------
 
 module cmd_fifo
@@ -22,7 +21,7 @@ import gemm_pkg::*;
     input  logic [cmd_buf_width_gp-1:0] i_wr_data,
     input  logic                        i_wr_en,
     output logic                        o_full,
-    output logic                        o_afull,  // Almost full (60/64)
+    output logic                        o_afull,  // Almost full threshold
 
     // Read Interface
     output logic [cmd_buf_width_gp-1:0] o_rd_data,
@@ -30,7 +29,7 @@ import gemm_pkg::*;
     output logic                        o_empty,
 
     // Status
-    output logic [6:0]                  o_count,  // 0-64 entries
+    output logic [6:0]                  o_count,
 
     // Debug
     output logic [15:0]                 o_total_writes  // Total writes ever (for debug)
@@ -39,10 +38,10 @@ import gemm_pkg::*;
     // ===================================================================
     // Parameters
     // ===================================================================
-    localparam DEPTH      = cmd_buf_els_gp;    // 64 from gemm_pkg
-    localparam DATA_WIDTH = cmd_buf_width_gp;  // 32 from gemm_pkg
-    localparam ADDR_WIDTH = $clog2(DEPTH);     // 6 bits
-    localparam AFULL_THRESHOLD = 48;           // Almost full at 48 entries
+    localparam DEPTH      = cmd_buf_els_gp;
+    localparam DATA_WIDTH = cmd_buf_width_gp;
+    localparam ADDR_WIDTH = $clog2(DEPTH);
+    localparam AFULL_THRESHOLD = 48;
 
     // ===================================================================
     // Internal Signals
@@ -67,7 +66,7 @@ import gemm_pkg::*;
     logic [ADDR_WIDTH-1:0] rd_ptr;
 
     // Count and Status
-    logic [ADDR_WIDTH:0]   count_reg;  // 7 bits to hold 0-64
+    logic [ADDR_WIDTH:0]   count_reg;
     logic                  full_reg;
     logic                  empty_reg;
     logic                  afull_reg;

@@ -3,19 +3,14 @@
 //
 // Purpose: BRAM-based buffer for FP16 computation results
 // Features:
-//  - 16,384 entries x 16-bit width (FP16 format: 1 sign + 5 exp + 10 mantissa)
 //  - Drop-in replacement for result_fifo with identical interface
 //  - Dual-port BRAM for independent read/write access
 //  - FIFO-compatible read/write semantics
 //  - Full/empty status flags
 //  - Count output for monitoring
 //
-// Resource Usage:
-//  - ~4 ACX_BRAM72K primitives (vs ~6 for FP24, ~160 for equivalent FIFO)
-//  - 33% resource savings vs FP24, 97% vs FIFO implementation
-//
-// Author: MS2.0 Result BRAM Enhancement
-// Date: Fri Oct  3 05:30:36 AM PDT 2025 (Updated to FP16: Oct 11 2025)
+// Author: Junhao Pan
+// Date: 10/03/2025
 // ------------------------------------------------------------------
 
 module result_bram
@@ -36,16 +31,16 @@ import gemm_pkg::*;
     output logic        o_empty,
 
     // Status
-    output logic [14:0] o_count   // 15-bit count (supports up to 32K entries)
+    output logic [14:0] o_count
 );
 
     // ===================================================================
     // Parameters
     // ===================================================================
-    localparam DEPTH      = tile_out_fifo_els_gp;  // 4096 from gemm_pkg
-    localparam DATA_WIDTH = 16;                     // FP16 format
-    localparam ADDR_WIDTH = $clog2(DEPTH);          // 6 bits
-    localparam AFULL_THRESHOLD = 3840;               // Almost full at 3840/4096 entries
+    localparam DEPTH      = tile_out_fifo_els_gp;
+    localparam DATA_WIDTH = 16;
+    localparam ADDR_WIDTH = $clog2(DEPTH);
+    localparam AFULL_THRESHOLD = 3840;
 
     // ===================================================================
     // Internal Signals
@@ -59,7 +54,7 @@ import gemm_pkg::*;
     logic [ADDR_WIDTH-1:0] rd_ptr;
 
     // Count and Status
-    logic [ADDR_WIDTH:0]   count_reg;  // 15 bits to hold 0-16,384
+    logic [ADDR_WIDTH:0]   count_reg;
     logic                  full_reg;
     logic                  empty_reg;
     logic                  afull_reg;
