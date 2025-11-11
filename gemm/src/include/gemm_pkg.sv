@@ -102,7 +102,8 @@ package gemm_pkg;
         e_cmd_op_disp      = 8'hF1,  // vector_dispatch (CSV line 6)
         e_cmd_op_tile      = 8'hF2,  // matmul (CSV line 11) - FIXED from 0xF3
         e_cmd_op_wait_disp = 8'hF3,  // wait_dispatch (CSV line 21) - FIXED from 0xF4
-        e_cmd_op_wait_tile = 8'hF4   // wait_matmul (CSV line 22) - FIXED from 0xF5
+        e_cmd_op_wait_tile = 8'hF4,  // wait_matmul (CSV line 22) - FIXED from 0xF5
+        e_cmd_op_readout   = 8'hF5   // readout results (as per SINGLE_ROW_REFERENCE.md)
     } cmd_op_s;
 
     typedef struct packed {
@@ -148,9 +149,9 @@ package gemm_pkg;
         logic         right_4b;       // Word3[1]: Right mantissa width (0=8-bit, 1=4-bit)
         logic         main_loop_left; // Word3[0]: Main loop dimension (0=right first, 1=left first)
         logic [7:0]   reserved2;      // Word2[31:24]
-        logic [7:0]   left_ugd_len;   // Word2[23:16]: Left UGD vectors (also dim_b)
-        logic [7:0]   right_ugd_len;  // Word2[15:8]: Right UGD vectors (also dim_c)
-        logic [7:0]   vec_len;        // Word2[7:0]: UGD vector size (also dim_v)
+        logic [7:0]   left_ugd_len;   // Word2[23:16]: Left UGD vectors
+        logic [7:0]   right_ugd_len;  // Word2[15:8]: Right UGD vectors
+        logic [7:0]   vec_len;        // Word2[7:0]: UGD vector size
         logic [15:0]  left_addr;      // Word1[31:16]: Left start address
         logic [15:0]  right_addr;     // Word1[15:0]: Right start address
     } cmd_tile_s;

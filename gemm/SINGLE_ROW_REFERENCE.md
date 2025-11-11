@@ -92,7 +92,18 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
 - UnGrouped Dimension (UGD):
   - The dimension in a matrix that is not grouped. 
   - Usually the outer dimensions (batch, column) in the context of Matrix-Matrix Multiplication
-
+- Left UGD length (B/batch/dim_b):
+  - The number of UGD vectors to process on left
+- Right UGD length (C/column/dim_c):
+  - The number of UGD vectors to process on right
+- UGD vector length (V/inner dimension/dim_v):
+  - The number of Native Vectors to dispatch to a tile at a time
+  - Example: if `ugd_vec_size = 8`, then dispatcher will forward `ugd_vec_size*4 = 8*4 = 32` lines to one tile, then the next tile will get the next `ugd_vec_size*4 = 8*4 = 32`, until all data has been dispatched.
+- Row:
+  - A row of compute engine tiles in our 2-D compute engine architecture
+  - Mapped to one DDR channel
+- Column:
+  - A column of compute engine tiles in our 2-D compute engine architecture
 ---
 
 ## Architecture Overview
@@ -364,6 +375,25 @@ tile_bram_right:
 - 512 bytes exponent data
 - Total: 128 Native Vectors per tile
 
+### Memory Management Rule for Back-to-Back Operations
+
+**Simple Capacity Rule**: Maximum safe back-to-back FETCH-DISPATCH operations = Number of Columns
+
+**Why This Works**:
+- Each tile BRAM can hold 128 NVs
+- Each FETCH brings 128 NVs from GDDR6 to dispatcher_bram
+- Each DISPATCH distributes those 128 NVs across enabled columns
+- Total capacity: 128 × num_columns
+- Total dispatched: 128 × num_dispatches
+- At equilibrium: num_dispatches = num_columns → tiles exactly full
+
+**Examples**:
+- 8 columns enabled → 8 safe back-to-back FETCH-DISPATCH pairs
+- 16 columns enabled → 16 safe back-to-back FETCH-DISPATCH pairs
+- 24 columns enabled → 24 safe back-to-back FETCH-DISPATCH pairs
+
+**Software Responsibility**: Track dispatch count and issue MATMUL before reaching the limit to prevent overflow.
+
 ### Left and Right Behavior
 
 **FETCH Command**: Selectively updates dispatcher_bram
@@ -633,7 +663,7 @@ FETCH: cmd_id=1, start_addr=0x0, len=528, fetch_right=0
 | **Mantissa NV cnt** | 8 | Number of total Native Vectors to process (each NV = 4 lines) |
 | **Tile destination address** | 16 | Destination tile buffer start address |
 | **UGD vector size** | 8 | Number of native vectors per UGD vector to dispatch at a time|
-| **Column enable** | 24 | 1 bit per column (tile enable mask) |
+| **Column enable** | 24 | 1 bit per column (tile enable mask), default 0xFFFFFF |
 | **Flags** | 8 | Control flags (detailed below) |
 
 #### Flags Field (8 bits)
@@ -657,7 +687,7 @@ typedef struct packed {
     logic           broadcast;      // 1 bit: 0 = distribute, 1 = broadcast
     logic           disp_right;      // 1 bit: 0 = left, 1 = right
     logic [4:0]     col_start;      // 5 bits: starting column for distribution
-    logic [23:0]    col_en;         // 23 bits: column enable bitmask
+    logic [23:0]    col_en;         // 23 bits: column enable bitmask, default 0xFFFFFF
 } cmd_disp_s;
 
 // 4-Word Packing:
@@ -678,7 +708,7 @@ cmd[3] = {col_en[23:0], col_start, disp_right, broadcast, man_4b};     // flags
 
 - **UGD vector size (ugd_vec_size)**:
   - Determines how many NV to dispatch to a tile at a time
-  - Example: if `ugd_vec_size = 4`, then dispatcher will forward `ugd_vec_size*4` lines to one tile, then the next tile will get the next `ugd_vec_size*4`, until all data has been dispatched.
+  - Example: if `ugd_vec_size = 8`, then dispatcher will forward `ugd_vec_size*4 = 8*4 = 32` lines to one tile, then the next tile will get the next `ugd_vec_size*4 = 8*4 = 32`, until all data has been dispatched.
 
 - **Tile destination address (tile_addr)**:
   - Starting line in tile_bram where data will be written
@@ -688,6 +718,8 @@ cmd[3] = {col_en[23:0], col_start, disp_right, broadcast, man_4b};     // flags
 
 - **Column enable (24 bits)**:
   - Bitmask for enabling tiles: bit 0 = tile 0, bit 1 = tile 1, etc.
+  - **Default**: 0xFFFFFF (all columns enabled)
+  - Actual enabled columns limited by hardware instantiation
 
 - **Flags**:
   - `man_4b` signals whether the mantissa is in 4-bit format
@@ -701,33 +733,57 @@ See "Broadcast vs Distribute Modes" section above for detailed behavior:
 - **Broadcast Mode**: Replicates same data to all enabled tiles (for left activations)
 - **Distribute Mode**: Round-robin distribution across tiles (for right weights)
 
-#### col_start and col_en Constraints
+#### col_start Purpose: Multi-Dispatch Continuity
+
+**Critical Understanding**: The dispatcher is STATELESS - it doesn't track previous dispatches. The `col_start` parameter enables seamless continuation across multiple dispatch commands.
+
+**Primary Use Case**: When data doesn't evenly divide across columns, `col_start` tells the dispatcher where to continue the round-robin distribution.
+
+**Multi-Dispatch Example**:
+```systemverilog
+// First dispatch: C=14, V=4, 8 columns
+DISPATCH: col_start=0, tile_addr=0, man_nv_cnt=56, ugd_vec_size=4
+// Ends at column 5 (columns 0-5 get 8 NVs, columns 6-7 get 4 NVs)
+
+// Second dispatch continues from column 6
+DISPATCH: col_start=6, tile_addr=16, man_nv_cnt=32, ugd_vec_size=4
+// Starts at column 6, wraps to column 0 with address increment
+```
+
+**Address Management on Wrap-Around**:
+When the dispatcher wraps from the last column back to column 0, it increments the write address:
+```systemverilog
+// Internal dispatcher behavior
+if (wrapping_to_column_0) begin
+    write_addr = tile_addr + ugd_vec_size * 4;  // Increment by one batch
+end
+```
+
+This ensures continuous tile_bram filling without gaps or overwrites.
+
+#### col_en Constraints
+
+**Default Value**: `col_en` defaults to 0xFFFFFF (all 24 columns enabled). In practice, the actual number of instantiated columns determines the effective enable mask.
 
 **Hardware Constraint**: `col_en` must have all enabled bits sequential starting from bit 0.
-- ✅ Valid examples: `0x000001` (tile 0), `0x000003` (tiles 0-1), `0x00000F` (tiles 0-3), `0xFFFFFF` (all tiles 0-23)
-- ❌ Invalid examples: `0x0101` (non-sequential), `0x7000` (doesn't start from bit 0)
-
-**col_start Behavior**:
-- Specifies which tile to start dispatching to (0-23)
-- Must point to an enabled tile: `col_en[col_start] == 1`
-- If `col_start > 0`, enabled tiles wrap around from col_start
-
-**Example**:
-- `col_start = 2`, `col_en = 0x000F` (tiles 0-3 enabled)
-- Dispatch order: tile 2, tile 3, tile 0, tile 1 (wraps around)
+- ✅ Valid: `0x000001`, `0x000003`, `0x00000F`, `0xFFFFFF`
+- ❌ Invalid: `0x0101` (non-sequential), `0x7000` (doesn't start from bit 0)
 
 **Algorithm**:
 ```systemverilog
-num_enabled = popcount(col_en);  // Count of enabled tiles
-current_tile = col_start % num_enabled;  // Start index within enabled set
-
-for (int i = 0; i < num_enabled; i++) {
-    dispatch_to_tile(current_tile);  // Physical tile = current_tile (since col_en starts at 0)
-    current_tile = (current_tile + 1) % num_enabled;  // Wrap within enabled set
-}
+// Round-robin distribution starting from col_start
+current_col = col_start;
+for each batch of ugd_vec_size NVs:
+    dispatch_to_column(current_col);
+    current_col = (current_col + 1) % num_enabled_columns;
 ```
 
-**Note**: Hardware supports wraparound correctly within the enabled tile set. Results may be incorrect if `col_start` points to a disabled tile (undefined behavior).
+**Host Software Responsibilities**:
+1. Track where each dispatch ends (last column index)
+2. Set next `col_start` to continue round-robin sequence
+3. Calculate next `tile_addr` based on data already in tile_bram
+4. Ensure `ugd_vec_size` consistency across related dispatches
+5. **Monitor dispatch count**: Maximum safe limit = number of enabled columns (see Memory Management Rule)
 
 ---
 
@@ -744,7 +800,7 @@ for (int i = 0; i < num_enabled; i++) {
 | **Left UGD vectors** | 8 | Number of UGD vectors to process on left |
 | **Right UGD vectors** | 8 | Number of UGD vectors to process on right |
 | **UGD vector size** | 8 | Number of native vectors per UGD vector |
-| **Column enable** | 24 | 1 bit per column (tile enable mask) |
+| **Column enable** | 24 | 1 bit per column (tile enable mask), default 0xFFFFFF |
 | **Flags_0** | 8 | Control flags (detailed below) |
 | **Reserved** | 16 | Reserved for future use |
 
@@ -767,7 +823,7 @@ typedef struct packed {
     logic [7:0]   left_ugd_len;         // 8 bits: dim_b, Batch dimension, Left UGD vectors
     logic [7:0]   right_ugd_len;        // 8 bits: dim_c, Column dimension, Right UGD vectors
     logic [7:0]   vec_len;              // 8 bits: dim_v, Vector count, UGD vector size
-    logic [23:0]  col_en;               // 24 bits: 1 bit per column (tile-enable bitmask)
+    logic [23:0]  col_en;               // 24 bits: 1 bit per column (tile-enable bitmask), default 0xFFFFFF
     logic left_4b;                      // 1 bit flag: Left mantissa width, 0 = 8-bit, 1 = 4-bit
     logic right_4b;                     // 1 bit flag: Right mantissa width, 0 = 8-bit, 1 = 4-bit
     logic main_loop_left;               // 1 bit flag: Main loop dimension, 0 = loop over right first, 1 = loop over left first
@@ -799,6 +855,7 @@ cmd[3] = {col_en[23:0], 5'b0, left_4b, right_4b, main_loop_left};            // 
 
 - **Column enable (24 bits)**:
   - Bitmask for enabling tiles: bit 0 = tile 0, bit 1 = tile 1, ..., bit 23 = tile 23
+  - **Default**: 0xFFFFFF (all columns enabled)
 
 **Example**:
 ```systemverilog
@@ -885,8 +942,8 @@ WAIT_MATMUL: cmd_id = 4, wait_id=3          // Block until MATMUL id=3 completes
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| **Start Col** | 8 | Starting column index for readout, should mirror col_start in DISPATCH |
-| **Length** | 32 | Number of FP16 results to read |
+| **Start Col** | 8 | Starting column index for readout - MUST match corresponding DISPATCH col_start for proper result collection |
+| **Length** | 32 | Number of valid FP16 results to read (ignores any garbage results from columns with fewer NVs) |
 
 #### Hardware Packing (4-Word Format)
 
@@ -902,6 +959,31 @@ cmd[1] = {24'b0, start_col[7:0]};                       // Word 1: Start column
 cmd[2] = rd_len[31:0];                                  // Word 2: Length
 cmd[3] = 32'h00000000;                                  // Word 3: Reserved
 ```
+
+#### Multi-Dispatch Result Collection
+
+**Key Principle**: VECTOR_READOUT must follow the same pattern as DISPATCH commands for proper result collection.
+
+**Example with Multiple Dispatches**:
+```systemverilog
+// First dispatch: C=14, V=4, 8 columns
+DISPATCH: col_start=0, tile_addr=0, man_nv_cnt=56, ugd_vec_size=4
+// Produces 14 results per batch × batch count
+
+// Corresponding readout
+VECTOR_READOUT: start_col=0, rd_len=98  // 14 results × 7 (6 cols with 2, 2 cols with 1)
+
+// Second dispatch continues from column 6
+DISPATCH: col_start=6, tile_addr=16, man_nv_cnt=32, ugd_vec_size=4
+
+// Corresponding readout must also start from column 6
+VECTOR_READOUT: start_col=6, rd_len=32  // Collect results in same order
+```
+
+**Selective Result Collection**:
+- `rd_len` specifies exact number of VALID results to collect
+- Result arbiter skips garbage results from columns with fewer NVs
+- All columns execute synchronously, but only valid results are transferred
 
 #### Implementation Status
 

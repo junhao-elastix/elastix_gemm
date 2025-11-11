@@ -266,7 +266,8 @@ import gemm_pkg::*;
                         disp_num_enabled_tiles_reg <= popcount_24bit(i_disp_col_en);
                         disp_ugd_batch_lines_reg <= {1'b0, i_disp_ugd_vec_size} << 2;  // ugd_vec_size × 4
                         disp_total_batches_reg <= i_disp_man_nv_cnt / i_disp_ugd_vec_size;
-                        disp_current_tile_idx_reg <= 5'd0;
+                        // Initialize starting column from col_start parameter (for multi-dispatch continuity)
+                        disp_current_tile_idx_reg <= i_disp_col_start % popcount_24bit(i_disp_col_en);
 
                         // Initialize pointers
                         disp_tile_start_reg <= '0;
@@ -274,6 +275,15 @@ import gemm_pkg::*;
                         disp_batch_cnt_reg <= '0;
                         disp_within_batch_cnt_reg <= '0;
                         disp_write_cnt <= -11'sd1;
+
+                        `ifdef SIMULATION
+                        $display("[DISPATCHER] @%0t INIT: mode=%s, col_start=%0d, actual_start=%0d, num_tiles=%0d, tile_addr=%0h",
+                                $time, i_disp_broadcast ? "BROADCAST" : "DISTRIBUTE",
+                                i_disp_col_start, i_disp_col_start % popcount_24bit(i_disp_col_en),
+                                popcount_24bit(i_disp_col_en), i_disp_tile_addr);
+                        $display("[DISPATCHER]        man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d",
+                                i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size);
+                        `endif
 
                         $display("[DISPATCHER] @%0t DISP triggered: man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d, batch_lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
                                  $time, i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size,
@@ -348,8 +358,8 @@ import gemm_pkg::*;
                                 if (disp_num_enabled_tiles_reg == 8'd1) begin
                                     // Single-tile: Always increment destination address
                                     disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
-                                end else if (((disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg) == 5'd0 && disp_batch_cnt_reg > 0) begin
-                                    // Multi-tile: Only increment when wrapping to tile 0
+                                end else if (((disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg) == 5'd0) begin
+                                    // Multi-tile: Increment when wrapping to tile 0 (removed batch_cnt > 0 check for col_start support)
                                     disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
                                     $display("[DISPATCHER] @%0t DISTRIBUTE: Wrapping to tile 0, incrementing dest_addr %0d -> %0d",
                                             $time, disp_receive_tile_start_reg,
@@ -358,9 +368,18 @@ import gemm_pkg::*;
 
                                 // Move to next tile (simple modulo wrap-around)
                                 disp_current_tile_idx_reg <= (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg;
+
+                                `ifdef SIMULATION
+                                $display("[DISPATCHER] @%0t DISTRIBUTE: Completed batch %0d to tile %0d, moving to tile %0d",
+                                        $time, disp_batch_cnt_reg, disp_current_tile_idx_reg,
+                                        (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg);
+                                $display("[DISPATCHER]        batch_lines=%0d, dest_addr=%0h, src_addr=%0h",
+                                        disp_ugd_batch_lines_reg, disp_receive_tile_start_reg, disp_tile_start_reg);
+                                `else
                                 $display("[DISPATCHER] @%0t DISTRIBUTE: Tile index changing %0d -> %0d (num_tiles=%0d)",
                                         $time, disp_current_tile_idx_reg, (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg,
                                         disp_num_enabled_tiles_reg);
+                                `endif
 
                                 // Check if all batches dispatched
                                 if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
@@ -387,7 +406,16 @@ import gemm_pkg::*;
                 ST_DISP_DONE: begin
                     // Signal DISPATCH operation complete
                     disp_done_reg <= 1'b1;
+
+                    `ifdef SIMULATION
+                    $display("[DISPATCHER] @%0t DISP_DONE: Dispatch complete - mode=%s, total_batches=%0d",
+                            $time, disp_broadcast_reg ? "BROADCAST" : "DISTRIBUTE", disp_total_batches_reg);
+                    $display("[DISPATCHER]        Final tile_idx=%0d, final_addr=%0h, lines_written=%0d",
+                            disp_current_tile_idx_reg, disp_receive_tile_start_reg,
+                            disp_ugd_batch_lines_reg * disp_total_batches_reg);
+                    `else
                     $display("[DISPATCHER] @%0t DISP_DONE: All copies complete, signaling done", $time);
+                    `endif
                 end
             endcase
         end

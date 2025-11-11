@@ -1,267 +1,398 @@
+#!/usr/bin/env python3
 """
-Multi-Tile Dispatch Logic Implementation
+Dispatcher Simulator for Multi-Column Architecture
 
-This module simulates the VECTOR_DISPATCH command behavior described in
-MULTI_TILE_DISPATCH_REFERENCE.md. It copies aligned data from dispatcher_bram
-(shared L2) to tile_bram (private L1) for each compute tile.
+Shows copy steps and final tile BRAM contents for VECTOR_DISPATCH operations.
+Based on MULTI_TILE_DISPATCH_REFERENCE.md and SINGLE_ROW_REFERENCE.md.
+
+Usage:
+    # As a module
+    from dispatch import simulate_dispatch
+    simulate_dispatch(tile_addr=16, man_nv_cnt=16, ugd_vec_size=4,
+                     broadcast=0, col_start=6, col_en=0xFF)
+
+    # Command line
+    python3 dispatch.py <tile_addr> <man_nv_cnt> <ugd_vec_size> <broadcast> <col_start> [col_en]
+
+    # Interactive mode
+    python3 dispatch.py
 """
 
-def pop_count(bitmask):
-    """Count the number of set bits in a bitmask."""
-    return bin(bitmask).count('1')
+import sys
 
-class BRAMArray:
-    """Simple BRAM array simulator for visualization."""
-    def __init__(self, size=512, name="BRAM"):
-        self.name = name
-        self.data = ['_' * 16] * size  # 16 bytes per line
-        self.size = size
-    
-    def write(self, addr, data_16_bytes):
-        """Write 16 bytes (4 words) at address."""
-        if addr < self.size:
-            self.data[addr] = data_16_bytes
-        else:
-            print(f"WARNING: Address {addr} out of range for {self.name}")
-    
-    def read(self, addr):
-        """Read 16 bytes (4 words) at address."""
-        if addr < self.size:
-            return self.data[addr]
-        else:
-            print(f"WARNING: Address {addr} out of range for {self.name}")
-            return '_' * 16
-    
-    def __str__(self):
-        return f"{self.name}[{self.size}]"
-    
-    def display_range(self, start, end):
-        """Display a range of addresses."""
-        print(f"\n{self.name} contents [{start}:{end-1}]:")
-        for i in range(start, min(end, self.size)):
-            print(f"  [{i:3d}]: {self.data[i]}")
 
-def dispatch(
-    cmd_id,
-    tile_addr,
-    man_nv_cnt,
-    ugd_vec_size,
-    disp_right,
-    broadcast,
-    man_4b,
-    col_start,
-    col_en,
-    verbose=True
-):
+def simulate_dispatch(tile_addr, man_nv_cnt, ugd_vec_size, broadcast, col_start, col_en=0xFF, show_steps=True):
     """
     Simulate VECTOR_DISPATCH command execution.
-    
-    Args:
-        cmd_id: Command ID for tracking
-        tile_addr: Starting address in tile_bram
-        man_nv_cnt: Total number of Native Vectors to dispatch
-        ugd_vec_size: Number of NVs to dispatch to a tile at a time
-        disp_right: 1 = dispatch to right brams, 0 = dispatch to left
-        broadcast: 1 = broadcast same data to all tiles, 0 = distribute
-        man_4b: Mantissa format (0 = 8-bit, 1 = 4-bit)
-        col_start: Starting column tile
-        col_en: Bitmask for enabled tiles
-        verbose: Print detailed step-by-step execution
-    
-    Returns:
-        Dictionary with execution statistics
-    """
-    if ugd_vec_size * man_nv_cnt > 128:
-        raise ValueError("ugd_vec_size * man_nv_cnt must be less than or equal to 128")
 
-    num_tiles = pop_count(col_en)
-    disp_addr_start = 0
-    tile_addr_start = 0
-    
-    # Calculate dimensions
-    outer_dim = man_nv_cnt // ugd_vec_size  # UGD
-    inner_dim = ugd_vec_size
-    
-    # Initialize BRAMs
-    side = "right" if disp_right else "left"
-    disp_bram = BRAMArray(size=512, name=f"dispatcher_bram_{side}")
-    tile_brams = [BRAMArray(size=512, name=f"tile_{i}_bram_{side}") 
-                  for i in range(num_tiles)]
-    
-    # Initialize dispatcher_bram with sample data
-    total_lines = man_nv_cnt * 4  # Hardware stores as line count
-    for addr in range(total_lines):
-        disp_bram.write(addr, f"DATA{addr:04d}")
-    
-    if verbose:
-        print()
-        print("Here's what actually happens:")
-        print()
-        print("0. FETCH already puts the data from GDDR6 to dispatcher_bram; dispatcher_bram has data needed for this VECTOR_DISPATCH")
-        print(f"1. DC understands there are {num_tiles} tiles, all of which are enabled.")
-    
-    copy_count = 0
-    copy_steps = []
-    
-    # Main dispatch loop
+    Args:
+        tile_addr: Starting address in tile_bram (base for all columns)
+        man_nv_cnt: Total number of Native Vectors to dispatch
+        ugd_vec_size: Number of NVs to dispatch to a column before switching
+        broadcast: 1 = broadcast same data to all columns, 0 = distribute
+        col_start: Starting column for round-robin (for multi-dispatch continuity)
+        col_en: Bitmask for enabled columns (default 0xFF = 8 columns)
+        show_steps: If True, show all copy steps; if False, only show final BRAMs
+
+    Returns:
+        Dictionary with last_column and next_col_start for continuity
+    """
+
+    # Get enabled columns from bitmask
+    enabled_cols = []
+    for i in range(24):  # Max 24 columns
+        if col_en & (1 << i):
+            enabled_cols.append(i)
+
+    if not enabled_cols:
+        print("ERROR: No columns enabled!")
+        return None
+
+    num_columns = len(enabled_cols)
+
+    print("="*80)
+    print("DISPATCHER SIMULATION")
+    print("="*80)
+    print(f"Parameters:")
+    print(f"  tile_addr     = {tile_addr}")
+    print(f"  man_nv_cnt    = {man_nv_cnt} NVs")
+    print(f"  ugd_vec_size  = {ugd_vec_size} NVs per batch")
+    print(f"  broadcast     = {broadcast} {'(BROADCAST)' if broadcast else '(DISTRIBUTE)'}")
+    print(f"  col_start     = {col_start}")
+    print(f"  col_en        = 0x{col_en:06X} ({num_columns} columns: {enabled_cols})")
+    print()
+
+    # Track what goes into each tile BRAM
+    tile_brams = {col: {} for col in enabled_cols}
+
+    if show_steps:
+        print("COPY STEPS:")
+        print("-"*80)
+
+    step_num = 1
+    last_col_index = 0
+
     if broadcast:
-        for ugd_idx in range(outer_dim):
-            for t_idx in range(num_tiles):
-                for vec_idx in range(inner_dim):
-                    # Broadcast: same data from dispatcher_bram to all tiles
-                    # Disp_offset doesn't depend on t_idx
-                    # vec_idx increments by 1 line (16 bytes) per iteration
-                    disp_offset = disp_addr_start + ugd_idx * inner_dim + vec_idx
-                    tile_offset = ugd_idx * inner_dim + vec_idx
-                    
-                    # Store copy information
-                    copy_count += 1
-                    
-                    # Calculate byte addresses (each line is 16 bytes)
-                    # disp_offset is in line units (each line is 16 bytes)
-                    # For display, show sequential byte ranges: [15:0], [31:16], [47:32], etc.
-                    disp_byte_addr = disp_offset * 4
-                    tile_byte_addr = (tile_addr + tile_offset) * 4
-                    
-                    copy_steps.append({
-                        'step': copy_count,
-                        'tile': t_idx,
-                        'disp_byte': disp_byte_addr,
-                        'tile_byte': tile_byte_addr
-                    })
-                    
-                    # Read from dispatcher_bram
-                    data = disp_bram.read(disp_offset)
-                    
-                    # Write to tile_bram (respecting tile_addr offset)
-                    tile_write_addr = tile_addr + tile_offset
-                    tile_brams[t_idx].write(tile_write_addr, data)
+        # BROADCAST MODE: All columns get the same data
+        if show_steps:
+            print("Mode: BROADCAST - all columns receive same data\n")
+
+        for col_idx in enabled_cols:
+            for nv_idx in range(man_nv_cnt):
+                write_addr = tile_addr + nv_idx * 4
+
+                # Copy 4 lines per NV
+                for line in range(4):
+                    src = nv_idx * 4 + line
+                    dst = write_addr + line
+                    data = f"NV{nv_idx:03d}_L{line}"
+
+                    if show_steps:
+                        print(f"Step {step_num:4d}: Disp[{src:3d}] -> Column {col_idx:2d}[{dst:3d}] = {data}")
+
+                    tile_brams[col_idx][dst] = f"NV{nv_idx:03d}"
+                    step_num += 1
+
+        last_col_index = enabled_cols[-1]  # All columns get data
+
     else:
-        t_idx = 0
-        for ugd_idx in range(outer_dim):
-            t_idx = t_idx % num_tiles
-            if t_idx == 0 and ugd_idx > 0:
-                tile_addr_start += inner_dim
-            for vec_idx in range(inner_dim):
-                # Distribute: round-robin distribution across tiles
-                # Disp_offset depends on t_idx
-                disp_offset = disp_addr_start + ugd_idx * inner_dim + vec_idx
-                tile_offset = tile_addr_start + vec_idx
-            
-                # Store copy information
-                copy_count += 1
-                
-                # Calculate byte addresses (each line is 16 bytes)
-                # disp_offset is in line units (each line is 16 bytes)
-                # For display, show sequential byte ranges: [15:0], [31:16], [47:32], etc.
-                disp_byte_addr = disp_offset * 4
-                tile_byte_addr = (tile_addr + tile_offset) * 4
-                
-                copy_steps.append({
-                    'step': copy_count,
-                    'tile': t_idx,
-                    'disp_byte': disp_byte_addr,
-                    'tile_byte': tile_byte_addr
-                })
-                
-                # Read from dispatcher_bram
-                data = disp_bram.read(disp_offset)
-                
-                # Write to tile_bram (respecting tile_addr offset)
-                tile_write_addr = tile_addr + tile_offset
-                tile_brams[t_idx].write(tile_write_addr, data)
-            t_idx += 1
-    
-    # Print output in documentation format
-    if verbose:
-        side_label = "right" if disp_right else "left"
-        broadcast_label = "broadcasts" if broadcast else "distributes"
-        print(f"2. DC {broadcast_label} data sequentially from dispatcher_bram_{side_label} to tile_bram_{side_label}, each step below writes 4 lines of data which is 1 Native Vector of 128 GFP8 numbers")
-        for step_info in copy_steps:
-            # Display as byte ranges [high:low] where each is a 16-byte chunk
-            tile_hi = step_info['tile_byte'] + 3
-            tile_lo = step_info['tile_byte']
-            disp_hi = step_info['disp_byte'] + 3
-            disp_lo = step_info['disp_byte']
-            
-            # Format to match documentation style
-            print(f"    {step_info['step']}. tile_{step_info['tile']}_bram [{tile_hi}:{tile_lo}]   <= dispatcher_bram [{disp_hi}:{disp_lo}]")
-        print("3. Dispatch done")
-    
-    if verbose:
-        print()
-    
+        # DISTRIBUTE MODE: Round-robin with batches
+        if show_steps:
+            print(f"Mode: DISTRIBUTE - round-robin with batch size {ugd_vec_size}\n")
+
+        current_col_idx = col_start % num_columns
+        round_num = 0
+        nv_dispatched = 0
+
+        while nv_dispatched < man_nv_cnt:
+            batch_size = min(ugd_vec_size, man_nv_cnt - nv_dispatched)
+            col_physical = enabled_cols[current_col_idx]
+
+            # Calculate base write address for this round
+            base_write_addr = tile_addr + round_num * ugd_vec_size * 4
+
+            # Dispatch batch to current column
+            for nv_in_batch in range(batch_size):
+                nv_idx = nv_dispatched + nv_in_batch
+                write_addr = base_write_addr + nv_in_batch * 4
+
+                # Copy 4 lines per NV
+                for line in range(4):
+                    src = nv_idx * 4 + line
+                    dst = write_addr + line
+                    data = f"NV{nv_idx:03d}_L{line}"
+
+                    if show_steps:
+                        print(f"Step {step_num:4d}: Disp[{src:3d}] -> Column {col_physical:2d}[{dst:3d}] = {data}")
+
+                    tile_brams[col_physical][dst] = f"NV{nv_idx:03d}"
+                    step_num += 1
+
+            last_col_index = col_physical
+            nv_dispatched += batch_size
+
+            # Move to next column
+            prev_col_idx = current_col_idx
+            current_col_idx = (current_col_idx + 1) % num_columns
+
+            # Check for wrap-around
+            if current_col_idx < prev_col_idx:
+                if show_steps:
+                    print(f"    >> Wrap-around: column {enabled_cols[prev_col_idx]} -> column {enabled_cols[current_col_idx]}, round {round_num} -> {round_num+1}")
+                round_num += 1
+
+    # Show final BRAM contents
+    print()
+    print("="*80)
+    print("TILE BRAM CONTENTS AFTER DISPATCH:")
+    print("="*80)
+
+    for col in sorted(tile_brams.keys()):
+        if tile_brams[col]:
+            print(f"\nColumn {col}:")
+            print("-"*40)
+
+            # Group consecutive addresses by NV
+            nv_ranges = {}
+            for addr, nv in sorted(tile_brams[col].items()):
+                if nv not in nv_ranges:
+                    nv_ranges[nv] = []
+                nv_ranges[nv].append(addr)
+
+            # Print each NV's address range
+            for nv in sorted(nv_ranges.keys(), key=lambda x: int(x[2:])):
+                addrs = sorted(nv_ranges[nv])
+                if addrs:
+                    print(f"  [{min(addrs):3d}-{max(addrs):3d}] {nv}")
+        else:
+            print(f"\nColumn {col}: Empty")
+
+    # Calculate next col_start for multi-dispatch continuity
+    if broadcast:
+        next_col_start = 0  # Not relevant for broadcast
+    else:
+        # Find which column index received the last NV
+        last_col_idx = enabled_cols.index(last_col_index)
+        next_col_start = enabled_cols[(last_col_idx + 1) % num_columns]
+
+    print()
+    print("="*80)
+    print(f"Last column to receive data: {last_col_index}")
+    print(f"Next dispatch should use col_start: {next_col_start}")
+    print("="*80)
+
     return {
-        'cmd_id': cmd_id,
-        'copy_count': copy_count,
-        'num_tiles': num_tiles,
-        'total_lines': total_lines
+        'last_column': last_col_index,
+        'next_col_start': next_col_start
     }
 
 
-def example_dispatch_left():
-    """Example: DISPATCH LEFT with broadcast."""
-    print("\n" + "=" * 80)
-    print("EXAMPLE 1: DISPATCH LEFT (BROADCAST MODE)")
-    print("=" * 80)
-    
-    dispatch(
-        cmd_id=3,
-        tile_addr=0,
-        man_nv_cnt=8,      # 8 Native Vectors total (B * V)
-        ugd_vec_size=4,    # 4 NVs per UGD
-        disp_right=0,      # Dispatch to left
-        broadcast=1,       # Broadcast mode
-        man_4b=0,
-        col_start=0,
-        col_en=0x000F      # 4 tiles enabled
-    )
+def generate_testbench_vectors(tile_addr, man_nv_cnt, ugd_vec_size, broadcast, col_start, col_en,
+                              output_format='hex', filename=None):
+    """Generate testbench vectors for RTL simulation
+
+    Args:
+        output_format: 'hex', 'bin', or 'verilog'
+        filename: Output filename (None for stdout)
+
+    Returns:
+        Dictionary with test vectors and expected outputs
+    """
+
+    # Run simulation to get expected results
+    enabled_cols = [i for i in range(24) if col_en & (1 << i)]
+    num_columns = len(enabled_cols)
+
+    # Generate test vectors
+    vectors = {
+        'inputs': {
+            'tile_addr': tile_addr,
+            'man_nv_cnt': man_nv_cnt,
+            'ugd_vec_size': ugd_vec_size,
+            'broadcast': broadcast,
+            'col_start': col_start,
+            'col_en': col_en
+        },
+        'expected_tiles': {},
+        'dispatcher_bram': []
+    }
+
+    # Generate dispatcher BRAM contents (source data)
+    for i in range(man_nv_cnt * 4):  # 4 lines per NV
+        if output_format == 'hex':
+            data = f"{i:08x}"  # Simple incrementing pattern
+        else:
+            data = i
+        vectors['dispatcher_bram'].append(data)
+
+    # Calculate expected tile contents using simulation
+    if num_columns > 0:
+        # Initialize tile BRAMs
+        tile_brams = {}
+        for col in enabled_cols:
+            tile_brams[col] = {}
+
+        # Simulate distribution
+        if broadcast:
+            # All tiles get same data
+            for nv_idx in range(man_nv_cnt):
+                write_addr = tile_addr + nv_idx * 4
+                for col in enabled_cols:
+                    for line in range(4):
+                        tile_brams[col][write_addr + line] = f"NV{nv_idx:03d}_L{line}"
+        else:
+            # Round-robin distribution
+            current_col_idx = col_start % num_columns
+            round_num = 0
+            nv_dispatched = 0
+
+            while nv_dispatched < man_nv_cnt:
+                batch_size = min(ugd_vec_size, man_nv_cnt - nv_dispatched)
+                col_physical = enabled_cols[current_col_idx]
+                base_write_addr = tile_addr + round_num * ugd_vec_size * 4
+
+                for nv_in_batch in range(batch_size):
+                    nv_idx = nv_dispatched + nv_in_batch
+                    write_addr = base_write_addr + nv_in_batch * 4
+
+                    for line in range(4):
+                        dst = write_addr + line
+                        tile_brams[col_physical][dst] = f"NV{nv_idx:03d}_L{line}"
+
+                nv_dispatched += batch_size
+                prev_col_idx = current_col_idx
+                current_col_idx = (current_col_idx + 1) % num_columns
+
+                if current_col_idx < prev_col_idx:
+                    round_num += 1
+
+        # Convert to expected format
+        for col, contents in tile_brams.items():
+            vectors['expected_tiles'][col] = contents
+
+    # Write to file if specified
+    if filename:
+        with open(filename, 'w') as f:
+            if output_format == 'hex':
+                f.write("// Testbench vectors in hex format\n")
+                f.write(f"// Inputs: tile_addr={tile_addr:03x} man_nv_cnt={man_nv_cnt} ")
+                f.write(f"ugd_vec_size={ugd_vec_size} broadcast={broadcast} ")
+                f.write(f"col_start={col_start} col_en={col_en:06x}\n")
+                f.write("\n// Dispatcher BRAM contents:\n")
+                for addr, data in enumerate(vectors['dispatcher_bram']):
+                    f.write(f"@{addr:04x} {data}\n")
+
+                f.write("\n// Expected tile contents:\n")
+                for tile, contents in vectors['expected_tiles'].items():
+                    f.write(f"\n// Tile {tile}:\n")
+                    for addr in sorted(contents.keys()):
+                        f.write(f"@{addr:04x} {contents[addr]}\n")
+
+            elif output_format == 'verilog':
+                f.write("// Verilog testbench initialization\n")
+                f.write(f"initial begin\n")
+                f.write(f"    // Configure dispatch parameters\n")
+                f.write(f"    tile_addr = 11'd{tile_addr};\n")
+                f.write(f"    man_nv_cnt = 11'd{man_nv_cnt};\n")
+                f.write(f"    ugd_vec_size = 5'd{ugd_vec_size};\n")
+                f.write(f"    broadcast = 1'b{1 if broadcast else 0};\n")
+                f.write(f"    col_start = 5'd{col_start};\n")
+                f.write(f"    col_en = 24'h{col_en:06x};\n")
+                f.write(f"    \n")
+                f.write(f"    // Initialize dispatcher BRAM\n")
+                for addr, data in enumerate(vectors['dispatcher_bram']):
+                    f.write(f"    disp_bram[{addr}] = 32'h{data};\n")
+                f.write(f"end\n")
+
+        print(f"Generated test vectors saved to {filename}")
+
+    return vectors
 
 
-def example_dispatch_right():
-    """Example: DISPATCH RIGHT with distribute."""
-    print("\n" + "=" * 80)
-    print("EXAMPLE 2: DISPATCH RIGHT (DISTRIBUTE MODE)")
-    print("=" * 80)
-    
-    dispatch(
-        cmd_id=3,
-        tile_addr=0,
-        man_nv_cnt=32,     # 32 Native Vectors total (C * V)
-        ugd_vec_size=4,    # 4 NVs per UGD
-        disp_right=1,      # Dispatch to right
-        broadcast=0,       # Distribute mode
-        man_4b=0,
-        col_start=0,
-        col_en=0x000F      # 4 tiles enabled
-    )
+def interactive_mode():
+    """Interactive dispatcher simulator."""
+    print("INTERACTIVE DISPATCHER SIMULATOR")
+    print("Assumes 128 NVs available (NV000-NV127)")
+    print("Enter 'quit' to exit")
+    print()
+
+    while True:
+        print("\nEnter dispatch parameters:")
+
+        try:
+            cmd = input("tile_addr: ")
+            if cmd.lower() == 'quit':
+                break
+            tile_addr = int(cmd)
+
+            man_nv_cnt = int(input("man_nv_cnt: "))
+            ugd_vec_size = int(input("ugd_vec_size: "))
+            broadcast = int(input("broadcast (0/1): "))
+            col_start = int(input("col_start: "))
+            col_en_str = input("col_en (hex, e.g. 0xFF): ")
+            col_en = int(col_en_str, 16) if '0x' in col_en_str.lower() else int(col_en_str)
+
+            show_steps_str = input("Show copy steps? (y/n, default=y): ").strip().lower()
+            show_steps = show_steps_str != 'n'
+
+            simulate_dispatch(tile_addr, man_nv_cnt, ugd_vec_size,
+                            broadcast, col_start, col_en, show_steps)
+
+        except (ValueError, KeyboardInterrupt):
+            print("\nInvalid input or interrupted.")
+        except EOFError:
+            break
+
+    print("\nGoodbye!")
+
+
+def main():
+    """Main entry point for command-line usage."""
+
+    if len(sys.argv) == 1:
+        # No arguments - run interactive mode
+        interactive_mode()
+
+    elif len(sys.argv) == 2 and sys.argv[1] in ['help', '-h', '--help']:
+        print("Usage:")
+        print("  python3 dispatch.py                          # Interactive mode")
+        print("  python3 dispatch.py <tile_addr> <man_nv_cnt> <ugd_vec_size> <broadcast> <col_start> [col_en]")
+        print()
+        print("Examples:")
+        print("  python3 dispatch.py 0 8 2 0 0 0x0F          # 8 NVs, batch=2, 4 columns")
+        print("  python3 dispatch.py 16 16 4 0 6 0xFF        # Wrap-around example")
+        print()
+        print("Parameters:")
+        print("  tile_addr    : Base address in tile BRAM")
+        print("  man_nv_cnt   : Number of Native Vectors to dispatch")
+        print("  ugd_vec_size : Batch size (NVs per column before switching)")
+        print("  broadcast    : 0=distribute (round-robin), 1=broadcast (all columns)")
+        print("  col_start    : Starting column for round-robin")
+        print("  col_en       : Column enable bitmask (hex, default=0xFF for 8 columns)")
+
+    elif len(sys.argv) >= 6:
+        # Command-line arguments provided
+        try:
+            tile_addr = int(sys.argv[1])
+            man_nv_cnt = int(sys.argv[2])
+            ugd_vec_size = int(sys.argv[3])
+            broadcast = int(sys.argv[4])
+            col_start = int(sys.argv[5])
+            col_en = int(sys.argv[6], 16) if len(sys.argv) > 6 else 0xFF
+
+            simulate_dispatch(tile_addr, man_nv_cnt, ugd_vec_size,
+                            broadcast, col_start, col_en)
+
+        except ValueError as e:
+            print(f"Error parsing arguments: {e}")
+            print("Run 'python3 dispatch.py help' for usage")
+            sys.exit(1)
+
+    else:
+        print("Invalid number of arguments")
+        print("Run 'python3 dispatch.py help' for usage")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    # Run examples
-    example_dispatch_left()
-    example_dispatch_right()
-    
-    print("\n" + "=" * 80)
-    print("SUMMARY OF DISPATCH LOGIC:")
-    print("=" * 80)
-    print("""
-The dispatch logic uses nested loops:
-  1. Outer loop: ugd_idx (UGD dimension)
-  2. Middle loop: t_idx (tile index)
-  3. Inner loop: vec_idx (vector index within UGD)
-
-Address calculation:
-  - broadcast mode: disp_offset = disp_addr_start + ugd_idx * inner_dim * 4 + vec_idx * 4
-                     (same source for all tiles)
-  
-  - distribute mode: disp_offset = disp_addr_start + (ugd_idx * num_tiles + t_idx) * inner_dim * 4 + vec_idx * 4
-                     (different source per tile)
-  
-  - tile_offset (same for both): ugd_idx * inner_dim * 4 + vec_idx * 4
-  
-The key difference:
-  - Broadcast: All tiles get the same data (for left activations)
-  - Distribute: Tiles get different chunks in round-robin fashion (for right weights)
-    """)
-
+    main()

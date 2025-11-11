@@ -33,7 +33,7 @@ import gemm_pkg::*;
     parameter [8:0] GDDR6_PAGE_ID = 9'd2,   // GDDR6 Channel page ID
     parameter TGT_DATA_WIDTH = 256,         // Target data width (256-bit AXI)
     parameter AXI_ADDR_WIDTH = 42,          // AXI address width (42-bit for GDDR6)
-    parameter int NUM_TILES = 2             // Number of parallel compute tiles (2-24)
+    parameter int NUM_TILES = 8             // Number of parallel compute tiles (2-24)
 )
 (
     // Clock and Reset
@@ -371,10 +371,22 @@ import gemm_pkg::*;
     logic          tile_fifo_afull [NUM_TILES];       // FIFO → CE
     logic [8:0]    tile_fifo_count [NUM_TILES];       // FIFO status (0-128)
 
+    // Debug: Report number of tiles being instantiated
+    initial begin
+        $display("[ENGINE_TOP] @%0t Instantiating NUM_TILES=%0d compute tiles", $time, NUM_TILES);
+    end
+
     generate
         for (genvar tile_id = 0; tile_id < NUM_TILES; tile_id++) begin : gen_compute_tiles
+            // Debug: Report each tile instantiation
+            initial begin
+                $display("[ENGINE_TOP] @%0t Creating compute tile[%0d]", $time, tile_id);
+            end
+
             // Compute Engine Instance
-            compute_engine_modular u_compute_engine (
+            compute_engine_modular #(
+                .TILE_ID            (tile_id)        // Pass tile ID for debugging
+            ) u_compute_engine (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
 

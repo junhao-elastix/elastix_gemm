@@ -19,6 +19,9 @@
 
 module compute_engine_modular
 import gemm_pkg::*;
+#(
+    parameter int TILE_ID = 0  // Tile ID for debugging
+)
 (
     // Clock and Reset
     input  logic        i_clk,
@@ -179,12 +182,16 @@ import gemm_pkg::*;
                 ST_IDLE: begin
                     if (i_tile_en) begin
                         state_reg <= ST_COMP_BUSY;
-                        $display("[CE_DEBUG] @%t Tile command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
-                                 $time, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
+                        $display("[CE_DEBUG] @%t Tile[%0d] command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
+                                 $time, TILE_ID, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
+                        $display("[CE_DEBUG] @%t Tile[%0d] STARTING MATMUL computation", $time, TILE_ID);
                     end
                 end
                 ST_COMP_BUSY: begin
-                    if (bcv_tile_done) state_reg <= ST_COMP_DONE;
+                    if (bcv_tile_done) begin
+                        state_reg <= ST_COMP_DONE;
+                        $display("[CE_DEBUG] @%t Tile[%0d] COMPLETED MATMUL computation", $time, TILE_ID);
+                    end
                 end
                 ST_COMP_DONE: begin
                     state_reg <= ST_IDLE;

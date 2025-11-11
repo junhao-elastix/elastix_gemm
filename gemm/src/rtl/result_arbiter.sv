@@ -130,6 +130,16 @@ module result_arbiter
                         arb_col_en_reg <= i_mc_tile_en;  // Capture which tiles are enabled
                         arb_current_tile_reg <= 5'd0;    // Start round-robin from tile 0
 
+                        // Debug: Show which tiles will be collecting from
+                        $display("[ARB] @%0t Starting result collection: col_en=0x%06x, B=%0d, C=%0d, results_per_tile=%0d",
+                                 $time, i_mc_tile_en, i_mc_left_ugd_len, i_mc_right_ugd_len,
+                                 16'(i_mc_left_ugd_len) * 16'(i_mc_right_ugd_len));
+                        for (int i = 0; i < NUM_TILES; i++) begin
+                            if (i_mc_tile_en[i]) begin
+                                $display("[ARB] @%0t   --> Will collect from Tile[%0d]", $time, i);
+                            end
+                        end
+
                         // Reset per-tile counters and initialize shadow counts from FIFOs
                         for (int i = 0; i < NUM_TILES; i++) begin
                             arb_tile_result_cnt[i] <= 16'd0;

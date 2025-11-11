@@ -122,7 +122,7 @@ import gemm_pkg::*;
     logic [3:0]  r_burst_beat_count;      // Track beats within current burst (0-15)
 
     // ===================================================================
-    // AR FIFO - 64-deep Regular FIFO (not FWFT)
+    // AR FIFO - 64-deep Regular FIFO
     // ===================================================================
     // Stores burst start line offsets AND target for each AR issued
     // Registered output to avoid race conditions
@@ -157,18 +157,11 @@ import gemm_pkg::*;
             ar_fifo_wr_ptr <= '0;
             ar_fifo_rd_ptr <= '0;
             ar_fifo_rd_data_reg <= '0;
-            `ifdef SIMULATION
-            $display("[AR_FIFO_RESET] @%0t Resetting AR FIFO pointers in ST_FETCH_DONE", $time);
-            `endif
         end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
             // Pre-load first AR FIFO entry at FETCH_START
             // This ensures ar_fifo_rd_data_reg has correct {target, addr} for first AR
             ar_fifo[0] <= {i_fetch_target, 11'd0};  // {target, addr=0}
             ar_fifo_rd_data_reg <= {i_fetch_target, 11'd0};
-            `ifdef SIMULATION
-            $display("[AR_FIFO_INIT] @%0t Pre-loading AR_FIFO[0] with target=%s, addr=0",
-                     $time, i_fetch_target ? "RIGHT" : " LEFT");
-            `endif
         end else begin
             // Handle writes
             if (ar_fifo_wr) begin
@@ -180,16 +173,7 @@ import gemm_pkg::*;
                 // This ensures data is valid next cycle when AR can issue
                 if (ar_fifo_empty) begin
                     ar_fifo_rd_data_reg <= {fetch_target_reg, current_line_reg};
-                    `ifdef SIMULATION
-                    $display("[FIFO_WR_FIRST] @%0t wr_ptr=%0d, addr=%0d, target=%s, loading output reg immediately",
-                             $time, ar_fifo_wr_ptr, current_line_reg, fetch_target_reg ? "RIGHT" : "LEFT");
-                    `endif
-                end else begin
-                    `ifdef SIMULATION
-                    $display("[FIFO_WR] @%0t wr_ptr=%0d, addr=%0d, target=%s",
-                             $time, ar_fifo_wr_ptr, current_line_reg, fetch_target_reg ? "RIGHT" : "LEFT");
-                    `endif
-                end
+                end 
             end
 
             // Handle reads (on AR handshake)
@@ -200,23 +184,10 @@ import gemm_pkg::*;
                 if ((ar_fifo_count > 1) || ar_fifo_wr) begin
                     // Bypass logic: if reading address being written, use write data directly
                     if (ar_fifo_wr && (ar_fifo_wr_ptr == (ar_fifo_rd_ptr + 1))) begin
-                        ar_fifo_rd_data_reg <= {fetch_target_reg, current_line_reg};  // Bypass from write source
-                        `ifdef SIMULATION
-                        $display("[FIFO_RD_BYPASS] @%0t rd_ptr=%0d->%0d, bypassing wr_ptr=%0d, addr=%0d, target=%s",
-                                 $time, ar_fifo_rd_ptr, ar_fifo_rd_ptr+1, ar_fifo_wr_ptr, current_line_reg, fetch_target_reg ? "RIGHT" : "LEFT");
-                        `endif
+                        ar_fifo_rd_data_reg <= {fetch_target_reg, current_line_reg};
                     end else begin
                         ar_fifo_rd_data_reg <= ar_fifo[ar_fifo_rd_ptr + 1];
-                        `ifdef SIMULATION
-                        $display("[FIFO_RD] @%0t rd_ptr=%0d->%0d, count=%0d, wr=%0d, addr=%0d, target=%s",
-                                 $time, ar_fifo_rd_ptr, ar_fifo_rd_ptr+1, ar_fifo_count, ar_fifo_wr, ar_fifo[ar_fifo_rd_ptr + 1][10:0], ar_fifo[ar_fifo_rd_ptr + 1][11] ? "RIGHT" : "LEFT");
-                        `endif
                     end
-                end else begin
-                    `ifdef SIMULATION
-                    $display("[FIFO_RD_LAST] @%0t rd_ptr=%0d->%0d, count=%0d, wr=%0d (FIFO will be empty)",
-                             $time, ar_fifo_rd_ptr, ar_fifo_rd_ptr+1, ar_fifo_count, ar_fifo_wr);
-                    `endif
                 end
             end
         end
@@ -260,17 +231,10 @@ import gemm_pkg::*;
             r_target_count <= '0;
             r_target_current_burst <= 1'b0;
             r_burst_beat_count <= '0;
-            `ifdef SIMULATION
-            $display("[R_TARGET_FIFO_RESET] @%0t Resetting R-target FIFO pointers in ST_FETCH_DONE", $time);
-            `endif
         end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
             // Pre-load first target at FETCH_START (R bursts may arrive before AR handshakes!)
             r_target_fifo[0] <= i_fetch_target;
             r_target_current_burst <= i_fetch_target;
-            `ifdef SIMULATION
-            $display("[R_TARGET_INIT] @%0t Pre-loading FIFO[0] with target=%s at FETCH_START",
-                     $time, i_fetch_target ? "RIGHT" : " LEFT");
-            `endif
         end else begin
             // FIFO operates: push on AR handshake, pop when starting new burst
 
@@ -278,9 +242,6 @@ import gemm_pkg::*;
             if (r_target_wr) begin
                 r_target_fifo[r_target_wr_ptr] <= ar_target;  // Store target from AR FIFO output
                 r_target_wr_ptr <= r_target_wr_ptr + 1;
-                `ifdef SIMULATION
-                $display("[R_TARGET_WR] @%0t wr_ptr=%0d, target=%s", $time, r_target_wr_ptr, ar_target ? "RIGHT" : "LEFT");
-                `endif
             end
 
             // Burst beat counter and target loading
@@ -350,18 +311,8 @@ import gemm_pkg::*;
                 // Unpacking needs unpack_idx_reg to reach 512 (512 exponents: indices 0-511)
                 // BRAM writes are registered, so need 2 settle cycles after last line
                 if (lines_received >= 528 && unpack_idx_reg >= 512 && settle_cycles >= 2) begin
-                    `ifdef SIMULATION
-                    $display("[FETCHER_OPT] @%0t FETCH_DONE: lines_received=%0d, unpack_idx_reg=%0d, settle=%0d",
-                             $time, lines_received, unpack_idx_reg, settle_cycles);
-                    `endif
                     state_next = ST_FETCH_DONE;
                 end
-                `ifdef SIMULATION
-                else if (lines_received >= 528) begin
-                    $display("[FETCHER_OPT] @%0t Waiting for settle: lines_received=%0d, unpack_idx=%0d, settle=%0d",
-                             $time, lines_received, unpack_idx_reg, settle_cycles);
-                end
-                `endif
             end
 
             ST_FETCH_DONE: begin
@@ -396,13 +347,6 @@ import gemm_pkg::*;
                         lines_received <= '0;
                         exp_lines_received <= '0;
                         man_lines_received <= '0;
-                        `ifdef SIMULATION
-                        $display("[FETCHER_OPT] @%0t FETCH_START: DDR_addr=%0d, len=%0d, current_line=%0d, target=%s",
-                                 $time, i_fetch_addr, i_fetch_len, current_line_reg,
-                                 i_fetch_target ? "RIGHT" : " LEFT");
-                        $display("[FETCHER_OPT] @%0t Initializing r_target_fifo[0] with target=%s",
-                                 $time, i_fetch_target ? "RIGHT" : " LEFT");
-                        `endif
                         settle_cycles <= '0;
                         // Note: r_target_fifo initialization happens in R-target always_ff block
                     end
@@ -411,10 +355,6 @@ import gemm_pkg::*;
                 ST_FETCH_ACTIVE: begin
                     // AR issuing: Issue ARs as fast as FIFO accepts
                     if (ar_issue_req && ar_can_issue) begin
-                        `ifdef SIMULATION
-                        $display("[FETCHER_OPT_AR] @%0t Issue AR #%0d: fetch_addr=%0d, current_line=%0d, addr=%0d",
-                                 $time, ars_issued, fetch_addr_reg, current_line_reg, fetch_addr_reg + current_line_reg);
-                        `endif
                         current_line_reg <= current_line_reg + 16;  // Next burst
                         ars_issued <= ars_issued + 1;
                     end
@@ -437,12 +377,6 @@ import gemm_pkg::*;
                 end
 
                 ST_FETCH_DONE: begin
-                    // Reset ALL FIFO pointers when FETCH completes
-                    // This ensures clean state for next FETCH (no overlap issues)
-                    `ifdef SIMULATION
-                    $display("[FETCHER_OPT] @%0t ST_FETCH_DONE: Resetting AR and R-target FIFO pointers", $time);
-                    `endif
-                    // Note: FIFO resets happen in separate always_ff blocks below
                 end
 
                 default: begin
@@ -505,14 +439,6 @@ import gemm_pkg::*;
     assign axi_ddr_if.araddr = {GDDR6_PAGE_ID, 2'b00, line_addr_26bit, {ADDR_BYTE_SHIFT{1'b0}}};
     assign axi_ddr_if.arlen = FIXED_BURST_LEN;
 
-    `ifdef SIMULATION
-    always @(posedge i_clk) begin
-        if (axi_ddr_if.arvalid && axi_ddr_if.arready) begin
-            $display("[FETCHER_OPT_AXI] @%0t AR HANDSHAKE: araddr=0x%x, line_addr=%0d, fifo_out=%0d",
-                     $time, axi_ddr_if.araddr, line_addr_26bit, ar_fifo_rd_data_reg);
-        end
-    end
-    `endif
     assign axi_ddr_if.arsize = 3'h5;  // 32 bytes
     assign axi_ddr_if.arburst = 2'b01;  // INCR
     assign axi_ddr_if.arlock = 1'b0;
@@ -544,15 +470,6 @@ import gemm_pkg::*;
             bram_wr_en_reg <= 1'b0;  // Default
 
             if (state_reg == ST_FETCH_ACTIVE && axi_ddr_if.rvalid && axi_ddr_if.rready && lines_received < 528) begin
-                `ifdef SIMULATION
-                // Detailed debug for all BRAM writes
-                $display("[FETCHER_OPT_BRAM] @%0t lines_rcv=%0d, exp_cnt=%0d, man_cnt=%0d, cond=%b, addr_calc=%0d, data[31:0]=0x%08x",
-                         $time, lines_received, exp_lines_received, man_lines_received,
-                         (lines_received < 16),
-                         (lines_received < 16) ? {7'd0, exp_lines_received[3:0]} : ({2'd0, man_lines_received[8:0]} + 11'd16),
-                         axi_ddr_if.rdata[31:0]);
-                `endif
-
                 // Write data to BRAM
                 if (lines_received < 16) begin
                     bram_wr_addr_reg <= {7'd0, exp_lines_received[3:0]};  // 0-15
@@ -561,9 +478,6 @@ import gemm_pkg::*;
                 end
                 bram_wr_data_reg <= axi_ddr_if.rdata;
                 bram_wr_en_reg <= 1'b1;
-                // FIX: Use registered target for current burst
-                // r_target_current_burst is loaded at first beat of each burst from R-target FIFO
-                // This ensures correct target even when new FETCH overwrites fetch_target_reg
                 bram_wr_target_reg <= r_target_current_burst;
             end
         end
@@ -629,34 +543,6 @@ import gemm_pkg::*;
     // Exp packed read interface
     assign o_exp_packed_rd_addr = unpack_exp_packed_rd_addr_reg;
     assign o_exp_packed_rd_target = fetch_target_reg;
-
-    // Debug: Trace exponent writes
-    `ifdef SIMULATION
-    always @(posedge i_clk) begin
-        if (o_exp_left_wr_en) begin
-            $display("[FETCHER_EXP_WR] @%0t LEFT exp[%0d] <= 0x%02x (unpack_idx=%0d, packed_rd_addr=%0d)",
-                     $time, o_exp_left_wr_addr, o_exp_left_wr_data, unpack_idx_reg, unpack_exp_packed_rd_addr_reg);
-        end
-        if (o_exp_right_wr_en) begin
-            $display("[FETCHER_EXP_WR] @%0t RIGHT exp[%0d] <= 0x%02x (unpack_idx=%0d, packed_rd_addr=%0d)",
-                     $time, o_exp_right_wr_addr, o_exp_right_wr_data, unpack_idx_reg, unpack_exp_packed_rd_addr_reg);
-        end
-    end
-    `endif
-
-    `ifdef SIMULATION
-    // Debug exponent writes
-    always @(posedge i_clk) begin
-        if (o_exp_left_wr_en) begin
-            $display("[FETCHER_OPT_EXP] @%0t LEFT exp write: addr=%0d, data=0x%02x, unpack_idx=%0d, unpack_wr_idx=%0d",
-                     $time, o_exp_left_wr_addr, o_exp_left_wr_data, unpack_idx_reg, unpack_wr_idx);
-        end
-        if (o_exp_right_wr_en) begin
-            $display("[FETCHER_OPT_EXP] @%0t RIGHT exp write: addr=%0d, data=0x%02x, unpack_idx=%0d, unpack_wr_idx=%0d",
-                     $time, o_exp_right_wr_addr, o_exp_right_wr_data, unpack_idx_reg, unpack_wr_idx);
-        end
-    end
-    `endif
 
     // ===================================================================
     // AXI Write Channels (unused - tie off)

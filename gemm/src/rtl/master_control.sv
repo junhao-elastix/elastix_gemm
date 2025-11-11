@@ -95,7 +95,9 @@ import gemm_pkg::*;
         ST_WAIT_FETCH     = 4'd9,
         ST_WAIT_DISP      = 4'd10,  // WAIT_DISPATCH barrier command (0xF3)
         ST_WAIT_TILE      = 4'd11,  // WAIT_MATMUL barrier command (0xF4)
-        ST_CMD_COMPLETE   = 4'd12
+        ST_CMD_COMPLETE   = 4'd12,
+        ST_EXEC_READOUT   = 4'd13,  // READOUT command (0xF5)
+        ST_WAIT_READOUT   = 4'd14   // Wait for READOUT completion
         // ST_WAIT_DISP_OP removed - DISPATCH returns immediately per MS2.0 async model
     } state_t;
 
@@ -212,6 +214,7 @@ import gemm_pkg::*;
                     e_cmd_op_tile:      state_next = ST_EXEC_TILE;
                     e_cmd_op_wait_disp: state_next = ST_WAIT_DISP;
                     e_cmd_op_wait_tile: state_next = ST_WAIT_TILE;
+                    e_cmd_op_readout:   state_next = ST_EXEC_READOUT;
                     default:            state_next = ST_IDLE; // Error case
                 endcase
             end
@@ -283,6 +286,21 @@ import gemm_pkg::*;
                     $display("[MC] @%0t WAIT_TILE blocking: i_ce_state=%0d (waiting for IDLE)",
                              $time, i_ce_state);
                 end
+            end
+
+            ST_EXEC_READOUT: begin
+                // READOUT command: Initiate result collection
+                // Payload word1 contains start_col parameter
+                state_next = ST_WAIT_READOUT;
+                $display("[MC] @%0t EXEC_READOUT: Starting readout from column %0d",
+                         $time, payload_word1_reg[23:0]);
+            end
+
+            ST_WAIT_READOUT: begin
+                // Wait for result readout to complete
+                // For now, immediately complete (will sync with result_arbiter later)
+                state_next = ST_CMD_COMPLETE;
+                $display("[MC] @%0t WAIT_READOUT: Readout complete", $time);
             end
 
             ST_CMD_COMPLETE: begin
@@ -506,6 +524,14 @@ import gemm_pkg::*;
                     ce_tile_en_reg <= ce_col_en_reg;  // Enable only tiles specified by col_en
                     $display("[MC] @%0t EXEC_TILE Cycle 2: Asserting ce_tile_en=0x%06x (left=%0d, right=%0d)",
                              $time, ce_col_en_reg, o_ce_tile_left_addr, o_ce_tile_right_addr);
+
+                    // Debug: Show which tiles are being enabled
+                    for (int i = 0; i < 8; i++) begin
+                        if (ce_col_en_reg[i]) begin
+                            $display("[MC] @%0t   --> Tile[%0d] ENABLED for MATMUL", $time, i);
+                        end
+                    end
+                    $display("[MC] @%0t   --> Total tiles enabled: %0d", $time, $countones(ce_col_en_reg[7:0]));
                 end
             end
         end

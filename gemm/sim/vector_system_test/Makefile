@@ -208,3 +208,18 @@ help:
 	@echo ""
 	@echo "========================================================================"
 
+
+# Multi-tile debug test
+multi-tile: clean
+	@echo "Creating work library..."
+	@$(VLIB) $(WORK) > /dev/null 2>&1
+	@echo "Compiling multi-tile test..."
+	@$(VLOG) -quiet -work $(WORK) -f $(DSM_INCLUDE_FILE) $(DSM_COMPILE_FILE) $(DEVICE_MODELS) > /dev/null 2>&1
+	@$(VLOG) -quiet -work $(WORK) $(INCLUDES) $(VLOG_DEFINES) -sv $(RTL_SOURCES) ../../src/tb/tb_memory_model_realistic.sv tb_multi_tile_test.sv > /dev/null 2>&1
+	@echo "Running multi-tile test..."
+	@$(VSIM) -batch -c tb_multi_tile_test -do "run -all; quit" > multi_tile.log 2>&1
+	@echo "Multi-tile test complete. Results:"
+	@echo ""
+	@grep -E "TEST|PASS|FAIL|MONITOR" multi_tile.log || echo "No test results found"
+
+.PHONY: multi-tile

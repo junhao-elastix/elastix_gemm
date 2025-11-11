@@ -142,7 +142,7 @@ import gemm_pkg::*;
     fetcher #(
         .MAN_WIDTH      (MAN_WIDTH),
         .EXP_WIDTH      (EXP_WIDTH),
-        .DISP_BRAM_DEPTH     (DISP_BRAM_DEPTH),
+        .BRAM_DEPTH          (DISP_BRAM_DEPTH),
         .AXI_ADDR_WIDTH (AXI_ADDR_WIDTH),
         .BRAM_ADDR_WIDTH(BRAM_ADDR_WIDTH),
         .TILE_ADDR_WIDTH(TILE_ADDR_WIDTH),
@@ -180,8 +180,8 @@ import gemm_pkg::*;
     dispatcher #(
         .MAN_WIDTH       (MAN_WIDTH),
         .EXP_WIDTH       (EXP_WIDTH),
-        .DISP_BRAM_DEPTH      (DISP_BRAM_DEPTH),
-        .TILE_BRAM_DEPTH      (TILE_BRAM_DEPTH),
+        .BRAM_DEPTH      (DISP_BRAM_DEPTH),
+        .TILE_DEPTH      (TILE_BRAM_DEPTH),
         .BRAM_ADDR_WIDTH (BRAM_ADDR_WIDTH),
         .TILE_ADDR_WIDTH (TILE_ADDR_WIDTH)
     ) u_dispatcher (
@@ -232,7 +232,7 @@ import gemm_pkg::*;
         .MAN_WIDTH           (MAN_WIDTH),
         .EXP_WIDTH           (EXP_WIDTH),
         .EXP_PACKED_DEPTH    (16),
-        .DISP_BRAM_DEPTH          (DISP_BRAM_DEPTH),
+        .BRAM_DEPTH          (DISP_BRAM_DEPTH),
         .WR_ADDR_WIDTH       (BRAM_ADDR_WIDTH + 2),  // 11-bit for 0-527
         .RD_ADDR_WIDTH       (BRAM_ADDR_WIDTH)
     ) u_dispatcher_bram (
