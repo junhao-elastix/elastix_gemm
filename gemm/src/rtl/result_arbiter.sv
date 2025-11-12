@@ -131,6 +131,7 @@ module result_arbiter
                         arb_current_tile_reg <= 5'd0;    // Start round-robin from tile 0
 
                         // Debug: Show which tiles will be collecting from
+                        `ifdef SIMULATION
                         $display("[ARB] @%0t Starting result collection: col_en=0x%06x, B=%0d, C=%0d, results_per_tile=%0d",
                                  $time, i_mc_tile_en, i_mc_left_ugd_len, i_mc_right_ugd_len,
                                  16'(i_mc_left_ugd_len) * 16'(i_mc_right_ugd_len));
@@ -139,6 +140,7 @@ module result_arbiter
                                 $display("[ARB] @%0t   --> Will collect from Tile[%0d]", $time, i);
                             end
                         end
+                        `endif
 
                         // Reset per-tile counters and initialize shadow counts from FIFOs
                         for (int i = 0; i < NUM_TILES; i++) begin
@@ -149,9 +151,11 @@ module result_arbiter
                         end
 
                         arb_state_reg <= ARB_COLLECT;
+                        `ifdef SIMULATION
                         $display("[ARB] @%0t IDLE->COLLECT: B=%0d, C=%0d, results_per_tile=%0d, col_en=0x%06x",
                                 $time, i_mc_left_ugd_len, i_mc_right_ugd_len,
                                 16'(i_mc_left_ugd_len) * 16'(i_mc_right_ugd_len), i_mc_tile_en);
+                        `endif
                     end
                 end
 
@@ -201,6 +205,7 @@ module result_arbiter
                         // Increment THIS TILE's chunk counter
                         arb_tile_chunk_cnt[arb_current_tile_reg] <= arb_tile_chunk_cnt[arb_current_tile_reg] + 1;
 
+                        `ifdef SIMULATION
                         $display("[ARB] @%0t COLLECT: Tile %0d FIFO start read[%0d/%0d] chunk[%0d/%0d] (shadow=%0d->%0d, phys=%0d, pending=%0d->%0d)",
                                 $time, arb_current_tile_reg,
                                 arb_tile_result_cnt[arb_current_tile_reg], arb_results_per_tile_reg,
@@ -210,6 +215,7 @@ module result_arbiter
                                 i_tile_fifo_count[arb_current_tile_reg],
                                 arb_tile_pending_reads[arb_current_tile_reg],
                                 arb_tile_pending_reads[arb_current_tile_reg] + 1);
+                        `endif
 
                         // CHUNKED COLLECTION: Check if we've collected C_per_tile results from current tile
                         // This produces row-major output order: tile0[C_per_tile], tile1[C_per_tile], tile0[C_per_tile], ...
@@ -224,8 +230,10 @@ module result_arbiter
                                     if (arb_col_en_reg[next_tile]) break;
                                 end
                                 arb_current_tile_reg <= next_tile;
+                                `ifdef SIMULATION
                                 $display("[ARB] @%0t CHUNK COMPLETE tile %0d (%0d results): Moving to tile %0d for next chunk",
                                         $time, arb_current_tile_reg, arb_tile_chunk_cnt[arb_current_tile_reg], next_tile);
+                                `endif
                             end
                         end
                         // else: stay on same tile to collect more results in this chunk
@@ -241,9 +249,11 @@ module result_arbiter
                             end
                             if (next_tile != arb_current_tile_reg) begin
                                 arb_current_tile_reg <= next_tile;
+                                `ifdef SIMULATION
                                 $display("[ARB] @%0t Tile %0d chunk full (%0d/%0d), switching to tile %0d",
                                         $time, arb_current_tile_reg, arb_tile_chunk_cnt[arb_current_tile_reg],
                                         arb_c_per_tile_reg, next_tile);
+                                `endif
                             end
                         end
                     end
@@ -257,9 +267,11 @@ module result_arbiter
                         if (next_tile != arb_current_tile_reg) begin
                             arb_current_tile_reg <= next_tile;
                             arb_tile_chunk_cnt[next_tile] <= 8'd0;  // Reset chunk counter for new tile
+                            `ifdef SIMULATION
                             $display("[ARB] @%0t Tile %0d finished (%0d/%0d results), switching to tile %0d mid-chunk",
                                     $time, arb_current_tile_reg, arb_tile_result_cnt[arb_current_tile_reg],
                                     arb_results_per_tile_reg, next_tile);
+                            `endif
                         end
                     end
                     // else: Current tile FIFO empty/busy, wait (don't switch tiles mid-chunk unless tile is done)
@@ -277,8 +289,10 @@ module result_arbiter
                         end
 
                         if (all_tiles_done) begin
+                            `ifdef SIMULATION
                             $display("[ARB] @%0t COLLECT->DONE: All enabled tiles produced %0d results each",
                                     $time, arb_results_per_tile_reg);
+                            `endif
                             arb_state_reg <= ARB_DONE;
 
                             // Clear all read enables

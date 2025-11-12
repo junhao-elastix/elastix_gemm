@@ -89,8 +89,10 @@ import gemm_pkg::*;
                 mem[wr_ptr] <= i_wr_data;
                 wr_ptr <= wr_ptr + 1'b1;
                 total_writes <= total_writes + 1'd1;
+                `ifdef SIMULATION
                 $display("[FIFO_WRITE] @%0t wr_ptr=%0d, writing mem[%0d]=0x%08x",
                          $time, wr_ptr, wr_ptr, i_wr_data);
+                `endif
             end
         end
     end
@@ -108,10 +110,14 @@ import gemm_pkg::*;
             if (i_rd_en && !empty_reg) begin
                 rd_ptr <= rd_ptr + 1'b1;
                 rd_data_reg <= mem[rd_ptr];  // Simple registered read
+                `ifdef SIMULATION
                 $display("[FIFO_READ] @%0t rd_en=1, empty=0, rd_ptr=%0d, reading mem[%0d]=0x%08x",
                          $time, empty_reg, rd_ptr, rd_ptr, mem[rd_ptr]);
+                `endif
             end else if (i_rd_en && empty_reg) begin
+                `ifdef SIMULATION
                 $display("[FIFO_SKIP] @%0t rd_en=1, but empty=1, NOT reading", $time);
+                `endif
             end
         end
     end

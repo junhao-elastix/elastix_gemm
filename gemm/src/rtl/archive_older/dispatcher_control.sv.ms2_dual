@@ -446,7 +446,7 @@ import gemm_pkg::*;
     // Debug Display (for simulation)
     // ===================================================================
 
-    `ifdef SIM_VERBOSE
+    `ifdef SIMULATION
         always @(posedge i_clk) begin
             if (state_reg == ST_FETCH_INIT) begin
                 $display("[DISPATCHER_CONTROL] FETCH: addr=0x%08x, len=%0d lines",

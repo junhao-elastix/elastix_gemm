@@ -283,13 +283,12 @@ import gemm_pkg::*;
                                 popcount_24bit(i_disp_col_en), i_disp_tile_addr);
                         $display("[DISPATCHER]        man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d",
                                 i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size);
-                        `endif
-
                         $display("[DISPATCHER] @%0t DISP triggered: man_nv_cnt=%0d, ugd_vec_size=%0d, total_batches=%0d, batch_lines=%0d, disp_right=%0b, broadcast=%0b, col_en=0x%06x, num_tiles=%0d",
                                  $time, i_disp_man_nv_cnt, i_disp_ugd_vec_size, i_disp_man_nv_cnt / i_disp_ugd_vec_size,
                                  {2'b00, i_disp_ugd_vec_size} << 2,
                                  i_disp_right, i_disp_broadcast, i_disp_col_en, popcount_24bit(i_disp_col_en));
                         // $display("[DISPATCHER] @%0t PERF: DISPATCH_START cycle=%0d", $time, $time / 10);
+                        `endif
                     end
                 end
 
@@ -317,8 +316,10 @@ import gemm_pkg::*;
                                 // === BROADCAST MODE (SIMPLIFIED) ===
                                 // Same data to all tiles, then advance batch
                                 // Assumption: Tiles are sequential 0 to (num_tiles-1)
+                                `ifdef SIMULATION
                                 $display("[DISPATCHER] @%0t BROADCAST: Batch %0d to tile %0d complete",
                                         $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
+                                `endif
 
                                 if (disp_current_tile_idx_reg == (disp_num_enabled_tiles_reg - 1)) begin
                                     // Last tile received this batch, advance to next batch
@@ -327,26 +328,34 @@ import gemm_pkg::*;
                                     disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
                                     disp_current_tile_idx_reg <= 5'd0;  // Wrap to tile 0
 
+                                    `ifdef SIMULATION
                                     $display("[DISPATCHER] @%0t BROADCAST: All tiles done, advancing to batch %0d",
                                             $time, disp_batch_cnt_reg + 1);
+                                    `endif
 
                                     // Check if all batches dispatched
                                     if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
                                         set_batch_complete = 1'b1;  // Mark for delayed done
+                                        `ifdef SIMULATION
                                         $display("[DISPATCHER] @%0t BROADCAST: All %0d batches complete (pending final write)",
                                                 $time, disp_total_batches_reg);
+                                        `endif
                                     end
                                 end else begin
                                     // Move to next tile with SAME data (source pointer unchanged)
                                     disp_current_tile_idx_reg <= disp_current_tile_idx_reg + 1;
+                                    `ifdef SIMULATION
                                     $display("[DISPATCHER] @%0t BROADCAST: Moving to tile %0d (same data)",
                                             $time, disp_current_tile_idx_reg + 1);
+                                    `endif
                                 end
                             end else begin
                                 // === DISTRIBUTE MODE ===
                                 // Each tile gets different data batches in round-robin fashion
+                                `ifdef SIMULATION
                                 $display("[DISPATCHER] @%0t DISTRIBUTE: Batch %0d to tile %0d complete",
                                         $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
+                                `endif
 
                                 // Each tile gets different data, advance source pointer
                                 disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
@@ -361,9 +370,11 @@ import gemm_pkg::*;
                                 end else if (((disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg) == 5'd0) begin
                                     // Multi-tile: Increment when wrapping to tile 0 (removed batch_cnt > 0 check for col_start support)
                                     disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                    `ifdef SIMULATION
                                     $display("[DISPATCHER] @%0t DISTRIBUTE: Wrapping to tile 0, incrementing dest_addr %0d -> %0d",
                                             $time, disp_receive_tile_start_reg,
                                             disp_receive_tile_start_reg + disp_ugd_batch_lines_reg);
+                                    `endif
                                 end
 
                                 // Move to next tile (simple modulo wrap-around)
@@ -375,17 +386,15 @@ import gemm_pkg::*;
                                         (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg);
                                 $display("[DISPATCHER]        batch_lines=%0d, dest_addr=%0h, src_addr=%0h",
                                         disp_ugd_batch_lines_reg, disp_receive_tile_start_reg, disp_tile_start_reg);
-                                `else
-                                $display("[DISPATCHER] @%0t DISTRIBUTE: Tile index changing %0d -> %0d (num_tiles=%0d)",
-                                        $time, disp_current_tile_idx_reg, (disp_current_tile_idx_reg + 1) % disp_num_enabled_tiles_reg,
-                                        disp_num_enabled_tiles_reg);
                                 `endif
 
                                 // Check if all batches dispatched
                                 if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
                                     set_batch_complete = 1'b1;  // Mark for delayed done
+                                    `ifdef SIMULATION
                                     $display("[DISPATCHER] @%0t DISTRIBUTE: All %0d batches complete (pending final write)",
                                             $time, disp_total_batches_reg);
+                                    `endif
                                 end
                             end
                         end
@@ -397,7 +406,9 @@ import gemm_pkg::*;
                         disp_exp_done_reg <= 1'b1;
                         batch_complete_pending <= 1'b0;
                         
+                        `ifdef SIMULATION
                         $display("[DISPATCHER] @%0t Final delayed write complete, setting done", $time);
+                        `endif
                     end else if (set_batch_complete) begin
                         batch_complete_pending <= 1'b1;
                     end
@@ -413,8 +424,6 @@ import gemm_pkg::*;
                     $display("[DISPATCHER]        Final tile_idx=%0d, final_addr=%0h, lines_written=%0d",
                             disp_current_tile_idx_reg, disp_receive_tile_start_reg,
                             disp_ugd_batch_lines_reg * disp_total_batches_reg);
-                    `else
-                    $display("[DISPATCHER] @%0t DISP_DONE: All copies complete, signaling done", $time);
                     `endif
                 end
             endcase

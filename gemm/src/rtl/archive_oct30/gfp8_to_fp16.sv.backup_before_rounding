@@ -125,7 +125,7 @@ module gfp8_to_fp16 (
             // FP16 biased exponent (bias=15): fp16_exp = exp_unbiased + 15
             fp16_exp_signed = exp_signed + 31 - leading_zeros + 15;
             
-            `ifdef SIM_VERBOSE
+            `ifdef SIMULATION
             if (i_valid) begin
                 $display("[GFP8_TO_FP16] @%0t GFP input: mant=%0d (0x%08x), exp=%0d, leading_zeros=%0d",
                          $time, i_gfp_mantissa, i_gfp_mantissa, i_gfp_exponent, leading_zeros);
@@ -139,13 +139,13 @@ module gfp8_to_fp16 (
             if (fp16_exp_signed <= 0) begin
                 // Underflow to zero
                 fp16_next = 16'h0000;
-                `ifdef SIM_VERBOSE
+                `ifdef SIMULATION
                 if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d <= 0 -> 0x0000", $time, fp16_exp_signed);
                 `endif
             end else if (fp16_exp_signed > 30) begin
                 // Overflow to infinity
                 fp16_next = {sign, 5'b11111, 10'b0000000000};
-                `ifdef SIM_VERBOSE
+                `ifdef SIMULATION
                 if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 -> 0x%04x (INF)", 
                          $time, fp16_exp_signed, {sign, 5'b11111, 10'b0000000000});
                 `endif
@@ -156,7 +156,7 @@ module gfp8_to_fp16 (
                 fp16_mant = abs_mantissa[30:21];
                 
                 fp16_next = {sign, fp16_exp, fp16_mant};
-                `ifdef SIM_VERBOSE
+                `ifdef SIMULATION
                 if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x -> fp16=0x%04x", 
                          $time, fp16_exp, fp16_mant, {sign, fp16_exp, fp16_mant});
                 `endif

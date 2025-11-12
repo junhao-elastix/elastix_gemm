@@ -139,9 +139,6 @@ import gemm_pkg::*;
             state_reg <= ST_IDLE;
         end else begin
             state_reg <= state_next;
-            if (state_reg != state_next) begin
-                $display("[MC_STATE] @%0t %0d -> %0d", $time, state_reg, state_next);
-            end
         end
     end
 
@@ -160,8 +157,6 @@ import gemm_pkg::*;
                 // NOTE: WAIT commands must be accepted even when engines are busy,
                 // otherwise we get deadlock: TILE launches CE -> CE busy -> WAIT_TILE
                 // stuck in FIFO because we won't accept commands while CE busy
-                $display("[MC] @%0t IDLE: i_cmd_fifo_empty=%b, i_dc_state=%d, i_ce_state=%d, i_result_fifo_afull=%b",
-                         $time, i_cmd_fifo_empty, i_dc_state, i_ce_state, i_result_fifo_afull);
                 if (!i_cmd_fifo_empty &&
                     !i_result_fifo_afull) begin
                     // Accept all commands when engines idle, or any command when FIFO has data
@@ -225,14 +220,12 @@ import gemm_pkg::*;
                     state_next = ST_WAIT_FETCH;
                 end else begin
                     state_next = ST_EXEC_FETCH;  // Wait for DC to be idle
-                    $display("[MC] @%0t EXEC_FETCH blocked: i_dc_state=%d (waiting for idle)",
-                             $time, i_dc_state);
+
                 end
             end
 
             ST_WAIT_FETCH: begin
                 if (i_dc_fetch_done) begin
-                    $display("[MC] @%0t WAIT_FETCH: Dispatcher fetch complete", $time);
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_FETCH;
@@ -245,11 +238,8 @@ import gemm_pkg::*;
                 // Only execute if dispatcher is idle
                 if (i_dc_state == 4'd0) begin
                     state_next = ST_CMD_COMPLETE;  // Return immediately after trigger
-                    $display("[MC] @%0t EXEC_DISP: Starting DISPATCH operation, returning immediately (async)", $time);
                 end else begin
                     state_next = ST_EXEC_DISP;  // Wait for dispatcher to be idle
-                    $display("[MC] @%0t EXEC_DISP blocked: i_dc_state=%d (waiting for idle)",
-                             $time, i_dc_state);
                 end
             end
 
@@ -258,11 +248,8 @@ import gemm_pkg::*;
                 // MS2.0 ASYNC MODEL: Check BOTH state and done signal
                 if (i_dc_state == 4'd0 && i_dc_disp_done) begin
                     state_next = ST_CMD_COMPLETE;
-                    $display("[MC] @%0t WAIT_DISP: Dispatcher complete (state=IDLE, done=1), barrier released", $time);
                 end else begin
                     state_next = ST_WAIT_DISP; // Keep blocking
-                    $display("[MC] @%0t WAIT_DISP blocking: i_dc_state=%0d, i_dc_disp_done=%0b (waiting for completion)",
-                             $time, i_dc_state, i_dc_disp_done);
                 end
             end
 
@@ -271,7 +258,6 @@ import gemm_pkg::*;
                 // Stay in EXEC_TILE for 2 cycles: cycle 1 sets params, cycle 2 asserts enable
                 if (ce_tile_params_set) begin
                     state_next = ST_CMD_COMPLETE;  // Return immediately after trigger (async)
-                    $display("[MC] @%0t EXEC_TILE: Triggered MATMUL, returning immediately (async)", $time);
                 end
             end
 
@@ -280,11 +266,8 @@ import gemm_pkg::*;
                 // MS2.0 ASYNC MODEL: Check state machine directly (not ID comparison)
                 if (i_ce_state == 4'd0) begin  // Check: i_ce_state == IDLE
                     state_next = ST_CMD_COMPLETE;
-                    $display("[MC] @%0t WAIT_TILE: Compute engine IDLE, barrier released", $time);
                 end else begin
                     state_next = ST_WAIT_TILE; // Keep blocking
-                    $display("[MC] @%0t WAIT_TILE blocking: i_ce_state=%0d (waiting for IDLE)",
-                             $time, i_ce_state);
                 end
             end
 
@@ -292,15 +275,12 @@ import gemm_pkg::*;
                 // READOUT command: Initiate result collection
                 // Payload word1 contains start_col parameter
                 state_next = ST_WAIT_READOUT;
-                $display("[MC] @%0t EXEC_READOUT: Starting readout from column %0d",
-                         $time, payload_word1_reg[23:0]);
             end
 
             ST_WAIT_READOUT: begin
                 // Wait for result readout to complete
                 // For now, immediately complete (will sync with result_arbiter later)
                 state_next = ST_CMD_COMPLETE;
-                $display("[MC] @%0t WAIT_READOUT: Readout complete", $time);
             end
 
             ST_CMD_COMPLETE: begin
@@ -335,8 +315,6 @@ import gemm_pkg::*;
                     if (state_reg != state_next) begin  // Transitioning to PAYLOAD2
                         cmd_op_reg  <= i_cmd_fifo_rdata[7:0];
                         cmd_id_reg  <= i_cmd_fifo_rdata[15:8];
-                        $display("[MC] @%0t LATCH_HDR: op=0x%02x, id=%0d",
-                                 $time, i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8]);
                     end
                 end
 
@@ -344,7 +322,6 @@ import gemm_pkg::*;
                     // Latch payload word 1 ONLY if we successfully transitioned
                     if (state_reg != state_next) begin  // Transitioning to PAYLOAD3
                         payload_word1_reg <= i_cmd_fifo_rdata;
-                        $display("[MC] @%0t LATCH_PAYLOAD1: cmd[1]=0x%08x", $time, i_cmd_fifo_rdata);
                     end
                 end
 
@@ -352,7 +329,6 @@ import gemm_pkg::*;
                     // Latch payload word 2 ONLY if we successfully transitioned
                     if (state_reg != state_next) begin  // Transitioning to DECODE
                         payload_word2_reg <= i_cmd_fifo_rdata;
-                        $display("[MC] @%0t LATCH_PAYLOAD2: cmd[2]=0x%08x", $time, i_cmd_fifo_rdata);
                     end
                 end
 
@@ -360,11 +336,6 @@ import gemm_pkg::*;
                     // Latch payload word 3 (final word from ST_READ_PAYLOAD3 read)
                     // This happens as we enter DECODE state
                     payload_word3_reg <= i_cmd_fifo_rdata;
-                    $display("[MC] @%0t LATCH_PAYLOAD3: cmd[3]=0x%08x", $time, i_cmd_fifo_rdata);
-
-                    // Display decoded command with all 4 words
-                    $display("[MC] @%0t DECODE: op=0x%02x, payload=[0x%08x, 0x%08x, 0x%08x]",
-                             $time, cmd_op_reg, payload_word1_reg, payload_word2_reg, payload_word3_reg);
                 end
 
                 ST_CMD_COMPLETE: begin
@@ -413,7 +384,6 @@ import gemm_pkg::*;
             // This creates falling edge for next DISPATCH command
             if (state_reg == ST_CMD_COMPLETE && dc_disp_en_reg) begin
                 dc_disp_en_reg <= 1'b0;
-                $display("[MC] @%0t CMD_COMPLETE: Clearing dc_disp_en=0", $time);
             end
 
             case (state_reg)
@@ -426,10 +396,6 @@ import gemm_pkg::*;
                     o_dc_fetch_addr <= payload_word1_reg[link_addr_width_gp-1:0];
                     o_dc_fetch_len  <= payload_word2_reg[link_len_width_gp-1:0];
                     o_dc_fetch_target <= payload_word3_reg[0];  // FIXED: Word3[0] per spec
-                    $display("[MC] @%0t EXEC_FETCH: addr=0x%08x, len=%0d, target=%s",
-                             $time, payload_word1_reg[link_addr_width_gp-1:0],
-                             payload_word2_reg[link_len_width_gp-1:0],
-                             payload_word3_reg[0] ? "RIGHT" : "LEFT");
                 end
 
                 ST_EXEC_DISP: begin
@@ -443,8 +409,6 @@ import gemm_pkg::*;
                     // ASYNC FIX: Always set enable in EXEC_DISP
                     // Clear happens in CMD_COMPLETE to avoid same-cycle conflict
                     dc_disp_en_reg <= 1'b1;
-                    $display("[MC] @%0t EXEC_DISP: Setting dc_disp_en=1", $time);
-
 
                     o_dc_disp_tile_addr  <= disp_cmd.tile_addr;
                     o_dc_disp_man_nv_cnt <= disp_cmd.man_nv_cnt;
@@ -454,10 +418,6 @@ import gemm_pkg::*;
                     o_dc_disp_col_start  <= disp_cmd.col_start;
                     o_dc_disp_right      <= disp_cmd.disp_right;
                     o_dc_disp_broadcast  <= disp_cmd.broadcast;
-
-                    $display("[MC] @%0t EXEC_DISP: tile_addr=0x%04x, man_nv_cnt=%0d, ugd_vec_size=%0d, man_4b=%0b, col_en=0x%06x, disp_right=%0b, broadcast=%0b, id=%0d",
-                             $time, disp_cmd.tile_addr, disp_cmd.man_nv_cnt, disp_cmd.ugd_vec_size,
-                             disp_cmd.man_4b, disp_cmd.col_en, disp_cmd.disp_right, disp_cmd.broadcast, cmd_id_reg);
                 end
             endcase
         end
@@ -484,13 +444,11 @@ import gemm_pkg::*;
             // (Not tied to specific state - works with async MATMUL trigger)
             if (|ce_tile_en_reg && i_ce_tile_done) begin  // Check if ANY tile enabled
                 ce_tile_en_reg <= '0;
-                $display("[MC] @%0t CE_DONE: Clearing ce_tile_en after tile completion", $time);
             end
 
             // Clear params_set flag when command completes (ready for next TILE)
             if (state_reg == ST_CMD_COMPLETE) begin
                 ce_tile_params_set <= 1'b0;
-                $display("[MC] @%0t CMD_COMPLETE: Clearing ce_tile_params_set for next tile", $time);
             end
 
             if (state_reg == ST_EXEC_TILE) begin
@@ -501,7 +459,6 @@ import gemm_pkg::*;
                 cmd_tile_s tile_cmd;
                 tile_cmd = {payload_word3_reg, payload_word2_reg, payload_word1_reg};  // Full 96 bits
 
-                // Cycle 1: Set all parameters
                 if (!ce_tile_params_set) begin
                     // Assign TILE command parameters
                     o_ce_tile_left_addr         <= tile_cmd.left_addr;
@@ -514,24 +471,8 @@ import gemm_pkg::*;
                     o_ce_tile_main_loop_over_left <= tile_cmd.main_loop_left;
                     ce_col_en_reg               <= tile_cmd.col_en;        // Store column enable mask
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
-
-                    $display("[MC] @%0t EXEC_TILE Cycle 1: Setting params B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d, col_en=0x%06x",
-                             $time, tile_cmd.left_ugd_len, tile_cmd.right_ugd_len, tile_cmd.vec_len,
-                             tile_cmd.left_addr, tile_cmd.right_addr, tile_cmd.col_en);
-                end
-                // Cycle 2: Assert per-tile enables (gated by col_en mask)
-                else begin
+                end else begin
                     ce_tile_en_reg <= ce_col_en_reg;  // Enable only tiles specified by col_en
-                    $display("[MC] @%0t EXEC_TILE Cycle 2: Asserting ce_tile_en=0x%06x (left=%0d, right=%0d)",
-                             $time, ce_col_en_reg, o_ce_tile_left_addr, o_ce_tile_right_addr);
-
-                    // Debug: Show which tiles are being enabled
-                    for (int i = 0; i < 8; i++) begin
-                        if (ce_col_en_reg[i]) begin
-                            $display("[MC] @%0t   --> Tile[%0d] ENABLED for MATMUL", $time, i);
-                        end
-                    end
-                    $display("[MC] @%0t   --> Total tiles enabled: %0d", $time, $countones(ce_col_en_reg[7:0]));
                 end
             end
         end
@@ -539,8 +480,6 @@ import gemm_pkg::*;
 
     // ===================================================================
     // ID Tracking for WAIT Commands
-    // FIX: Auto-increment counters instead of using cmd_id from header
-    // (Software sends cmd_id=0 for all commands, breaking ID-based tracking)
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
@@ -550,33 +489,23 @@ import gemm_pkg::*;
             pending_tile_id_reg <= 8'h00;
             wait_id_reg <= 8'h00;
         end else begin
-            // FIXED: Update last_disp_id when dispatcher signals completion, not when command issues
             if (i_dc_disp_done && dc_disp_en_reg) begin
                 last_disp_id_reg <= pending_disp_id_reg;
-                $display("[MC] @%0t DISP_DONE: Update last_disp_id=%0d (was pending)", $time, pending_disp_id_reg);
             end
 
-            // Save pending DISPATCH ID when command is issued
             if (state_reg == ST_EXEC_DISP) begin
                 pending_disp_id_reg <= cmd_id_reg;
-                $display("[MC] @%0t EXEC_DISP: Save pending_disp_id=%0d (will update last_disp_id when done)", $time, cmd_id_reg);
             end
 
-            // FIXED: Update last_tile_id when compute engine signals completion
             if (i_ce_tile_done && ce_tile_en_reg) begin
                 last_tile_id_reg <= pending_tile_id_reg;
-                $display("[MC] @%0t TILE_DONE: Update last_tile_id=%0d (was pending)", $time, pending_tile_id_reg);
             end
 
-            // Save pending MATMUL ID when command is issued
             if (state_reg == ST_EXEC_TILE) begin
                 pending_tile_id_reg <= cmd_id_reg;
-                $display("[MC] @%0t EXEC_TILE: Save pending_tile_id=%0d (will update last_tile_id when done)", $time, cmd_id_reg);
             end
 
-            // Capture wait ID for WAIT commands
-            if (state_reg == ST_DECODE &&
-                (cmd_op_reg == e_cmd_op_wait_disp || cmd_op_reg == e_cmd_op_wait_tile)) begin
+            if (state_reg == ST_DECODE && (cmd_op_reg == e_cmd_op_wait_disp || cmd_op_reg == e_cmd_op_wait_tile)) begin
                 wait_id_reg <= payload_word1_reg[7:0];
             end
         end
@@ -606,32 +535,22 @@ import gemm_pkg::*;
                 ST_READ_PAYLOAD1: begin
                     // Always read word 2 (payload word 2) next
                     cmd_fifo_ren_reg <= 1'b1;
-                    $display("[MC_RDEN] @%0t ST_READ_PAYLOAD1: setting rd_en=1", $time);
                 end
 
                 ST_READ_PAYLOAD2: begin
                     // Always read word 3 (payload word 3) next
                     cmd_fifo_ren_reg <= 1'b1;
-                    $display("[MC_RDEN] @%0t ST_READ_PAYLOAD2: setting rd_en=1", $time);
                 end
 
                 ST_READ_PAYLOAD3: begin
                     // All 4 words read, no more FIFO reads until next command
                     cmd_fifo_ren_reg <= 1'b0;
-                    $display("[MC_RDEN] @%0t ST_READ_PAYLOAD3: setting rd_en=0", $time);
                 end
             endcase
         end
     end
 
     assign o_cmd_fifo_ren = cmd_fifo_ren_reg;
-    
-    // Debug: Display rd_en value
-    always @(posedge i_clk) begin
-        if (cmd_fifo_ren_reg) begin
-            $display("[MC_RDEN_OUT] @%0t o_cmd_fifo_ren=1 (state=%0d)", $time, state_reg);
-        end
-    end
 
     // ===================================================================
     // Output Enables
@@ -647,76 +566,44 @@ import gemm_pkg::*;
     assign o_last_opcode = cmd_op_reg;
 
     // ===================================================================
-    // Assertions (for simulation only)
-    // ===================================================================
-
-    `ifdef SIM
-        // Check for valid opcodes
-        property valid_opcode;
-            @(posedge i_clk) disable iff (~i_reset_n)
-            (state_reg == ST_DECODE) |->
-                (cmd_op_reg inside {e_cmd_op_fetch, e_cmd_op_disp, e_cmd_op_tile,
-                                   e_cmd_op_wait_disp, e_cmd_op_wait_tile});
-        endproperty
-        assert property (valid_opcode) else
-            $error("[MASTER_CONTROL] Invalid opcode detected: 0x%02x", cmd_op_reg);
-
-        // Check FIFO underflow
-        property no_fifo_underflow;
-            @(posedge i_clk) disable iff (~i_reset_n)
-            (cmd_fifo_ren_reg) |-> (!i_cmd_fifo_empty);
-        endproperty
-        assert property (no_fifo_underflow) else
-            $error("[MASTER_CONTROL] Attempted to read from empty command FIFO!");
-
-        // Check only one module enable active at a time
-        property one_enable_active;
-            @(posedge i_clk) disable iff (~i_reset_n)
-            $onehot0({dc_fetch_en_reg, dc_disp_en_reg, |ce_tile_en_reg});  // Check if ANY tile enabled
-        endproperty
-        assert property (one_enable_active) else
-            $error("[MASTER_CONTROL] Multiple module enables active simultaneously!");
-    `endif
-
-    // ===================================================================
     // Debug Display (for simulation)
     // ===================================================================
 
-    `ifdef SIM_VERBOSE
-        always @(posedge i_clk) begin
-            // Debug: Show why commands are blocked in IDLE
-            if (state_reg == ST_IDLE && !i_cmd_fifo_empty && state_next == ST_IDLE) begin
-                // Command available but blocked - show why
-                if (i_dc_state != 4'd0) 
-                    $display("[MC_SYNC] @%0t Command blocked: DC not idle (state=%0d)", $time, i_dc_state);
-                if (i_ce_state != 4'd0)
-                    $display("[MC_SYNC] @%0t Command blocked: CE not idle (state=%0d)", $time, i_ce_state);
-                if (i_result_fifo_afull)
-                    $display("[MC_SYNC] @%0t Command blocked: Result FIFO almost-full", $time);
-            end
+    // `ifdef SIMULATION
+    //     always @(posedge i_clk) begin
+    //         // Debug: Show why commands are blocked in IDLE
+    //         if (state_reg == ST_IDLE && !i_cmd_fifo_empty && state_next == ST_IDLE) begin
+    //             // Command available but blocked - show why
+    //             if (i_dc_state != 4'd0) 
+    //                 $display("[MC_SYNC] @%0t Command blocked: DC not idle (state=%0d)", $time, i_dc_state);
+    //             if (i_ce_state != 4'd0)
+    //                 $display("[MC_SYNC] @%0t Command blocked: CE not idle (state=%0d)", $time, i_ce_state);
+    //             if (i_result_fifo_afull)
+    //                 $display("[MC_SYNC] @%0t Command blocked: Result FIFO almost-full", $time);
+    //         end
             
-            if (state_reg == ST_READ_HDR) begin
-                $display("[MASTER_CONTROL] Header: op=0x%02x, id=%0d, len=%0d",
-                         i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8], i_cmd_fifo_rdata[23:16]);
-            end
+    //         if (state_reg == ST_READ_HDR) begin
+    //             $display("[MASTER_CONTROL] Header: op=0x%02x, id=%0d, len=%0d",
+    //                      i_cmd_fifo_rdata[7:0], i_cmd_fifo_rdata[15:8], i_cmd_fifo_rdata[23:16]);
+    //         end
 
-            if (state_reg == ST_EXEC_FETCH) begin
-                $display("[MASTER_CONTROL] FETCH: payload1=0x%08x, payload2=0x%08x -> addr=0x%08x, len=%0d",
-                         payload_word1_reg, payload_word2_reg,
-                         payload_word1_reg[link_addr_width_gp-1:0], payload_word2_reg[link_len_width_gp-1:0]);
-            end
+    //         if (state_reg == ST_EXEC_FETCH) begin
+    //             $display("[MASTER_CONTROL] FETCH: payload1=0x%08x, payload2=0x%08x -> addr=0x%08x, len=%0d",
+    //                      payload_word1_reg, payload_word2_reg,
+    //                      payload_word1_reg[link_addr_width_gp-1:0], payload_word2_reg[link_len_width_gp-1:0]);
+    //         end
 
-            if (state_reg == ST_EXEC_DISP) begin
-                $display("[MASTER_CONTROL] DISP: tile_addr=%0d, man_nv_cnt=%0d, ugd_vec_size=%0d, man_4b=%0b, col_en=0x%04x",
-                         o_dc_disp_tile_addr, o_dc_disp_man_nv_cnt, o_dc_disp_ugd_vec_size, o_dc_disp_man_4b, o_dc_disp_col_en);
-            end
+    //         if (state_reg == ST_EXEC_DISP) begin
+    //             $display("[MASTER_CONTROL] DISP: tile_addr=%0d, man_nv_cnt=%0d, ugd_vec_size=%0d, man_4b=%0b, col_en=0x%04x",
+    //                      o_dc_disp_tile_addr, o_dc_disp_man_nv_cnt, o_dc_disp_ugd_vec_size, o_dc_disp_man_4b, o_dc_disp_col_en);
+    //         end
 
-            if (state_reg == ST_EXEC_TILE) begin
-                $display("[MASTER_CONTROL] TILE: L_addr=%0d, R_addr=%0d, vec_len=%0d",
-                         o_ce_tile_left_addr, o_ce_tile_right_addr, o_ce_tile_vec_len);
-            end
-        end
-    `endif
+    //         if (state_reg == ST_EXEC_TILE) begin
+    //             $display("[MASTER_CONTROL] TILE: L_addr=%0d, R_addr=%0d, vec_len=%0d",
+    //                      o_ce_tile_left_addr, o_ce_tile_right_addr, o_ce_tile_vec_len);
+    //         end
+    //     end
+    // `endif
     
     // ===================================================================
     // Debug Output Assignments (for gemm compatibility)

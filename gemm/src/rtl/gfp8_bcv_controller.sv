@@ -225,10 +225,6 @@ module gfp8_bcv_controller (
                         // First V iteration - initialize accumulator
                         accum_mantissa <= nv_dot_mantissa;
                         accum_exponent <= nv_dot_exponent;
-                        `ifdef SIMULATION
-                        $display("[BCV_OPT] @%0t [B%0d,C%0d] V=%0d INIT: mant=%0d, exp=%0d",
-                                 $time, b_idx, c_idx, v_idx, nv_dot_mantissa, nv_dot_exponent);
-                        `endif
                     end else begin
                         // Accumulate with exponent alignment
                         automatic logic signed [7:0] max_exp;
@@ -256,11 +252,6 @@ module gfp8_bcv_controller (
                         // Update accumulator
                         accum_mantissa <= sum_mantissa;
                         accum_exponent <= max_exp;
-
-                        `ifdef SIMULATION
-                        $display("[BCV_OPT] @%0t [B%0d,C%0d] V=%0d ACCUM: sum=%0d, exp=%0d",
-                                 $time, b_idx, c_idx, v_idx, sum_mantissa, max_exp);
-                        `endif
                     end
                 end
 
@@ -304,10 +295,6 @@ module gfp8_bcv_controller (
                         b_idx <= 8'd0;
                         c_idx <= 8'd0;
                         v_idx <= 8'd0;
-                        `ifdef SIMULATION
-                        $display("[BCV_OPT] @%0t NEW TILE: B=%0d, C=%0d, V=%0d",
-                                 $time, i_dim_b, i_dim_c, i_dim_v);
-                        `endif
                     end
                 end
 
@@ -315,9 +302,6 @@ module gfp8_bcv_controller (
                     // Advance V index after accumulation
                     if (v_idx < dim_v_reg - 1) begin
                         v_idx <= v_idx + 1;
-                        `ifdef SIMULATION
-                        $display("[BCV_OPT] V advance: %0d -> %0d", v_idx, v_idx + 1);
-                        `endif
                     end
                 end
 
@@ -364,11 +348,6 @@ module gfp8_bcv_controller (
                     if (state_next == ST_IDLE) begin
                         o_tile_done <= 1'b1;
                     end
-
-                    `ifdef SIMULATION
-                    $display("[BCV_OPT] @%0t [B%0d,C%0d] OUTPUT: mant=%0d, exp=%0d",
-                             $time, b_idx, c_idx, accum_mantissa, accum_exponent);
-                    `endif
                 end
             endcase
         end

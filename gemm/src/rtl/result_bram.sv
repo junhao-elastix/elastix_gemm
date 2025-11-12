@@ -179,18 +179,20 @@ import gemm_pkg::*;
             $warning("[RESULT_BRAM] FP16 sign bit undefined!");
 
         // Verify BRAM capacity
+        `ifdef SIMULATION
         initial begin
             $display("[RESULT_BRAM] Configured for %0d entries (FIFO depth)", DEPTH);
             $display("[RESULT_BRAM] Data width: 16-bit FP16 format");
             $display("[RESULT_BRAM] Almost full threshold: %0d entries", AFULL_THRESHOLD);
         end
+        `endif
     `endif
 
     // ===================================================================
     // Debug Display (for simulation)
     // ===================================================================
 
-    `ifdef SIM_VERBOSE
+    `ifdef SIMULATION
         always @(posedge i_clk) begin
             if (i_wr_en && !full_reg) begin
                 $display("[RESULT_BRAM] Write: addr=%0d, data=0x%06x (S=%b, E=%02x, M=%04x), count=%0d",

@@ -131,15 +131,6 @@ module gfp8_to_fp16 (
             // FP16 biased exponent (bias=15): fp16_exp = exp_unbiased + 15
             fp16_exp_signed = exp_signed + 31 - leading_zeros + 15;
             
-            `ifdef SIM_VERBOSE
-            if (i_valid) begin
-                $display("[GFP8_TO_FP16] @%0t GFP input: mant=%0d (0x%08x), exp=%0d, leading_zeros=%0d",
-                         $time, i_gfp_mantissa, i_gfp_mantissa, i_gfp_exponent, leading_zeros);
-                $display("[GFP8_TO_FP16] @%0t FP16 calc: exp_signed=%0d, fp16_exp_signed=%0d (formula: %0d+31-%0d+15)",
-                         $time, exp_signed, fp16_exp_signed, exp_signed, leading_zeros);
-            end
-            `endif
-            
             // Handle exponent range
             // FP16 exponent field: 0 = denormal/zero, 1-30 = normal, 31 = inf/NaN
             //
@@ -155,9 +146,6 @@ module gfp8_to_fp16 (
                 // Minimum denormal needs at least 1 bit in 10-bit mantissa
                 // With fp16_exp_signed = 0, we shift by 1, so limit is -10
                 fp16_next = 16'h0000;
-                `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t UNDERFLOW: fp16_exp_signed=%0d < -10 -> 0x0000", $time, fp16_exp_signed);
-                `endif
             end else if (fp16_exp_signed < 1) begin
                 // DENORMAL RANGE: 0 >= fp16_exp_signed >= -10
                 // Denormalize mantissa by right-shifting
@@ -185,17 +173,9 @@ module gfp8_to_fp16 (
                 end
 
                 fp16_next = {sign, 5'b00000, fp16_mant};  // exp_field = 0 for denormals
-                `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t DENORMAL: fp16_exp_signed=%0d, shift=%0d, mant=0x%03x -> fp16=0x%04x",
-                         $time, fp16_exp_signed, denorm_shift, fp16_mant, {sign, 5'b00000, fp16_mant});
-                `endif
             end else if (fp16_exp_signed > 30) begin
                 // Overflow to infinity
                 fp16_next = {sign, 5'b11111, 10'b0000000000};
-                `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t OVERFLOW: fp16_exp_signed=%0d > 30 -> 0x%04x (INF)", 
-                         $time, fp16_exp_signed, {sign, 5'b11111, 10'b0000000000});
-                `endif
             end else begin
                 // Normal case with IEEE 754 round-to-nearest-even
                 fp16_exp = fp16_exp_signed[4:0];
@@ -217,31 +197,15 @@ module gfp8_to_fp16 (
                         // This represents a carry into the exponent
                         fp16_exp = fp16_exp + 5'd1;
                         fp16_mant = 10'b0000000000;
-                        `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND OVERFLOW: mant=%0d -> exp++, mant=0", 
-                                 $time, mant_truncated);
-                        `endif
                     end else begin
                         fp16_mant = mant_rounded[9:0];
-                        `ifdef SIM_VERBOSE
-                        if (i_valid) $display("[GFP8_TO_FP16] @%0t ROUND UP: mant=0x%03x -> 0x%03x (rb=%b, sb=%b)", 
-                                 $time, mant_truncated, mant_rounded, round_bit, sticky_bit);
-                        `endif
                     end
                 end else begin
                     // Round down (truncate)
                     fp16_mant = mant_truncated;
-                    `ifdef SIM_VERBOSE
-                    if (i_valid && round_bit) $display("[GFP8_TO_FP16] @%0t ROUND EVEN: mant=0x%03x (no change, rb=%b, sb=%b, LSB=%b)", 
-                             $time, mant_truncated, round_bit, sticky_bit, mant_truncated[0]);
-                    `endif
                 end
                 
                 fp16_next = {sign, fp16_exp, fp16_mant};
-                `ifdef SIM_VERBOSE
-                if (i_valid) $display("[GFP8_TO_FP16] @%0t NORMAL: exp=%0d, mant=0x%03x -> fp16=0x%04x", 
-                         $time, fp16_exp, fp16_mant, {sign, fp16_exp, fp16_mant});
-                `endif
             end
         end
     end

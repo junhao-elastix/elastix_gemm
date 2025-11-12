@@ -116,7 +116,7 @@ module gfp8_group_dot #(
             // Note: Result can be negative when both exponents are small
             exp_sum = $signed({3'b0, i_exp_left} + {3'b0, i_exp_right}) - 8'sd30;
             
-            `ifdef SIM_VERBOSE
+            `ifdef SIMULATION
             if (i_exp_left != 0 && i_exp_right != 0) begin
                 $display("[GROUP_DOT_G%0d] @%0t exp_left=%0d, exp_right=%0d -> exp_sum=%0d (formula: %0d+%0d-30)",
                          GROUP_ID, $time, i_exp_left, i_exp_right, exp_sum, i_exp_left, i_exp_right);

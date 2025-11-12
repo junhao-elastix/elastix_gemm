@@ -372,16 +372,20 @@ import gemm_pkg::*;
     logic [8:0]    tile_fifo_count [NUM_TILES];       // FIFO status (0-128)
 
     // Debug: Report number of tiles being instantiated
+    `ifdef SIMULATION
     initial begin
         $display("[ENGINE_TOP] @%0t Instantiating NUM_TILES=%0d compute tiles", $time, NUM_TILES);
     end
+    `endif
 
     generate
         for (genvar tile_id = 0; tile_id < NUM_TILES; tile_id++) begin : gen_compute_tiles
             // Debug: Report each tile instantiation
+            `ifdef SIMULATION
             initial begin
                 $display("[ENGINE_TOP] @%0t Creating compute tile[%0d]", $time, tile_id);
             end
+            `endif
 
             // Compute Engine Instance
             compute_engine_modular #(
@@ -461,6 +465,7 @@ import gemm_pkg::*;
         if (~i_reset_n) begin
             debug_cycle_cnt <= 0;
         end else begin
+            `ifdef SIMULATION
             if ((dc_tile_man_left_wr_en || dc_tile_man_right_wr_en ||
                  dc_tile_left_exp_wr_en || dc_tile_right_exp_wr_en) && debug_cycle_cnt < 10) begin
                 debug_cycle_cnt <= debug_cycle_cnt + 1;
@@ -477,6 +482,7 @@ import gemm_pkg::*;
                              dc_tile_right_exp_wr_en, dc_tile_right_exp_wr_en && dc_tile_wr_en[i]);
                 end
             end
+            `endif
 
             // Reset counter if no activity for a while
             if (!dc_tile_man_left_wr_en && !dc_tile_man_right_wr_en &&

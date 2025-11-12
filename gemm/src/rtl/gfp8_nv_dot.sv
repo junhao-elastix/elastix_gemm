@@ -239,28 +239,4 @@ module gfp8_nv_dot (
         end
     end
 
-    // ===================================================================
-    // Debug Output (Simulation Only)
-    // ===================================================================
-    `ifdef SIMULATION
-    always @(posedge i_clk) begin
-        if (i_input_valid) begin
-            $display("[NV_DOT_ULTRA] @%0t Cycle 0: Capturing inputs (timing fix)", $time);
-            $display("[NV_DOT_ULTRA]   Left exp: 0x%08x, Right exp: 0x%08x",
-                     i_exp_left, i_exp_right);
-        end
-        if (stage1_valid) begin
-            $display("[NV_DOT_ULTRA] @%0t Cycle 1: MLP compute from captured inputs", $time);
-        end
-        if (stage2_valid) begin
-            $display("[NV_DOT_ULTRA] @%0t Cycle 2: Alignment, max_exp=%0d",
-                     $time, max_exponent);
-            for (int i = 0; i < 4; i++) begin
-                $display("[NV_DOT_ULTRA]   Group[%0d]: mant=%0d, exp=%0d",
-                         i, group_mantissa_reg[i], group_exponent_reg[i]);
-            end
-        end
-    end
-    `endif
-
 endmodule
