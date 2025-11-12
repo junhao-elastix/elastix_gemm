@@ -67,6 +67,12 @@ import gemm_pkg::*;
     output logic        o_ce_tile_main_loop_over_left,
     input  logic        i_ce_tile_done,
 
+    // Result Arbiter Interface (READOUT command)
+    output logic        o_readout_en,
+    output logic [7:0]  o_readout_start_col,
+    output logic [31:0] o_readout_rd_len,
+    input  logic        i_readout_done,
+
     // Debug
     output logic [3:0]                    o_mc_state,
     output logic [3:0]                    o_mc_state_next,  // Next state (for gemm compatibility)
@@ -130,6 +136,11 @@ import gemm_pkg::*;
     logic [23:0] ce_tile_en_reg;       // Per-tile enable (gated by col_en)
     logic [23:0] ce_col_en_reg;        // Column enable mask from MATMUL command
     logic ce_tile_params_set;  // Delayed enable for proper address setup
+
+    // READOUT command registers
+    logic readout_en_reg;
+    logic [7:0]  readout_start_col_reg;
+    logic [31:0] readout_rd_len_reg;
 
     // ===================================================================
     // State Transition Logic
@@ -273,14 +284,17 @@ import gemm_pkg::*;
 
             ST_EXEC_READOUT: begin
                 // READOUT command: Initiate result collection
-                // Payload word1 contains start_col parameter
+                // Trigger readout and wait for completion
                 state_next = ST_WAIT_READOUT;
             end
 
             ST_WAIT_READOUT: begin
                 // Wait for result readout to complete
-                // For now, immediately complete (will sync with result_arbiter later)
-                state_next = ST_CMD_COMPLETE;
+                if (i_readout_done) begin
+                    state_next = ST_CMD_COMPLETE;
+                end else begin
+                    state_next = ST_WAIT_READOUT;  // Keep blocking until done
+                end
             end
 
             ST_CMD_COMPLETE: begin
@@ -479,6 +493,40 @@ import gemm_pkg::*;
     end
 
     // ===================================================================
+    // Command Execution - Result Arbiter (READOUT)
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            readout_en_reg <= 1'b0;
+            readout_start_col_reg <= '0;
+            readout_rd_len_reg <= '0;
+        end else begin
+            // Clear enable when readout completes
+            if (state_reg == ST_WAIT_READOUT && i_readout_done) begin
+                readout_en_reg <= 1'b0;
+            end
+
+            // Clear enable when command completes
+            if (state_reg == ST_CMD_COMPLETE && readout_en_reg) begin
+                readout_en_reg <= 1'b0;
+            end
+
+            if (state_reg == ST_EXEC_READOUT) begin
+                // Parse cmd_readout_s structure (SPEC-COMPLIANT per SINGLE_ROW_REFERENCE.md):
+                // Word1: {reserved[23:0], start_col[7:0]}
+                // Word2: {rd_len[31:0]}
+                // Word3: Reserved (unused)
+                cmd_readout_s readout_cmd;
+                readout_cmd = {payload_word2_reg, payload_word1_reg};  // 64 bits total
+
+                readout_en_reg <= 1'b1;
+                readout_start_col_reg <= readout_cmd.start_col;
+                readout_rd_len_reg    <= readout_cmd.rd_len;
+            end
+        end
+    end
+
+    // ===================================================================
     // ID Tracking for WAIT Commands
     // ===================================================================
     always_ff @(posedge i_clk) begin
@@ -558,6 +606,9 @@ import gemm_pkg::*;
     assign o_dc_fetch_en = dc_fetch_en_reg;
     assign o_dc_disp_en  = dc_disp_en_reg;
     assign o_ce_tile_en  = ce_tile_en_reg;
+    assign o_readout_en  = readout_en_reg;
+    assign o_readout_start_col = readout_start_col_reg;
+    assign o_readout_rd_len = readout_rd_len_reg;
 
     // ===================================================================
     // Debug Outputs

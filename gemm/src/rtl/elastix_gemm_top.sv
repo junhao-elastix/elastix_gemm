@@ -609,7 +609,8 @@ module elastix_gemm_top
                     engine_top #(
                         .GDDR6_PAGE_ID  (9'd0),   // Page 0 (matches DMA write address 0x0)
                         .TGT_DATA_WIDTH (256),
-                        .AXI_ADDR_WIDTH (42)
+                        .AXI_ADDR_WIDTH (42),
+                        .NUM_TILES      (8)
                     ) i_engine_top (
                         .i_clk              (i_reg_clk),
                         .i_reset_n          (engine_rstn),
@@ -761,7 +762,6 @@ module elastix_gemm_top
                             assign user_regs_read[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH + j] = 32'b0;
                         end
                     end
-
                 end 
                 // else begin : pkt_gen_channel
                 //     // NAP responder wrapper for packet generators (channels 1-7)

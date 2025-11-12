@@ -39,6 +39,12 @@ module result_arbiter
     input  logic [7:0]  i_mc_left_ugd_len,       // Batch dimension (B)
     input  logic [7:0]  i_mc_right_ugd_len,      // Column dimension (C)
 
+    // READOUT Command Interface (from Master Control)
+    input  logic        i_readout_en,            // READOUT command enable
+    input  logic [7:0]  i_readout_start_col,     // Starting tile index (0-23)
+    input  logic [31:0] i_readout_rd_len,        // Total FP16 results to read
+    output logic        o_readout_done,          // READOUT completion signal
+
     // Tile FIFO Read Interface (to per-tile FIFOs)
     output logic        o_tile_fifo_rd_en [NUM_TILES],  // FIFO read enables
     input  logic [15:0] i_tile_fifo_rd_data [NUM_TILES], // FIFO read data (FP16)
@@ -59,13 +65,23 @@ module result_arbiter
     typedef enum logic [2:0] {
         ARB_IDLE,
         ARB_COLLECT,
-        ARB_DONE
+        ARB_DONE,
+        ARB_READOUT   // Command-driven result collection
     } arb_state_t;
 
     arb_state_t arb_state_reg;
 
     // ------------------------------------------------------------------
     // Arbiter Control Registers
+    // ------------------------------------------------------------------
+    // READOUT command registers
+    logic [31:0] readout_count_reg;         // Results collected so far
+    logic [4:0]  readout_tile_reg;          // Current tile index (0-23)
+    logic [31:0] readout_rd_len_reg;        // Total results to collect
+    logic        readout_done_reg;          // Completion signal
+
+    // ------------------------------------------------------------------
+    // MATMUL Arbiter Control Registers
     // ------------------------------------------------------------------
     logic [15:0] arb_results_per_tile_reg;  // B×C results expected per tile
     logic [7:0]  arb_c_per_tile_reg;        // C_per_tile (columns per tile)
@@ -104,6 +120,11 @@ module result_arbiter
             arb_c_per_tile_reg <= 8'd0;
             arb_col_en_reg <= 24'd0;
             arb_current_tile_reg <= 5'd0;
+            // READOUT registers
+            readout_count_reg <= 32'd0;
+            readout_tile_reg <= 5'd0;
+            readout_rd_len_reg <= 32'd0;
+            readout_done_reg <= 1'b0;
             for (int i = 0; i < NUM_TILES; i++) begin
                 arb_tile_result_cnt[i] <= 16'd0;
                 arb_tile_chunk_cnt[i] <= 8'd0;
@@ -120,8 +141,28 @@ module result_arbiter
                         arb_tile_pending_reads[i] <= 2'd0;
                     end
 
-                    // Wait for MATMUL command to start result collection
-                    if (|i_mc_tile_en) begin  // Start when ANY tile enabled
+                    // Priority 1: READOUT command-driven result collection
+                    if (i_readout_en) begin
+                        // Capture READOUT parameters
+                        readout_tile_reg <= i_readout_start_col[4:0];  // Starting tile (0-23)
+                        readout_rd_len_reg <= i_readout_rd_len;         // Total results to read
+                        readout_count_reg <= 32'd0;                     // Reset counter
+                        readout_done_reg <= 1'b0;                       // Clear done signal
+
+                        // Initialize shadow counts for READOUT
+                        for (int i = 0; i < NUM_TILES; i++) begin
+                            arb_tile_shadow_count[i] <= i_tile_fifo_count[i];
+                            arb_tile_pending_reads[i] <= 2'd0;
+                        end
+
+                        arb_state_reg <= ARB_READOUT;
+                        `ifdef SIMULATION
+                        $display("[ARB] @%0t IDLE->READOUT: start_col=%0d, rd_len=%0d",
+                                $time, i_readout_start_col, i_readout_rd_len);
+                        `endif
+                    end
+                    // Priority 2: MATMUL command to start automatic result collection
+                    else if (|i_mc_tile_en) begin  // Start when ANY tile enabled
                         // Capture matrix dimensions AND tile enable mask
                         // CRITICAL: Compute engines produce B×C results per tile in ONE execution
                         // Cast to 16-bit BEFORE multiplication to avoid overflow
@@ -310,6 +351,59 @@ module result_arbiter
                     end
                 end
 
+                ARB_READOUT: begin
+                    // Command-driven result readout (single-tile for now)
+                    // Start with simple implementation: Read from start_col tile only
+
+                    // Clear all FIFO read enables first
+                    for (int i = 0; i < NUM_TILES; i++) begin
+                        o_tile_fifo_rd_en[i] <= 1'b0;
+                    end
+
+                    // Track shadow count increments from compute engine writes (if any)
+                    for (int i = 0; i < NUM_TILES; i++) begin
+                        if (i_ce_result_valid[i]) begin
+                            arb_tile_shadow_count[i] <= arb_tile_shadow_count[i] + 1;
+                        end
+                    end
+
+                    // Decrement pending_reads when data comes out (pipeline stage 2 completes)
+                    if (arb_read_valid_reg) begin
+                        arb_tile_pending_reads[arb_read_tile_reg] <= arb_tile_pending_reads[arb_read_tile_reg] - 1;
+                    end
+
+                    // Check if we've collected all requested results
+                    if (readout_count_reg >= readout_rd_len_reg) begin
+                        // Done - signal completion
+                        readout_done_reg <= 1'b1;
+                        arb_state_reg <= ARB_IDLE;
+                        `ifdef SIMULATION
+                        $display("[ARB] @%0t READOUT->IDLE: Collected %0d results",
+                                $time, readout_count_reg);
+                        `endif
+                    end else begin
+                        // Still have results to collect - check current tile's FIFO
+                        // Use shadow count minus pending reads for available data
+                        automatic logic [8:0] shadow_available = arb_tile_shadow_count[readout_tile_reg] -
+                                                                  arb_tile_pending_reads[readout_tile_reg];
+
+                        if (shadow_available > 0 && !i_result_fifo_full) begin
+                            // Data available and space in result FIFO - read one result
+                            o_tile_fifo_rd_en[readout_tile_reg] <= 1'b1;
+                            arb_tile_shadow_count[readout_tile_reg] <= arb_tile_shadow_count[readout_tile_reg] - 1;
+                            arb_tile_pending_reads[readout_tile_reg] <= arb_tile_pending_reads[readout_tile_reg] + 1;
+                            readout_count_reg <= readout_count_reg + 1;
+
+                            `ifdef SIMULATION
+                            $display("[ARB] @%0t READOUT: Reading from tile %0d (count=%0d/%0d, shadow=%0d)",
+                                    $time, readout_tile_reg, readout_count_reg + 1, readout_rd_len_reg,
+                                    shadow_available);
+                            `endif
+                        end
+                        // else: Wait for data or space
+                    end
+                end
+
                 default: arb_state_reg <= ARB_IDLE;
             endcase
         end
@@ -380,5 +474,6 @@ module result_arbiter
 
     assign o_result_data = o_result_data_reg;
     assign o_result_valid = arb_read_valid_reg;
+    assign o_readout_done = readout_done_reg;
 
 endmodule : result_arbiter

@@ -131,6 +131,12 @@ import gemm_pkg::*;
     logic        mc_ce_tile_main_loop_over_left;
     logic        ce_mc_tile_done;
 
+    // Master Control -> Result Arbiter (READOUT command)
+    logic        mc_arb_readout_en;
+    logic [7:0]  mc_arb_readout_start_col;
+    logic [31:0] mc_arb_readout_rd_len;
+    logic        arb_mc_readout_done;
+
     // Dispatcher Control BRAM Read Ports (dispatcher_control ↔ dispatcher_bram)
     // Mantissa read data (dual ports) - used during DISPATCH operations
     logic [255:0]  dc_disp_man_left_rd_data;
@@ -268,6 +274,12 @@ import gemm_pkg::*;
         .o_ce_tile_right_man_4b       (mc_ce_tile_right_man_4b),
         .o_ce_tile_main_loop_over_left (mc_ce_tile_main_loop_over_left),
         .i_ce_tile_done          (ce_mc_tile_done),
+
+        // Result Arbiter Interface (READOUT command)
+        .o_readout_en            (mc_arb_readout_en),
+        .o_readout_start_col     (mc_arb_readout_start_col),
+        .o_readout_rd_len        (mc_arb_readout_rd_len),
+        .i_readout_done          (arb_mc_readout_done),
 
         // Status/Debug
         .o_mc_state         (mc_state),
@@ -520,6 +532,12 @@ import gemm_pkg::*;
         .i_mc_tile_en            (mc_ce_tile_en),
         .i_mc_left_ugd_len      (mc_ce_tile_left_ugd_len),
         .i_mc_right_ugd_len     (mc_ce_tile_right_ugd_len),
+
+        // READOUT Command Interface (from Master Control)
+        .i_readout_en            (mc_arb_readout_en),
+        .i_readout_start_col     (mc_arb_readout_start_col),
+        .i_readout_rd_len        (mc_arb_readout_rd_len),
+        .o_readout_done          (arb_mc_readout_done),
 
         // Tile FIFO Read Interface (to per-tile FIFOs)
         .o_tile_fifo_rd_en      (tile_fifo_rd_en),
