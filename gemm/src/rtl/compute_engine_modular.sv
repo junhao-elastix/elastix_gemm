@@ -182,19 +182,19 @@ import gemm_pkg::*;
                 ST_IDLE: begin
                     if (i_tile_en) begin
                         state_reg <= ST_COMP_BUSY;
-                        `ifdef SIMULATION
-                        $display("[CE_DEBUG] @%t Tile[%0d] command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
-                                 $time, TILE_ID, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
-                        $display("[CE_DEBUG] @%t Tile[%0d] STARTING MATMUL computation", $time, TILE_ID);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[CE_DEBUG] @%t Tile[%0d] command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
+                        //          $time, TILE_ID, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
+                        // $display("[CE_DEBUG] @%t Tile[%0d] STARTING MATMUL computation", $time, TILE_ID);
+                        // `endif
                     end
                 end
                 ST_COMP_BUSY: begin
                     if (bcv_tile_done) begin
                         state_reg <= ST_COMP_DONE;
-                        `ifdef SIMULATION
-                        $display("[CE_DEBUG] @%t Tile[%0d] COMPLETED MATMUL computation", $time, TILE_ID);
-                        `endif
+                        // `ifdef SIMULATION
+                        // $display("[CE_DEBUG] @%t Tile[%0d] COMPLETED MATMUL computation", $time, TILE_ID);
+                        // `endif
                     end
                 end
                 ST_COMP_DONE: begin
@@ -269,10 +269,10 @@ import gemm_pkg::*;
             if (fp16_valid && !i_result_afull) begin
                 o_result_data <= fp16_result;  // Direct FP16 output
                 o_result_valid <= 1'b1;
-                `ifdef SIMULATION
-                $display("[CE_RESULT] @%t Result valid: fp16_result=0x%04x, result_count=%0d",
-                         $time, fp16_result, result_count);
-                `endif
+                // `ifdef SIMULATION
+                // $display("[CE_RESULT] @%t Result valid: fp16_result=0x%04x, result_count=%0d",
+                //          $time, fp16_result, result_count);
+                // `endif
             end else begin
                 o_result_valid <= 1'b0;
             end

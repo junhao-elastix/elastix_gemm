@@ -304,21 +304,21 @@ module tb_engine_top;
         '{B: 16, C: 16, V: 8, col_en: 24'h000001, name: "B16_C16_V8"},
         '{B: 1, C: 128, V: 1, col_en: 24'h000001, name: "B1_C128_V1"},
         '{B: 128, C: 1, V: 1, col_en: 24'h000001, name: "B128_C1_V1"},
-        '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"}
+        '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"},
 
     // Multi-column tests (NEW: multi-tile tests with NUM_TILES=8)
-        // '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"},
-        // '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"},
-        // '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"}
-        // '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"},
-        // '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"},
-        // '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"},
-        // '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"},
-        // '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"},
-        // '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"},
 
         //Multi-column tests inbalanced
-        // '{B: 8, C: 8, V: 16,  col_en: 24'h000003F, name: "B8_C8_V16"}  // Needs 6 tiles
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000003F, name: "B8_C8_V16"}  // Needs 6 tiles
     };
 
     // ===================================================================

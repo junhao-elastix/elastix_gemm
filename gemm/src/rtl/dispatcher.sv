@@ -308,40 +308,30 @@ import gemm_pkg::*;
                             `endif
 
                             if (disp_broadcast_reg) begin
-                                // === BROADCAST MODE (SIMPLIFIED) ===
-                                // Same data to all tiles, then advance batch
-                                // Assumption: Tiles are sequential 0 to (num_tiles-1)
+                                // === BROADCAST MODE ===
+                                // All tiles write simultaneously via tile_wr_en_comb = disp_col_en_reg
+                                // No sequential tile tracking needed - just advance batch after each completion
                                 `ifdef SIMULATION
-                                $display("[DISPATCHER] @%0t BROADCAST: Batch %0d to tile %0d complete",
-                                        $time, disp_batch_cnt_reg, disp_current_tile_idx_reg);
+                                $display("[DISPATCHER] @%0t BROADCAST: Batch %0d complete (all %0d tiles wrote simultaneously)",
+                                        $time, disp_batch_cnt_reg, disp_num_enabled_tiles_reg);
                                 `endif
 
-                                if (disp_current_tile_idx_reg == (disp_num_enabled_tiles_reg - 1)) begin
-                                    // Last tile received this batch, advance to next batch
-                                    disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
-                                    disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
-                                    disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
-                                    disp_current_tile_idx_reg <= 5'd0;  // Wrap to tile 0
+                                // Advance batch pointers (all tiles done simultaneously)
+                                disp_tile_start_reg <= disp_tile_start_reg + disp_ugd_batch_lines_reg;
+                                disp_receive_tile_start_reg <= disp_receive_tile_start_reg + disp_ugd_batch_lines_reg;
+                                disp_batch_cnt_reg <= disp_batch_cnt_reg + 1;
 
-                                    `ifdef SIMULATION
-                                    $display("[DISPATCHER] @%0t BROADCAST: All tiles done, advancing to batch %0d",
-                                            $time, disp_batch_cnt_reg + 1);
-                                    `endif
+                                `ifdef SIMULATION
+                                $display("[DISPATCHER] @%0t BROADCAST: Advancing to batch %0d",
+                                        $time, disp_batch_cnt_reg + 1);
+                                `endif
 
-                                    // Check if all batches dispatched
-                                    if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
-                                        set_batch_complete = 1'b1;  // Mark for delayed done
-                                        `ifdef SIMULATION
-                                        $display("[DISPATCHER] @%0t BROADCAST: All %0d batches complete (pending final write)",
-                                                $time, disp_total_batches_reg);
-                                        `endif
-                                    end
-                                end else begin
-                                    // Move to next tile with SAME data (source pointer unchanged)
-                                    disp_current_tile_idx_reg <= disp_current_tile_idx_reg + 1;
+                                // Check if all batches dispatched
+                                if (disp_batch_cnt_reg == (disp_total_batches_reg - 1)) begin
+                                    set_batch_complete = 1'b1;  // Mark for delayed done
                                     `ifdef SIMULATION
-                                    $display("[DISPATCHER] @%0t BROADCAST: Moving to tile %0d (same data)",
-                                            $time, disp_current_tile_idx_reg + 1);
+                                    $display("[DISPATCHER] @%0t BROADCAST: All %0d batches complete (pending final write)",
+                                            $time, disp_total_batches_reg);
                                     `endif
                                 end
                             end else begin
