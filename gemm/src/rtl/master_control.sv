@@ -223,6 +223,12 @@ import gemm_pkg::*;
                     e_cmd_op_readout:   state_next = ST_EXEC_READOUT;
                     default:            state_next = ST_IDLE; // Error case
                 endcase
+                `ifdef SIMULATION
+                $display("[MC_DECODE] @%0t cmd_op=0x%02x, next_state=%0d", $time, cmd_op_reg, state_next);
+                if (cmd_op_reg == e_cmd_op_readout) begin
+                    $display("[MC_DECODE] @%0t READOUT detected! Transitioning to ST_EXEC_READOUT", $time);
+                end
+                `endif
             end
 
             ST_EXEC_FETCH: begin
@@ -454,9 +460,10 @@ import gemm_pkg::*;
             o_ce_tile_right_man_4b <= 1'b0;
             o_ce_tile_main_loop_over_left <= 1'b0;
         end else begin
-            // MS2.0 ASYNC MODEL: Clear ce_tile_en when compute engine signals completion
-            // (Not tied to specific state - works with async MATMUL trigger)
-            if (|ce_tile_en_reg && i_ce_tile_done) begin  // Check if ANY tile enabled
+            // MS2.0 ASYNC MODEL: Keep ce_tile_en_reg set until READOUT completes
+            // (Arbiter needs to know which tiles have results)
+            // Clear ce_tile_en only after READOUT finishes or when new MATMUL starts
+            if (|ce_tile_en_reg && i_readout_done) begin  // Clear after READOUT completes
                 ce_tile_en_reg <= '0;
             end
 
@@ -522,6 +529,11 @@ import gemm_pkg::*;
                 readout_en_reg <= 1'b1;
                 readout_start_col_reg <= readout_cmd.start_col;
                 readout_rd_len_reg    <= readout_cmd.rd_len;
+
+                `ifdef SIMULATION
+                $display("[MC] @%0t ST_EXEC_READOUT: Setting readout_en_reg=1, start_col=%0d, rd_len=%0d",
+                        $time, readout_cmd.start_col, readout_cmd.rd_len);
+                `endif
             end
         end
     end

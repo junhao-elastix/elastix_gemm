@@ -1,3 +1,93 @@
+## [2025-11-12] - VECTOR_READOUT Command Implementation Complete
+
+**Timestamp**: Wed Nov 12 15:26:50 PST 2025
+**Status**: ✅ **COMPLETED** - Full VECTOR_READOUT (0xF5) command with single-tile operation
+
+### Summary
+
+Completed comprehensive implementation of VECTOR_READOUT command per SINGLE_ROW_REFERENCE.md specification. Command-driven result collection now fully functional for single-tile tests. All 10 simulation tests passing.
+
+### Implementation Details
+
+**Command Structure (gemm_pkg.sv)**:
+- Added `cmd_readout_s` typedef with start_col (8-bit) and rd_len (32-bit) parameters
+- 4-word command format: Word1={reserved, start_col}, Word2={rd_len}, Word3=reserved
+- Added cmd_readout_len_gp parameter (12 bytes)
+
+**Master Control (master_control.sv)**:
+- Added ST_EXEC_READOUT and ST_WAIT_READOUT FSM states
+- Parse readout command parameters from cmd FIFO
+- Interface signals: o_readout_en, o_readout_start_col, o_readout_rd_len, i_readout_done
+- Proper enable pulse generation and completion synchronization
+
+**Result Arbiter (result_arbiter.sv)**:
+- Added ARB_READOUT state to arbiter FSM
+- Single-tile readout: Reads from tile_fifo[start_col] sequentially
+- Collection loop: Reads one result per cycle until readout_count == rd_len
+- Shadow count tracking for immediate FIFO state management
+- Backpressure handling: Respects result_fifo_full signal
+- Completion signaling: Asserts o_readout_done when rd_len results collected
+
+**Integration (engine_top.sv)**:
+- Wired master_control → result_arbiter readout interface
+- Added signal declarations: mc_arb_readout_en, mc_arb_readout_start_col, mc_arb_readout_rd_len, arb_mc_readout_done
+
+**Testbench (tb_engine_top.sv)**:
+- Updated generate_readout_command task with rd_len parameter
+- READOUT command issued after WAIT_MATMUL in test sequence
+- Calculates rd_len = B × C (total FP16 results expected)
+- All 10 single-tile tests now use READOUT command
+
+### Test Results
+
+**Simulation Results**:
+```
+Total Tests: 10
+Passed:      10
+Failed:      0
+STATUS: ALL TESTS PASSED
+```
+
+**Tested Configurations** (col_en=0x01, single-tile):
+- B1_C1_V1: 1 result
+- B1_C1_V128: 128 results
+- B2_C2_V2: 4 results
+- B2_C2_V64: 256 results
+- B4_C4_V4: 16 results
+- B4_C4_V32: 512 results
+- B8_C8_V16: 64 results
+- B128_C1_V1: 128 results
+- B1_C128_V1: 128 results
+- B1_C1_V256: 256 results (with BRAM overflow warning)
+
+**Key Behaviors Verified**:
+- Command parsing: Correct extraction of start_col and rd_len
+- FSM transitions: ST_EXEC_READOUT → ST_WAIT_READOUT → CMD_COMPLETE
+- Result collection: Sequential reading from specified tile FIFO
+- Completion detection: Exactly rd_len results collected, no more/less
+- Golden comparison: All results match expected FP16 values
+
+### Architecture Notes
+
+**Current Scope**: Single-tile operation (start_col parameter captured but only tile 0 tested)
+**Design**: Stateless readout - each READOUT command specifies complete parameters
+**Pipeline**: Uses existing 2-cycle BRAM read latency compensation in arbiter
+
+**Future Multi-Tile Support**:
+- Round-robin collection across multiple tiles starting from start_col
+- Chunked collection: B×(C//NUM_TILES) results per tile before switching
+- Current implementation foundation supports easy extension
+
+### Files Modified
+
+1. `src/include/gemm_pkg.sv` - Added cmd_readout_s structure
+2. `src/rtl/master_control.sv` - READOUT command FSM states and parsing
+3. `src/rtl/result_arbiter.sv` - ARB_READOUT state implementation
+4. `src/rtl/engine_top.sv` - Readout interface wiring
+5. `sim/vector_system_test/tb_engine_top.sv` - READOUT command integration
+
+---
+
 ## [2025-11-11] - 8-Column Verification and Performance Analysis
 
 **Timestamp**: Tue Nov 11 00:03:48 PST 2025

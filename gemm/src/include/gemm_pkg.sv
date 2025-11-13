@@ -166,12 +166,21 @@ package gemm_pkg;
         logic [cmd_id_width_gp-1:0] wait_id;
     } cmd_wait_tile_s;
 
+    // VECTOR_READOUT command structure (0xF5)
+    // Aligned with SINGLE_ROW_REFERENCE.md (lines 935-995)
+    typedef struct packed {
+        logic [31:0] rd_len;        // Word2[31:0]: Number of FP16 results to read (total across all tiles)
+        logic [23:0] reserved;      // Word1[31:8]
+        logic [7:0]  start_col;     // Word1[7:0]: Starting tile index (0-23)
+    } cmd_readout_s;
+
     localparam cmd_header_len_gp = $bits(cmd_header_s) / 8;
     localparam cmd_fetch_len_gp  = $bits(cmd_fetch_s) / 8;
     localparam cmd_disp_len_gp   = $bits(cmd_disp_s) / 8;
     localparam cmd_tile_len_gp   = $bits(cmd_tile_s) / 8;
     localparam cmd_wait_disp_len_gp = $bits(cmd_wait_disp_s) / 8;
     localparam cmd_wait_tile_len_gp = $bits(cmd_wait_tile_s) / 8;
+    localparam cmd_readout_len_gp = $bits(cmd_readout_s) / 8;
 
     // TODO: calculate dynamically based on supported commands
     localparam cmd_max_width_gp = $bits(cmd_header_s) + $bits(cmd_tile_s);

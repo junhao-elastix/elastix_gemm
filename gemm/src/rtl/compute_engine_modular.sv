@@ -270,7 +270,7 @@ import gemm_pkg::*;
                 o_result_data <= fp16_result;  // Direct FP16 output
                 o_result_valid <= 1'b1;
                 `ifdef SIMULATION
-                $display("[CE_RESULT] @%t Result valid: fp16_result=0x%04x, result_count=%0d", 
+                $display("[CE_RESULT] @%t Result valid: fp16_result=0x%04x, result_count=%0d",
                          $time, fp16_result, result_count);
                 `endif
             end else begin

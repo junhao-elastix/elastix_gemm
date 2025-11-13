@@ -195,60 +195,24 @@ module dispatcher_bram #(
     end
 
     // ===================================================================
-    // READ LOGIC - MANTISSAS
+    // READ LOGIC - MANTISSAS (COMBINATIONAL - 0-cycle latency)
     // ===================================================================
 
-    // Left mantissa read (registered)
-    logic [MAN_WIDTH-1:0] man_left_rd_data_reg;
-    always_ff @(posedge i_clk) begin
-        if (i_man_left_rd_en) begin
-            man_left_rd_data_reg <= man_left[i_man_left_rd_addr];
-            `ifdef SIMULATION
-            if (i_man_left_rd_addr == 0) begin
-                $display("[BRAM_RD_MAN_LEFT] @%0t Requesting addr=0, data will be valid next cycle: 0x%064x",
-                         $time, man_left[0]);
-            end
-            `endif
-        end
-    end
-    assign o_man_left_rd_data = man_left_rd_data_reg;
+    // Left mantissa read (combinational for 0-cycle latency)
+    assign o_man_left_rd_data = man_left[i_man_left_rd_addr];
 
-    // Right mantissa read (registered)
-    logic [MAN_WIDTH-1:0] man_right_rd_data_reg;
-    always_ff @(posedge i_clk) begin
-        if (i_man_right_rd_en) begin
-            man_right_rd_data_reg <= man_right[i_man_right_rd_addr];
-        end
-    end
-    assign o_man_right_rd_data = man_right_rd_data_reg;
+    // Right mantissa read (combinational for 0-cycle latency)
+    assign o_man_right_rd_data = man_right[i_man_right_rd_addr];
 
     // ===================================================================
-    // READ LOGIC - EXPONENTS (ALIGNED)
+    // READ LOGIC - EXPONENTS (ALIGNED - COMBINATIONAL - 0-cycle latency)
     // ===================================================================
 
-    // Left exponent read (registered with enable)
-    logic [EXP_WIDTH-1:0] exp_left_rd_data_reg;
-    always_ff @(posedge i_clk) begin
-        if (i_exp_left_rd_en) begin
-            exp_left_rd_data_reg <= exp_left_aligned[i_exp_left_rd_addr];
-            `ifdef SIMULATION
-            if (i_exp_left_rd_addr == 0) begin
-                $display("[BRAM_RD_EXP_LEFT] @%0t Requesting addr=0, exp=0x%02x (will be valid next cycle)",
-                         $time, exp_left_aligned[0]);
-            end
-            `endif
-        end
-    end
-    assign o_exp_left_rd_data = exp_left_rd_data_reg;
+    // Left exponent read (combinational for 0-cycle latency)
+    assign o_exp_left_rd_data = exp_left_aligned[i_exp_left_rd_addr];
 
-    // Right exponent read (registered with enable)
-    logic [EXP_WIDTH-1:0] exp_right_rd_data_reg;
-    always_ff @(posedge i_clk) begin
-        if (i_exp_right_rd_en) begin
-            exp_right_rd_data_reg <= exp_right_aligned[i_exp_right_rd_addr];
-        end
-    end
-    assign o_exp_right_rd_data = exp_right_rd_data_reg;
+    // Right exponent read (combinational for 0-cycle latency)
+    assign o_exp_right_rd_data = exp_right_aligned[i_exp_right_rd_addr];
     
     // ===================================================================
     // READ LOGIC - PACKED EXPONENTS (for unpacking)

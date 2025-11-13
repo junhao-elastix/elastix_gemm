@@ -42,6 +42,7 @@ TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv tb_engine_top.sv
 # RTL sources (from gemm - MS2.0 FIFO architecture!)
 # Testing fetcher_opt with unpacking wait fix
 RTL_SOURCES = \
+	$(GEMM_RTL)/flex_fifo.sv \
 	$(GEMM_RTL)/cmd_fifo.sv \
 	$(GEMM_RTL)/tile_result_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \

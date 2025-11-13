@@ -30,6 +30,7 @@ constexpr uint8_t  OPC_DISPATCH       = 0xF1;
 constexpr uint8_t  OPC_MATMUL         = 0xF2;
 constexpr uint8_t  OPC_WAIT_DISPATCH  = 0xF3;
 constexpr uint8_t  OPC_WAIT_MATMUL    = 0xF4;
+constexpr uint8_t  OPC_READOUT        = 0xF5;
 
 // -------------------------- Memory Layout ----------------------------------
 constexpr uint64_t GDDR6_BASE_LEFT    = 0x0ULL;
@@ -177,6 +178,21 @@ public:
         uint8_t id = next_cmd_id();
         uint32_t w0 = build_word0(OPC_WAIT_MATMUL, id);
         uint32_t w1 = static_cast<uint32_t>(waitId);
+        issue_command(w0, w1, 0, 0);
+        return id;
+    }
+
+    // ---------------------- READOUT Command ---------------------------------
+    // 4-Word Format (SINGLE_ROW_REFERENCE.md):
+    // cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_READOUT}
+    // cmd[1] = {8'b0, start_col[23:0]}
+    // cmd[2] = 32'h00000000
+    // cmd[3] = 32'h00000000
+    // Purpose: Collect results from compute tiles starting at start_col
+    uint8_t readout(uint32_t start_col = 0) {
+        uint8_t id = next_cmd_id();
+        uint32_t w0 = build_word0(OPC_READOUT, id);
+        uint32_t w1 = start_col & 0xFFFFFF;  // start_col[23:0]
         issue_command(w0, w1, 0, 0);
         return id;
     }

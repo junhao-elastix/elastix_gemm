@@ -449,7 +449,7 @@ import gemm_pkg::*;
 
             // Per-Tile Result FIFO
             tile_result_fifo #(
-                .DEPTH      (128),
+                .DEPTH      (512),
                 .DATA_WIDTH (16)
             ) u_tile_fifo (
                 .i_clk      (i_clk),
@@ -528,10 +528,8 @@ import gemm_pkg::*;
         .i_clk                  (i_clk),
         .i_reset_n              (i_reset_n),
 
-        // MATMUL Command Interface (from Master Control)
+        // MATMUL Command Interface (from Master Control) - for col_en only
         .i_mc_tile_en            (mc_ce_tile_en),
-        .i_mc_left_ugd_len      (mc_ce_tile_left_ugd_len),
-        .i_mc_right_ugd_len     (mc_ce_tile_right_ugd_len),
 
         // READOUT Command Interface (from Master Control)
         .i_readout_en            (mc_arb_readout_en),

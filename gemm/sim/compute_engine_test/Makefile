@@ -73,12 +73,11 @@ compile: create_library
 	@echo "Compiling RTL modules..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
-		$(GEMM_RTL)/gfp8_group_dot_mlp.sv \
-		$(GEMM_RTL)/gfp8_nv_dot_ultra_opt.sv \
-		$(GEMM_RTL)/gfp8_bcv_controller_opt.sv \
+		$(GEMM_RTL)/gfp8_nv_dot.sv \
+		$(GEMM_RTL)/gfp8_bcv_controller.sv \
 		$(GEMM_RTL)/gfp8_to_fp16.sv \
 		$(GEMM_RTL)/tile_bram.sv \
-		$(GEMM_RTL)/compute_engine_modular_opt.sv \
+		$(GEMM_RTL)/compute_engine_modular.sv \
 		tb_compute_engine_modular_opt.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: RTL compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compilation completed successfully" | tee -a $(LOG_FILE)

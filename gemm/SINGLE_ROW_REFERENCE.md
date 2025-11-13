@@ -942,7 +942,7 @@ WAIT_MATMUL: cmd_id = 4, wait_id=3          // Block until MATMUL id=3 completes
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| **Start Col** | 8 | Starting column index for readout - MUST match corresponding DISPATCH col_start for proper result collection |
+| **Start Col** | 8 | Starting column index for readout - MUST match corresponding DISPATCH col_start for proper result collection, managed by host software |
 | **Length** | 32 | Number of valid FP16 results to read (ignores any garbage results from columns with fewer NVs) |
 
 #### Hardware Packing (4-Word Format)
@@ -964,72 +964,221 @@ cmd[3] = 32'h00000000;                                  // Word 3: Reserved
 
 **Key Principle**: VECTOR_READOUT must follow the same pattern as DISPATCH commands for proper result collection.
 
-**Example with Multiple Dispatches**:
-```systemverilog
-// First dispatch: C=14, V=4, 8 columns
-DISPATCH: col_start=0, tile_addr=0, man_nv_cnt=56, ugd_vec_size=4
-// Produces 14 results per batch × batch count
-
-// Corresponding readout
-VECTOR_READOUT: start_col=0, rd_len=98  // 14 results × 7 (6 cols with 2, 2 cols with 1)
-
-// Second dispatch continues from column 6
-DISPATCH: col_start=6, tile_addr=16, man_nv_cnt=32, ugd_vec_size=4
-
-// Corresponding readout must also start from column 6
-VECTOR_READOUT: start_col=6, rd_len=32  // Collect results in same order
-```
-
 **Selective Result Collection**:
 - `rd_len` specifies exact number of VALID results to collect
 - Result arbiter skips garbage results from columns with fewer NVs
 - All columns execute synchronously, but only valid results are transferred
 
-#### Implementation Status
-
-⚠️ **Currently not implemented in this version** - Results are read directly via result FIFO interface in the testbench. This command is defined in the CSV specification for future host-driven result retrieval.
-
-**Planned Usage**:
-```systemverilog
-VECTOR_READOUT: start_col=0, rd_len=16  // Read 16 FP16 results starting at column 0
-```
-
 ---
 
 ### Command Execution Flow Example
 
-Typical command sequence for a single matrix multiplication:
+Typical command sequence, assuming 8 tiles, B = 4, C = 14, V = 4 in one memory block:
 
-```systemverilog
-// Fetch left matrix (528 lines → dispatcher_bram left buffers)
-FETCH: cmd_id=1, start_addr=0, len=528, fetch_right=0
-
-// Fetch right matrix (528 lines → dispatcher_bram right buffers)
-FETCH: cmd_id=2, start_addr=528, len=528, fetch_right=1
-
-// Dispatch data to left tile_bram (broadcast to 4 tiles)
-DISPATCH: cmd_id=3, man_nv_cnt=64, tile_addr = 256, ugd_vec_size = 16, disp_right = 0, broadcast=1, man_4b = 0, col_start = 0, col_en = 0x000F
-
-// Wait for dispatch to complete
-WAIT_DISPATCH: cmd_id = 4, wait_id=3
-
-// Dispatch data to right tile_bram (distribute across 4 tiles)
-DISPATCH: cmd_id=5, man_nv_cnt=64, tile_addr = 256, ugd_vec_size = 16, disp_right = 1, broadcast=0, man_4b = 0, col_start = 0, col_en = 0x000F
-
-// Wait for dispatch to complete
-WAIT_DISPATCH: cmd_id = 6, wait_id=5
+```c
+// Fetch right matrix (528 lines → dispatcher_bram right buffers, usually the weights matrix
+FETCH: 
+start_addr=0, len=528, fetch_right=1
 
 
-// Execute matrix multiplication (4 tiles)
-MATMUL: cmd_id= 7, left_addr=256, right_addr=256, left_ugd_len=4, right_ugd_len=1, vec_len=16
-        left_man_4b=0, right_man_4b=0, loop_over_left=1, col_en = 0x000F
+/*
+Dispatch data to right tile_bram (distribute across 8 tiles), Fetch always followed by Dispatch
+Since C dimension is the column dimension of the weights matrix, we need to distribute the data across 8 tiles.
+Distribute behavior:
+Each tile gets ugd_vec_size NVs at a time, and the next tile gets the next ugd_vec_size NVs.
+NV 0 -> Tile 0, NV 1 -> Tile 0, NV 2 -> Tile 0, NV 3 -> Tile 0,
+NV 4 -> Tile 1, NV 5 -> Tile 1, NV 6 -> Tile 1, NV 7 -> Tile 1,
+...
+so NV n will be distributed to Tile (n//ugd_vec_size) % num_tiles
+and finally,
+NV 52 -> Tile (52//4 = 13, 13 % 8 = 5) -> Tile 5, NV 53 -> Tile 5, NV 54 -> Tile 5, NV 55 -> Tile 5
+*/
+DISPATCH: 
+man_nv_cnt=56, ugd_vec_size = 4, // 56 NVs, 4 NVs per UGD vector, 14 UGD vectors
+tile_addr = 0, // starting line in tile_bram
+disp_right = 1, broadcast=0, // distribute to right tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch left matrix (528 lines → dispatcher_bram left buffers, usually the activations matrix)
+FETCH: 
+start_addr=528, len=528, fetch_right=0
+
+// Dispatch data to left tile_bram (broadcast to 8 tiles)
+DISPATCH: 
+man_nv_cnt=16, ugd_vec_size = 4, // 16 NVs, 4 NVs per UGD vector, 4 UGD vectors
+tile_addr = 0, // starting line in tile_bram
+disp_right = 0, broadcast=1, // broadcast to left tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Execute matrix multiplication (8 tiles)
+MATMUL: 
+left_addr=0, right_addr=0, // starting line in tile_bram
+left_ugd_len=4, right_ugd_len=14, vec_len=4 // B = 4, broadcasted to 8 tiles; C = 14, ceil(14/8) = 2, 14 NVs distributed to 8 tiles, each tile will do 2 NVs; V = 4
+left_man_4b=0, right_man_4b=0, 
+loop_over_left=1, col_en = 0x00FF
 
 // Wait for computation to complete
-WAIT_MATMUL: cmd_id = 8, wait_id=7
+WAIT_MATMUL: 
+cmd_id = xx, wait_id=xx // wait for the matmul to complete, MATMUL command id is xx
+
+// Readout results from result_bram/FIFO
+VECTOR_READOUT: 
+start_col=0, rd_len=56 // read 56 results, start from tile 0, read B * (C // num_tiles) results from each tile until 56 results are read. Notice it may not read the same number of results from each tile. It will read 1 result from each tile round-robinly.
 
 // Results now available in result_bram/FIFO
 ```
+Optionally, we can have back-to-back fetch-dispatch to reduce memory transaction overhead and fully utilize the tile_bram capacity. Still B = 4, C = 14, V = 4 in one pair of memory block, let's say we have 4 pairs memory blocks, and we want to fully utilize the tile_bram capacity. We can have 4 fetch-dispatch pairs to better utilize the tile_bram capacity.
+```c
+// Fetch right matrix (528 lines → dispatcher_bram right buffers, usually the weights matrix)
+FETCH: 
+start_addr=0, len=528, fetch_right=1
 
-This command sequence produces 4 FP16 results (4×1 matrix) per tile, totaling 16 FP16 results across 4 tiles.
+// Dispatch data to right tile_bram (distribute across 8 tiles), Fetch always followed by Dispatch
+DISPATCH: 
+man_nv_cnt=56, ugd_vec_size = 4, // 56 NVs, 4 NVs per UGD vector, 14 UGD vectors
+tile_addr = 0, // starting line in tile_bram
+disp_right = 1, broadcast=0, // distribute to right tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
 
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch left matrix (528 lines → dispatcher_bram left buffers, usually the activations matrix)
+FETCH: 
+start_addr=528, len=528, fetch_right=0
+
+// Dispatch data to left tile_bram (broadcast to 8 tiles)
+DISPATCH: 
+man_nv_cnt=16, ugd_vec_size = 4, // 16 NVs, 4 NVs per UGD vector, 4 UGD vectors
+tile_addr = 0, // starting line in tile_bram
+disp_right = 0, broadcast=1, // broadcast to left tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch right matrix (528 lines → dispatcher_bram right buffers, usually the weights matrix)
+FETCH: 
+start_addr=1056, len=528, fetch_right=1
+
+// Dispatch data to right tile_bram (distribute across 8 tiles), Fetch always followed by Dispatch
+// Since we are using back-to-back fetch-dispatch, we need to start from the next column tile, so col_start = 6
+// and the tile_addr should be the starting line in the next tile_bram, 
+// the first 6 tiles have 32 lines (8 NVs) in their tile_bram from the previous right dispatch, tile 6 and 7 only have 16 lines (4 NVs) in their tile_bram,
+// so tile_addr = 16. Host will know the starting line in the next tile_bram by the previous dispatch command.
+DISPATCH: 
+man_nv_cnt=56, ugd_vec_size = 4, // 56 NVs, 4 NVs per UGD vector, 14 UGD vectors
+tile_addr = 16, // starting line in tile_bram
+disp_right = 1, broadcast=0, // distribute to right tile_bram
+col_start = 6, col_en = 0x00FF, // starting from the 7th column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch left matrix (528 lines → dispatcher_bram left buffers, usually the activations matrix)
+FETCH: 
+start_addr=1584, len=528, fetch_right=0
+
+// Dispatch data to left tile_bram (broadcast to 8 tiles)
+// We are using back-to-back fetch-dispatch, but in broadcast mode, all tiles always gets the same data
+// so col_start = 0, 
+// but we need to start from the next tile_bram address, so tile_addr is the next tile_bram address after the previous left dispatch. Previous left dispatch has 4 NVs per UGD vector, and 4 UGD vectors, so 16 NVs (man_nv_cnt = 16), so tile_addr = 16 * 4 = 64.
+DISPATCH: 
+man_nv_cnt=16, ugd_vec_size = 4, // 16 NVs, 4 NVs per UGD vector, 4 UGD vectors
+tile_addr = 64, // starting line in tile_bram, the next tile_bram address after the previous left dispatch.
+disp_right = 0, broadcast=1, // broadcast to left tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Again, we have the next pair of fetch-dispatch, we need to start from the next column tile. 
+// Fetch right matrix (528 lines → dispatcher_bram right buffers, usually the weights matrix)
+FETCH: 
+start_addr=2112, len=528, fetch_right=1
+
+// Dispatch data to right tile_bram (distribute across 8 tiles), Fetch always followed by Dispatch
+DISPATCH: 
+man_nv_cnt=56, ugd_vec_size = 4, // 56 NVs, 4 NVs per UGD vector, 14 UGD vectors
+tile_addr = 48, // starting line in tile_bram
+disp_right = 1, broadcast=0, // distribute to right tile_bram
+col_start = 4, col_en = 0x00FF, // starting from 5th column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch left matrix (528 lines → dispatcher_bram left buffers, usually the activations matrix)
+FETCH: 
+start_addr=2640, len=528, fetch_right=0
+
+// Dispatch data to left tile_bram (broadcast to 8 tiles)
+DISPATCH: 
+man_nv_cnt=16, ugd_vec_size = 4, // 16 NVs, 4 NVs per UGD vector, 4 UGD vectors
+tile_addr = 128, // starting line in tile_bram, the next tile_bram address after the previous left dispatch.
+disp_right = 0, broadcast=1, // broadcast to left tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Again, we have the next pair of fetch-dispatch, we need to start from the next column tile. 
+// Fetch right matrix (528 lines → dispatcher_bram right buffers, usually the weights matrix)
+FETCH: 
+start_addr=3168, len=528, fetch_right=1
+
+// Dispatch data to right tile_bram (distribute across 8 tiles), Fetch always followed by Dispatch
+DISPATCH: 
+man_nv_cnt=56, ugd_vec_size = 4, // 56 NVs, 4 NVs per UGD vector, 14 UGD vectors
+tile_addr = 64, // starting line in tile_bram
+disp_right = 1, broadcast=0, // distribute to right tile_bram
+col_start = 2, col_en = 0x00FF, // starting from the 3rd column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Fetch left matrix (528 lines → dispatcher_bram left buffers, usually the activations matrix)
+FETCH: 
+start_addr=3696, len=528, fetch_right=0
+
+// Dispatch data to left tile_bram (broadcast to 8 tiles)
+DISPATCH: 
+man_nv_cnt=16, ugd_vec_size = 4, // 16 NVs, 4 NVs per UGD vector, 4 UGD vectors
+tile_addr = 192, // starting line in tile_bram, the next tile_bram address after the previous left dispatch.
+disp_right = 0, broadcast=1, // broadcast to left tile_bram
+col_start = 0, col_en = 0x00FF, // starting from first column tile, 8 columns enabled
+man_4b = 0 // 8-bit mantissas
+
+WAIT_DISPATCH: 
+cmd_id = xx, wait_id=xx // wait for the dispatch to complete, DISPATCH command id is xx
+
+// Execute matrix multiplication (8 tiles)
+MATMUL: 
+left_addr=0, right_addr=0, // starting line in tile_bram
+left_ugd_len=16, right_ugd_len=56, vec_len=4 // since we did 4 pairs of fetch-dispatch, B = 4*4, broadcasted to 8 tiles; C = 14*4, ceil(14*4/8) = 7, 14*4 NVs distributed to 8 tiles, each tile will do 7 NVs; V = 4
+left_man_4b=0, right_man_4b=0, 
+loop_over_left=1, col_en = 0x00FF
+
+// Wait for computation to complete
+WAIT_MATMUL: 
+cmd_id = xx, wait_id=xx // wait for the matmul to complete, MATMUL command id is xx
+
+// Readout results from result_bram/FIFO
+VECTOR_READOUT: 
+start_col=0, rd_len=224 // read 224 results, start from tile 0, read B * (C // num_tiles) results from each tile until 224 results are read. Notice it may not read the same number of results from each tile. It will read 1 result from each tile round-robinly.
+```
 ---
