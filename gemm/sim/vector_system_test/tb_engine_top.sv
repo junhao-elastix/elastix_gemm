@@ -307,6 +307,12 @@ module tb_engine_top;
         // '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"}
 
     // Multi-column tests (NEW: multi-tile tests with NUM_TILES=8)
+        '{B: 2, C: 2, V: 64,   col_en: 24'h000003, name: "B2_C2_V64"},
+        '{B: 2, C: 2, V: 64,   col_en: 24'h00000F, name: "B2_C2_V64"},
+        '{B: 2, C: 2, V: 64,   col_en: 24'h0000FF, name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h000003, name: "B4_C4_V32"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h00000F, name: "B4_C4_V32"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h0000FF, name: "B4_C4_V32"},
         '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"},
         '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"},
         '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"},

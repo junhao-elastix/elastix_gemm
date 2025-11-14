@@ -143,8 +143,16 @@ module gfp8_bcv_controller (
                     $display("[BCV] @%0t ST_IDLE: tile_start_rising detected, starting compute - B=%0d, C=%0d, V=%0d", 
                              $time, i_dim_b, i_dim_c, i_dim_v);
                     `endif
-                    // Skip FILL_BUFFER, go directly to compute
-                    state_next = ST_COMPUTE_NV;
+                    // If B=0 or C=0, skip computation and complete immediately (no results to produce)
+                    if (i_dim_b == 8'd0 || i_dim_c == 8'd0) begin
+                        `ifdef SIMULATION
+                        $display("[BCV] @%0t ST_IDLE: B=0 or C=0, skipping computation (no results)", $time);
+                        `endif
+                        state_next = ST_RETURN;  // Go directly to RETURN to assert tile_done
+                    end else begin
+                        // Skip FILL_BUFFER, go directly to compute
+                        state_next = ST_COMPUTE_NV;
+                    end
                 end
             end
 
@@ -167,7 +175,13 @@ module gfp8_bcv_controller (
 
             ST_RETURN: begin
                 // Check if all BxC outputs are complete
-                if (c_idx >= dim_c_reg - 1 && b_idx >= dim_b_reg - 1) begin
+                // Special case: if dim_c_reg=0 or dim_b_reg=0, complete immediately (no results to produce)
+                if (dim_c_reg == 8'd0 || dim_b_reg == 8'd0) begin
+                    `ifdef SIMULATION
+                    $display("[BCV] @%0t ST_RETURN: B=0 or C=0, completing immediately (no results)", $time);
+                    `endif
+                    state_next = ST_IDLE;  // Complete immediately
+                end else if (c_idx >= dim_c_reg - 1 && b_idx >= dim_b_reg - 1) begin
                     `ifdef SIMULATION
                     $display("[BCV] @%0t ST_RETURN: All complete (b=%0d/%0d, c=%0d/%0d), returning to IDLE", 
                              $time, b_idx, dim_b_reg-1, c_idx, dim_c_reg-1);
@@ -357,14 +371,20 @@ module gfp8_bcv_controller (
                 // end
                 ST_RETURN: begin
                     // Output accumulated result for this (b,c) pair
-                    o_result_mantissa <= accum_mantissa;
-                    o_result_exponent <= accum_exponent;
-                    o_result_valid <= 1'b1;
+                    // Only output valid result if B>0 and C>0 (otherwise skip result output)
+                    if (dim_c_reg != 8'd0 && dim_b_reg != 8'd0) begin
+                        o_result_mantissa <= accum_mantissa;
+                        o_result_exponent <= accum_exponent;
+                        o_result_valid <= 1'b1;
+                    end else begin
+                        // B=0 or C=0: no results to output
+                        o_result_valid <= 1'b0;
+                    end
 
                     // Signal completion when returning to IDLE
                     if (state_next == ST_IDLE) begin
                         `ifdef SIMULATION
-                        $display("[BCV] @%0t ST_RETURN: Completing - b=%0d, c=%0d, v=%0d (final), asserting tile_done", 
+                        $display("[BCV] @%0t ST_RETURN: Completing - b=%0d, c=%0d, v=%0d (final), asserting tile_done",
                                  $time, b_idx, c_idx, v_idx);
                         `endif
                         o_tile_done <= 1'b1;

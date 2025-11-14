@@ -148,6 +148,7 @@ int main(int argc, char* argv[]) {
     bool verbose = false;
     bool timing = false;
     int test_B = -1, test_C = -1, test_V = -1;
+    int num_tiles = 1;  // Default: single tile (column 0 only)
     uint32_t col_en = 0x0001;  // Default: single tile (column 0 only)
     
     for (int i = 1; i < argc; ++i) {
@@ -164,8 +165,8 @@ int main(int argc, char* argv[]) {
             test_C = stoi(argv[++i]);
         } else if (strcmp(argv[i], "-V") == 0 && i+1 < argc) {
             test_V = stoi(argv[++i]);
-        } else if (strcmp(argv[i], "-col_en") == 0 && i+1 < argc) {
-            col_en = stoul(argv[++i], nullptr, 0);  // Parse as hex if starts with 0x
+        } else if (strcmp(argv[i], "-n") == 0 && i+1 < argc) {
+            num_tiles = stoul(argv[++i]);  // Parse as hex if starts with 0x
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             cout << "Usage: test_gemm [options]\n";
             cout << "Options:\n";
@@ -173,8 +174,7 @@ int main(int argc, char* argv[]) {
             cout << "  -v                  Verbose output (results and debug info)\n";
             cout << "  -t                  Print timing information for each method\n";
             cout << "  -B N, -C N, -V N    Run single test with specified B, C, V parameters\n";
-            cout << "  -col_en MASK        Column enable mask (hex, default: 0x0001 = single tile)\n";
-            cout << "                      Examples: 0x0001 (1 tile), 0x0003 (2 tiles), 0x000F (4 tiles), 0x00FF (8 tiles)\n";
+            cout << "  -n N                Number of tiles (1,2,4,8) - sets col_en mask (default: 1)\n";
             cout << "  -h, --help          Show this help\n";
             cout << "\nDefault: Runs 10-config test suite if B/C/V not specified.\n";
             return 0;
@@ -195,13 +195,22 @@ int main(int argc, char* argv[]) {
              << (bitstream_id & 0xFF) << ")" << endl;
 
         BRAM_RESULT_BASE = acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5);
+        if (num_tiles == 2) {
+            col_en = 0x0003;
+        } else if (num_tiles == 4) {
+            col_en = 0x000F;
+        } else if (num_tiles == 8) {
+            col_en = 0x00FF;
+        }
+        else {
+            col_en = 0x0001;
+        }
 
         // Check if single test mode (all three parameters specified)
         bool single_test_mode = (test_B >= 0 && test_C >= 0 && test_V >= 0);
 
         if (single_test_mode) {
             // Single test mode
-            int num_tiles = __builtin_popcount(col_en & 0xFF);  // Count enabled tiles (bits 0-7)
             cout << "\n========================================" << endl;
             cout << "Single Test: B=" << test_B << ", C=" << test_C << ", V=" << test_V << endl;
             cout << "Column Enable: 0x" << hex << setfill('0') << setw(6) << col_en << dec 
@@ -260,7 +269,7 @@ int main(int argc, char* argv[]) {
                 cout << "  [Stage 1] Initial soft reset complete" << endl;
             }
 
-            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, 0x0001);
+            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, col_en);
 
             if (result) {
                 stage1_passed++;
@@ -351,6 +360,17 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // Register 0x230 (140) - REG_RD_PTR: Host read/write pointer
         uint32_t host_rd_ptr = 0;  // Initialize to 0 at start of each test
         gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
+
+        int num_tiles = __builtin_popcount(col_en & 0xFF);
+        if (C < num_tiles) {
+            if (C == 1) {
+                col_en = 0x0001;
+            } else if (C == 2) {
+                col_en = 0x0003;
+            } else if (C == 4) {
+                col_en = 0x000F;
+            }
+        }
 
         if (verbose) {
             cout << "  [Circular Buffer] Reset rd_ptr to 0" << endl;

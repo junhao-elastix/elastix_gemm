@@ -1,25 +1,9 @@
-// MS2.0 GEMM Engine Full Integration Test
+// MS2.0 GEMM Engine Test
 //
-// Tests complete GEMM workflow with MS2.0 engine using 5 microcode commands:
-//   1. FETCH (0xF0) - Fetch matrices from GDDR6 to local buffers
-//   2. DISPATCH (0xF1) - Dispatch vectors to tile buffers
-//   3. WAIT_DISPATCH (0xF3) - Wait for dispatch completion
-//   4. MATMUL (0xF2) - Perform matrix multiplication
-//   5. WAIT_MATMUL (0xF4) - Wait for matmul completion
-//
-// Test Flow:
-//   1. Generate test matrices (left, right) and golden reference
-//   2. DMA write matrices to GDDR6
-//   3. Issue FETCH command to load from GDDR6 to engine buffers
-//   4. Issue DISPATCH command to distribute vectors to tiles
-//   5. Poll for dispatch completion
-//   6. Issue MATMUL command to compute result
-//   7. Poll for matmul completion
-//   8. DMA read results from BRAM
-//   9. Validate against golden reference
-//
-// Author: Reconstructed from project memory
-// Date: Tue Oct 8 2025
+// Test suite using VP815GemmDevice class with:
+// - Encapsulated command interface
+// - Default multi-config test suite (10 configurations)
+// - CLI override support for single tests
 
 #include <iostream>
 #include <iomanip>
@@ -28,62 +12,15 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
-#include <thread>
 #include <cmath>
 #include <vector>
-#include <algorithm>
-#include <limits>
-#include "../../../eus/shell/devices/acx/vp815/api/vp815.hpp"
-#include "Achronix_device.h"
-#include "Achronix_util.h"
+#include <unistd.h>  // for usleep
+#include "vp815_gemm_device.hpp"
 
 using namespace std;
 using namespace achronix;
 
-// MS2.0 GEMM Engine Register Map (BAR0)
-#define ENGINE_CMD_WORD0        0x3C    // Command word 0 (opcode) - shifted +3 for MC payload debug regs
-#define ENGINE_CMD_WORD1        0x40    // Command word 1 - shifted +3 for MC payload debug regs
-#define ENGINE_CMD_WORD2        0x44    // Command word 2 - shifted +3 for MC payload debug regs
-#define ENGINE_CMD_WORD3        0x48    // Command word 3 - shifted +3 for MC payload debug regs
-#define ENGINE_CMD_SUBMIT       0x4C    // Submit trigger (write 1) - shifted +3 for MC payload debug regs
-#define ENGINE_STATUS           0x50    // {CE[3:0], DC[3:0], MC[3:0], busy} - shifted +3 for MC payload debug regs
-#define ENGINE_RESULT_COUNT     0x54    // FP16 result count - shifted +3 for MC payload debug regs
-#define ENGINE_DEBUG            0x58    // Debug register - shifted +3 for MC payload debug regs
-
-// New MC payload debug registers (Oct 10, 2025 - for dimension corruption debug)
-#define MC_PAYLOAD_WORD1        0x2C    // Master control raw payload word 1
-#define MC_PAYLOAD_WORD2        0x30    // Master control raw payload word 2
-#define MC_PAYLOAD_WORD3        0x34    // Master control raw payload word 3
-
-// MS2.0 Microcode Opcodes
-#define OPCODE_FETCH            0xF0    // Fetch memory block from GDDR6
-#define OPCODE_DISPATCH         0xF1    // Dispatch vectors to tiles
-#define OPCODE_MATMUL           0xF2    // Matrix multiplication (TILE)
-#define OPCODE_WAIT_DISPATCH    0xF3    // Wait for dispatch done
-#define OPCODE_WAIT_MATMUL      0xF4    // Wait for matmul done
-
 // Test Configuration
-// Configurable test parameters (can be set via command-line)
-// Default values (will be overridden by command-line args if provided)
-static int MATRIX_ROWS = 4;       // B parameter (result rows)
-static int MATRIX_COLS = 4;       // C parameter (result cols)
-static int VLOOP_SIZE = 32;       // V parameter (vectors per row/col)
-#define NATIVE_VEC_SIZE         128     // Native vector size (from Plan_C.md)
-#define GFP_GROUP_SIZE          32      // GFP group size
-#define MEMORY_BLOCK_SIZE       128     // Memory block size in native vectors
-
-// Matrix dimensions derived from B, C, V:
-// Matrix A: B rows × (128×V) columns = 4 × (128×32) = 4 × 4096
-// Matrix B: (128×V) rows × C columns = (128×32) × 4 = 4096 × 4
-// Result: B × C = 4 × 4
-
-// GDDR6 addressing
-#define GDDR6_BASE_LEFT         0x0             // Left matrix base address
-#define GDDR6_BASE_RIGHT        0x4200          // Right matrix base address (528×32B = 16,896 = 0x4200)
-
-// BRAM addressing for results
-// Result BRAM at NAP[3][5] per placement constraint (NOC[3][5] in ace_placements.pdc)
-// Result BRAM base address - calculated in main() using acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5)
 static uint64_t BRAM_RESULT_BASE = 0;
 
 // Helper Functions
@@ -107,96 +44,6 @@ float fp16ToFloat(uint16_t fp16_val) {
     }
 }
 
-// Wait for engine to become idle (ENGINE_STATUS bit 0)
-bool waitEngineIdle(VP815& device, uint32_t timeout_ms = 10000) {
-    auto start = chrono::steady_clock::now();
-
-    while (true) {
-        uint32_t status = device.mmioRead32(0, ENGINE_STATUS);
-        if ((status & 0x1) == 0) {  // Busy bit clear
-            return true;
-        }
-
-        auto elapsed = chrono::duration_cast<chrono::milliseconds>(
-            chrono::steady_clock::now() - start).count();
-        if (elapsed > timeout_ms) {
-            cerr << "ERROR: Engine timeout after " << timeout_ms << "ms" << endl;
-            cerr << "ENGINE_STATUS: 0x" << hex << status << dec << endl;
-            return false;
-        }
-
-    }
-}
-
-// Issue command to MS2.0 engine
-void issueCommand(VP815& device, uint32_t word0, uint32_t word1,
-                  uint32_t word2, uint32_t word3) {
-    device.mmioWrite32(0, ENGINE_CMD_WORD0, word0);
-    device.mmioWrite32(0, ENGINE_CMD_WORD1, word1);
-    device.mmioWrite32(0, ENGINE_CMD_WORD2, word2);
-    device.mmioWrite32(0, ENGINE_CMD_WORD3, word3);
-    device.mmioWrite32(0, ENGINE_CMD_SUBMIT, 0x1);  // Trigger execution
-}
-
-// Load GFP8 matrix from hex file (left.hex or right.hex format)
-// Format: 528 lines total, each line is exactly 256 bits (32 bytes)
-//   Lines 0-15: Exponents (32 bytes per line, space-separated hex)
-//   Lines 16-527: Mantissas (32 bytes per line, space-separated hex)
-// This matches GDDR6 memory organization exactly.
-bool loadHexMatrix(const string& filename, vector<uint8_t>& data) {
-    ifstream file(filename);
-    if (!file.is_open()) {
-        cerr << "ERROR: Cannot open hex file: " << filename << endl;
-        return false;
-    }
-
-    data.clear();
-    data.reserve(528 * 32);  // 528 lines × 32 bytes = 16896 bytes
-
-    string line;
-    int line_num = 0;
-
-    while (getline(file, line)) {
-        if (line.empty()) continue;
-
-        istringstream iss(line);
-        string hex_val;
-        int byte_count = 0;
-
-        // Each line should have exactly 32 hex bytes (256 bits)
-        while (iss >> hex_val) {
-            if (byte_count >= 32) {
-                cerr << "ERROR: Line " << line_num << " has more than 32 bytes" << endl;
-                return false;
-            }
-
-            uint8_t val = (uint8_t)strtoul(hex_val.c_str(), NULL, 16);
-            data.push_back(val);
-            byte_count++;
-        }
-
-        if (byte_count != 32) {
-            cerr << "ERROR: Line " << line_num << " has " << byte_count
-                 << " bytes, expected 32 (256 bits)" << endl;
-            return false;
-        }
-
-        line_num++;
-    }
-
-    if (line_num != 528) {
-        cerr << "ERROR: Expected 528 lines in hex file, got " << line_num << endl;
-        return false;
-    }
-
-    return true;
-}
-
-// Forward declaration
-uint16_t floatToFP16(float val);
-
-// Load golden reference from file
-// Load golden reference from .hex file (FP16 hex values, one per line)
 bool loadGoldenReferenceHex(const string& filename, vector<float>& golden, int expected_count) {
     ifstream file(filename);
     if (!file.is_open()) {
@@ -219,13 +66,10 @@ bool loadGoldenReferenceHex(const string& filename, vector<float>& golden, int e
         return false;
     }
 
-    cout << "  Loaded golden reference: " << filename << " (" << golden.size() << " values)" << endl;
     return true;
 }
 
-// Convert float to FP16 (simple conversion for testing)
 uint16_t floatToFP16(float val) {
-    // Simplified FP16 conversion (can be replaced with proper conversion)
     uint32_t bits;
     memcpy(&bits, &val, sizeof(float));
 
@@ -234,81 +78,38 @@ uint16_t floatToFP16(float val) {
     uint32_t mant = bits & 0x7FFFFF;
 
     // Handle special cases
-    if (exp == 0) return (sign << 15);  // Zero (float subnormals become FP16 zero)
-    if (exp == 0xFF) return (sign << 15) | 0x7C00;  // Inf/NaN
+    if (exp == 0) return (sign << 15);
+    if (exp == 0xFF) return (sign << 15) | 0x7C00;
 
     // Rebias exponent
     int32_t new_exp = (int32_t)exp - 127 + 15;
     
     // Handle subnormal FP16 output
     if (new_exp <= 0) {
-        // Shift mantissa to create subnormal
-        // FP16 subnormal: value = mantissa * 2^(-14) / 1024
-        // We need to shift the mantissa right by (1 - new_exp) positions
         int shift = 1 - new_exp;
-        if (shift >= 24) return (sign << 15);  // Too small, underflow to zero
+        if (shift >= 24) return (sign << 15);
         
-        // Add implicit 1 to mantissa for normal float
         uint32_t full_mant = (1 << 23) | mant;
-        // Shift to FP16 position and account for subnormal exponent
         uint32_t new_mant = (full_mant + (1 << (shift + 12))) >> (shift + 13);
         
         if (new_mant > 0x3FF) {
-            // Rounding caused overflow to normal number
             return (sign << 15) | (1 << 10);
         }
         return (sign << 15) | (new_mant & 0x3FF);
     }
     
-    if (new_exp >= 31) return (sign << 15) | 0x7C00;  // Overflow
+    if (new_exp >= 31) return (sign << 15) | 0x7C00;
 
     // Round mantissa
     uint32_t new_mant = (mant + 0x1000) >> 13;
     
-    // Check for mantissa overflow after rounding
     if (new_mant > 0x3FF) {
         new_exp++;
         new_mant = 0;
-        if (new_exp >= 31) return (sign << 15) | 0x7C00;  // Overflow
+        if (new_exp >= 31) return (sign << 15) | 0x7C00;
     }
 
     return (sign << 15) | (new_exp << 10) | (new_mant & 0x3FF);
-}
-
-// Compare results with tolerance (also accepts result_fp16 for hex display)
-bool compareResults(const vector<float>& result, const vector<float>& golden,
-                   const vector<uint16_t>& result_fp16, float tolerance = 0.01f) {
-    if (result.size() != golden.size()) {
-        cerr << "ERROR: Size mismatch - result: " << result.size()
-             << ", golden: " << golden.size() << endl;
-        return false;
-    }
-
-    int mismatches = 0;
-    for (size_t i = 0; i < result.size(); i++) {
-        float diff = fabs(result[i] - golden[i]);
-        float rel_err = (golden[i] != 0.0f) ? diff / fabs(golden[i]) : diff;
-
-        if (rel_err > tolerance) {
-            if (mismatches < 10) {  // Print first 10 mismatches
-                // Convert golden to FP16 for hex display
-                uint16_t golden_fp16 = floatToFP16(golden[i]);
-                cerr << "  Mismatch [" << i << "]: HW=0x" << hex << setw(4) << setfill('0') 
-                     << result_fp16[i] << " (" << dec << result[i] 
-                     << "), Golden=0x" << hex << setw(4) << setfill('0')
-                     << golden_fp16 << " (" << dec << golden[i] << "), rel_err=" << rel_err << endl;
-            }
-            mismatches++;
-        }
-    }
-
-    if (mismatches > 0) {
-        cerr << "ERROR: " << mismatches << " / " << result.size()
-             << " mismatches (tolerance=" << tolerance << ")" << endl;
-        return false;
-    }
-
-    return true;
 }
 
 // Test Configuration Structure
@@ -319,896 +120,779 @@ struct TestConfig {
     const char* name;
 };
 
-// All 9 test configurations from simulation
-const TestConfig test_configs[] = {
-    {1, 1, 1, "B1_C1_V1"},
-    {2, 2, 2, "B2_C2_V2"},
-    {4, 4, 4, "B4_C4_V4"},
-    {2, 2, 64, "B2_C2_V64"},
-    {4, 4, 32, "B4_C4_V32"},
-    {8, 8, 16, "B8_C8_V16"},
-    {16, 16, 8, "B16_C16_V8"},
-    {1, 128, 1, "B1_C128_V1"},
-    {128, 1, 1, "B128_C1_V1"},
-    {1, 1, 128, "B1_C1_V128"}
-};
-const int num_tests = sizeof(test_configs) / sizeof(test_configs[0]);
+// Function Declarations
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en = 0x0001);
 
-// Run a single test configuration
-bool run_single_test(VP815& device, const TestConfig& config, int stress_factor, bool verbose, 
-                     const vector<uint8_t>& left_data, const vector<uint8_t>& right_data, vector<uint16_t>& result_fp16, bool print_time);
-
-// Run multi-tile test (single FETCH, multiple DISPATCH/TILE)
-bool run_multitile_test(VP815& device, int B, int C, int V, bool verbose);
-
-// Main Test
+// Main
 int main(int argc, char* argv[]) {
     cout << "========================================" << endl;
-    cout << "MS2.0 GEMM Engine" << endl;
+    cout << "MS2.0 GEMM Engine (Refactored)" << endl;
     cout << "========================================" << endl;
 
     // Parse command line arguments
     int device_id = 0;
-    int num_runs = 1;
-    bool run_infinite = false;
-    int stress_factor = 1;
     bool verbose = false;
-    bool print_time = false;
-    bool run_multitile = false;
-    int multitile_B = 2, multitile_C = 2, multitile_V = 32;  // Default: B2_C2_V32
+    bool timing = false;
+    int test_B = -1, test_C = -1, test_V = -1;
+    int num_tiles = 1;  // Default: single tile
     
-    // Simple CLI parsing
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "-d") == 0 || (std::strcmp(argv[i], "--device") == 0 && i+1 < argc)) {
-            device_id = std::stoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "-n") == 0 || (std::strcmp(argv[i], "--num_runs") == 0 && i+1 < argc)) {
-            num_runs = std::stoi(argv[++i]);
-            if (num_runs < 1) {
-                std::cerr << "Warning: -n must be >= 1. Using 1.\n";
-                num_runs = 1;
-            }
-        } else if (std::strcmp(argv[i], "-i") == 0 || (std::strcmp(argv[i], "--run_infinite") == 0 && i+1 < argc)) {
-            run_infinite = true;
-        } else if (std::strcmp(argv[i], "-s") == 0 || (std::strcmp(argv[i], "--stress") == 0 && i+1 < argc)) {
-            stress_factor = std::stoi(argv[++i]);
-            if (stress_factor < 1) {
-                std::cerr << "Warning: -s must be >= 1. Using 1.\n";
-                stress_factor = 1;
-            }
-        } else if (std::strcmp(argv[i], "-t") == 0 || (std::strcmp(argv[i], "--print_time") == 0 && i+1 < argc)) {
-            print_time = true;
-        } else if (std::strcmp(argv[i], "-v") == 0 || (std::strcmp(argv[i], "--verbose") == 0 && i+1 < argc)) {
+        if (strcmp(argv[i], "-d") == 0 && i+1 < argc) {
+            device_id = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-v") == 0) {
             verbose = true;
-        } else if (std::strcmp(argv[i], "-m") == 0 || (std::strcmp(argv[i], "--multitile") == 0 && i+1 < argc)) {
-            run_multitile = true;
-        } else if (std::strcmp(argv[i], "-B") == 0 && i+1 < argc) {
-            multitile_B = std::stoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "-C") == 0 && i+1 < argc) {
-            multitile_C = std::stoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "-V") == 0 && i+1 < argc) {
-            multitile_V = std::stoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "-h") == 0 || (std::strcmp(argv[i], "--help") == 0 && i+1 < argc)) {
-            std::cout << "Usage: test_ms2_gemm_full [options]\n";
-            std::cout << "Options:\n";
-            std::cout << "  -d N                Use device N (default: 0)\n";
-            std::cout << "  -n N                Run tests N times (default: 1)\n";
-            std::cout << "  -i                  Run tests infinitely\n";
-            std::cout << "  -s N                Repeat dispatch/matmul N times per test (default: 1)\n";
-            std::cout << "  -t                  Print time\n";
-            std::cout << "  -v                  Verbose output\n";
-            std::cout << "  --multitile         Run multi-tile test instead of normal tests\n";
-            std::cout << "  --singletile N      Run single tile test for tile N only\n";
-            std::cout << "  --B N               Set B parameter for multi-tile test (default: 2)\n";
-            std::cout << "  --C N               Set C parameter for multi-tile test (default: 2)\n";
-            std::cout << "  --V N               Set V parameter for multi-tile test (default: 32)\n";
-            std::cout << "  -h, --help          Show this help\n";
+            timing = true;
+        } else if (strcmp(argv[i], "-t") == 0) {
+            timing = true;
+        } else if (strcmp(argv[i], "-B") == 0 && i+1 < argc) {
+            test_B = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-C") == 0 && i+1 < argc) {
+            test_C = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-V") == 0 && i+1 < argc) {
+            test_V = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-n") == 0 && i+1 < argc) {
+            num_tiles = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            cout << "Usage: test_gemm [options]\n";
+            cout << "Options:\n";
+            cout << "  -d N                Use device N (default: 0)\n";
+            cout << "  -v                  Verbose output (results and debug info)\n";
+            cout << "  -t                  Print timing information for each method\n";
+            cout << "  -B N, -C N, -V N    Run single test with specified B, C, V parameters\n";
+            cout << "  -n N                Number of tiles (1,2,4,8) - sets col_en mask (default: 1)\n";
+            cout << "  -h, --help          Show this help\n";
+            cout << "\nDefault: Runs 10-config test suite if B/C/V not specified.\n";
+            cout << "\nTile Configuration:\n";
+            cout << "  -n 1: col_en=0x0001 (single tile)\n";
+            cout << "  -n 2: col_en=0x0003 (2 tiles)\n";
+            cout << "  -n 4: col_en=0x000F (4 tiles)\n";
+            cout << "  -n 8: col_en=0x00FF (8 tiles)\n";
             return 0;
-        } else {
-            // Positional argument (device_id)
-            try {
-                device_id = std::stoi(argv[i]);
-            } catch (const std::exception& e) {
-                std::cerr << "Warning: Invalid device ID '" << argv[i] << "'. Using 0.\n";
-                device_id = 0;
-            }
         }
+    }
+    
+    // Calculate col_en mask from num_tiles
+    uint32_t col_en_mask = 0x0001;
+    if (num_tiles == 2) col_en_mask = 0x0003;
+    else if (num_tiles == 4) col_en_mask = 0x000F;
+    else if (num_tiles == 8) col_en_mask = 0x00FF;
+    else if (num_tiles != 1) {
+        cerr << "ERROR: Invalid num_tiles=" << num_tiles << ". Must be 1, 2, 4, or 8." << endl;
+        return 1;
     }
 
     try {
-        // Initialize device once
         cout << "\n[Initialization] Opening VP815 device " << device_id << "..." << endl;
         VP815 device(device_id);
+        VP815GemmDevice gemm_device(device);
+        gemm_device.soft_reset();
 
-        uint32_t bitstream_id = device.mmioRead32(0, 0x214);
+        uint32_t bitstream_id = gemm_device.mmio_read32(0, 0x214);
         cout << "  Bitstream ID: 0x" << hex << bitstream_id << dec
              << " (Build: " << ((bitstream_id >> 24) & 0xFF) << "/"
              << ((bitstream_id >> 16) & 0xFF) << " "
              << ((bitstream_id >> 8) & 0xFF) << ":"
              << (bitstream_id & 0xFF) << ")" << endl;
+        
+        cout << "  Tile Configuration: " << num_tiles << " tile(s) enabled (col_en=0x" 
+             << hex << setfill('0') << setw(4) << col_en_mask << dec << ")" << endl;
 
-        // Calculate Result BRAM base address
         BRAM_RESULT_BASE = acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5);
 
-        // Multi-tile test mode
-        if (run_multitile) {
+        // Check if single test mode (all three parameters specified)
+        bool single_test_mode = (test_B >= 0 && test_C >= 0 && test_V >= 0);
+
+        if (single_test_mode) {
+            // Single test mode
             cout << "\n========================================" << endl;
-            cout << "MULTI-TILE TEST MODE" << endl;
+            cout << "Single Test: B=" << test_B << ", C=" << test_C << ", V=" << test_V << endl;
             cout << "========================================" << endl;
             
-            bool result = run_multitile_test(device, multitile_B, multitile_C, multitile_V, verbose);
+            bool result = run_single_test(gemm_device, test_B, test_C, test_V, verbose, timing, col_en_mask);
             
             cout << "\n========================================" << endl;
-            cout << "MULTI-TILE TEST " << (result ? "PASSED" : "FAILED") << endl;
+            cout << "TEST " << (result ? "PASSED" : "FAILED") << endl;
             cout << "========================================" << endl;
             
             return result ? 0 : 1;
         }
 
-        // Run all tests
-        int passed = 0;
-        int failed = 0;
-        if (run_infinite) {
-            num_runs = std::numeric_limits<int>::max();
-            cout << "Running infinite mode (max " << num_runs << " iterations)" << endl;
-        } else {
-            cout << "Running " << num_runs << " times" << endl;
-        }
-        cout << "Stress factor: " << stress_factor << endl;
-        cout << "----------------------------------------" << endl;
-        
-        // ====================================================================
-        // Pre-load data once (moved from run_single_test)
-        // ====================================================================
-        cout << "Loading test data..." << endl;
-        
-        // Load matrices from hex files (Step 3)
-        string left_hex = "../../hex/left.hex";
-        string right_hex = "../../hex/right.hex";
-        vector<uint8_t> left_data, right_data;
-        
-        if (!loadHexMatrix(left_hex, left_data)) {
-            cerr << "ERROR: Failed to load left matrix" << endl;
-            return 1;
-        }
-        
-        if (!loadHexMatrix(right_hex, right_data)) {
-            cerr << "ERROR: Failed to load right matrix" << endl;
-            return 1;
-        }
-        
-        cout << "  Loaded matrices: " << left_data.size() << " + " << right_data.size() << " bytes" << endl;
-        
-        // Load golden references for all test configurations
-        // Use command-line parameters if provided, otherwise use hardcoded configs
-        
-        vector<vector<float>> golden_results;
-        vector<TestConfig> active_configs;
-        
-        // Check if command-line parameters were provided
-        bool use_cli_params = (multitile_B != 2 || multitile_C != 2 || multitile_V != 32);
-        
-        if (use_cli_params) {
-            // Use command-line parameters
-            TestConfig cli_config = {multitile_B, multitile_C, multitile_V, "CLI_CONFIG"};
-            active_configs.push_back(cli_config);
-            golden_results.resize(1);
-            
-            // Load golden reference for CLI config
-            stringstream golden_ss;
-            golden_ss << "../../hex/golden_B" << multitile_B << "_C" << multitile_C << "_V" << multitile_V << ".hex";
-            string golden_file = golden_ss.str();
-            
-            int expected_results = multitile_B * multitile_C;
-            if (!loadGoldenReferenceHex(golden_file, golden_results[0], expected_results)) {
-                cerr << "ERROR: Failed to load golden reference: " << golden_file << endl;
-                return 1;
+        // Default multi-config test suite - THREE-STAGE MODE
+        const TestConfig test_suite[] = {
+            {1, 1, 1, "B1_C1_V1"},
+            {2, 2, 2, "B2_C2_V2"},
+            {4, 4, 4, "B4_C4_V4"},
+            {2, 2, 64, "B2_C2_V64"},
+            {4, 4, 32, "B4_C4_V32"},
+            {8, 8, 16, "B8_C8_V16"},
+            {16, 16, 8, "B16_C16_V8"},
+            {1, 128, 1, "B1_C128_V1"},
+            {128, 1, 1, "B128_C1_V1"},
+            {1, 1, 128, "B1_C1_V128"}
+        };
+        const int num_tests = sizeof(test_suite) / sizeof(test_suite[0]);
+
+        cout << "\n========================================" << endl;
+        cout << "THREE-STAGE CIRCULAR BUFFER VALIDATION" << endl;
+        cout << "========================================\n" << endl;
+
+        // ===================================================================
+        // STAGE 1: Individual Tests with Reset (Baseline)
+        // ===================================================================
+        cout << "================================================================" << endl;
+        cout << "STAGE 1: Individual Tests (Baseline with Reset)" << endl;
+        cout << "================================================================\n" << endl;
+
+        vector<uint16_t> results_stage1;
+        int stage1_passed = 0;
+
+        for (int i = 0; i < num_tests; ++i) {
+            const auto& config = test_suite[i];
+
+            cout << "----------------------------------------" << endl;
+            cout << "Test " << (i+1) << "/" << num_tests << ": " << config.name << endl;
+            cout << "  B=" << config.B << ", C=" << config.C << ", V=" << config.V << endl;
+            cout << "----------------------------------------" << endl;
+
+            // STAGE 1: Soft reset before first test only
+
+            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, col_en_mask);
+
+            if (result) {
+                stage1_passed++;
+
+                // Collect results into stage1 array
+                // Read results again to collect (already validated in run_single_test)
+                size_t result_count = config.B * config.C;
+
+                // Byte-addressed read from rd_ptr=0 (reset before each test)
+                uint32_t rd_ptr = 0;
+                uint32_t byte_offset = rd_ptr * 2;
+                uint32_t byte_count = result_count * 2;
+                uint32_t offset_in_first_line = byte_offset % 32;
+                uint32_t total_bytes = offset_in_first_line + byte_count;
+                uint32_t dma_bytes = ((total_bytes + 31) / 32) * 32;
+                uint32_t dma_start = (byte_offset / 32) * 32;
+
+                cout << "  [Stage 1 DMA] rd_ptr=" << rd_ptr
+                     << ", byte_offset=" << byte_offset
+                     << ", offset_in_line=" << offset_in_first_line
+                     << ", dma_start=" << dma_start
+                     << ", dma_bytes=" << dma_bytes << endl;
+
+                vector<uint8_t> bram_data(dma_bytes);
+                if (gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data.data(), dma_bytes)) {
+                    for (size_t j = 0; j < result_count; j++) {
+                        size_t byte_pos = offset_in_first_line + j * 2;
+                        uint16_t fp16_val = *(uint16_t*)(bram_data.data() + byte_pos);
+                        results_stage1.push_back(fp16_val);
+                    }
+                }
+
+                // Soft reset AFTER collecting results, ready for next test
+                gemm_device.soft_reset();  // Reset engine + circular buffer (wr_ptr, rd_ptr)  
+                if (verbose) {
+                    cout << "  [Stage 1] Post-test reset: rd_ptr=0, wr_ptr=0" << endl;
+                }
             }
-            
-            cout << "Using command-line parameters: B=" << multitile_B << ", C=" << multitile_C << ", V=" << multitile_V << endl;
-        } else {
-            // Use hardcoded configurations
-            active_configs.assign(test_configs, test_configs + num_tests);
-            golden_results.resize(num_tests);
-            
-            for (int i = 0; i < num_tests; i++) {
-                stringstream golden_ss;
-                golden_ss << "../../hex/golden_" << test_configs[i].name << ".hex";
-                string golden_file = golden_ss.str();
-                
-                int expected_results = test_configs[i].B * test_configs[i].C;
-                if (!loadGoldenReferenceHex(golden_file, golden_results[i], expected_results)) {
-                    cerr << "ERROR: Failed to load golden reference for " << test_configs[i].name << endl;
+
+            cout << endl;
+        }
+
+        cout << "[Stage 1 Complete] Tests: " << stage1_passed << "/" << num_tests << " passed" << endl;
+        cout << "[Stage 1 Complete] Collected: " << results_stage1.size() << " FP16 results\n" << endl;
+
+        if (stage1_passed != num_tests) {
+            cerr << "ERROR: Stage 1 must pass 100% before Stage 2. Stopping." << endl;
+            return 1;
+        }
+
+        // ===================================================================
+        // STAGE 2: All Tests Back-to-Back (Read Once at End)
+        // ===================================================================
+        cout << "================================================================" << endl;
+        cout << "STAGE 2: All Tests Back-to-Back (Read Once at End)" << endl;
+        cout << "================================================================\n" << endl;
+
+        vector<uint16_t> results_stage2;
+        uint32_t host_rd_ptr = 0;
+
+        // Initial reset before Stage 2
+        gemm_device.soft_reset();  // Only way to reset wr_ptr (via engine_rstn)
+        cout << "[Stage 2 Init] Soft reset complete (rd_ptr=0, wr_ptr=0)\n" << endl;
+
+        int total_expected_stage2 = 0;
+
+        // Run ALL tests consecutively WITHOUT reading any results
+        for (int i = 0; i < num_tests; ++i) {
+                const auto& config = test_suite[i];
+
+                cout << "\n--- Test " << (i+1) << "/" << num_tests << ": " << config.name << " ---" << endl;
+
+                // NO RESET - pointers persist!
+                uint32_t wr_before = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
+                uint32_t used_before = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+
+                cout << "  [Before] wr_ptr=" << wr_before << ", rd_ptr=" << host_rd_ptr
+                     << ", used=" << used_before << endl;
+
+                // Run GEMM operation (skip result validation)
+                // We'll validate by comparing with Stage 1 at the end
+                // NOTE: NO soft_reset() in Stage 2 - we want circular buffer to persist!
+                gemm_device.reset_cmd_id();
+
+                string left_hex = "../../hex/left.hex";
+                string right_hex = "../../hex/right.hex";
+                vector<uint8_t> left_data, right_data;
+
+                if (!gemm_device.loadHexMatrix(left_hex, left_data) ||
+                    !gemm_device.loadHexMatrix(right_hex, right_data)) {
+                    cerr << "  ERROR: Failed to load matrices" << endl;
                     return 1;
                 }
-            }
-        }
-        
-        cout << "  Loaded " << active_configs.size() << " golden references" << endl;
-        cout << "----------------------------------------" << endl;
-        
-        static auto get_time = [](){ return std::chrono::high_resolution_clock::now(); };
-        static auto to_us = [](auto d){ return std::chrono::duration_cast<std::chrono::microseconds>(d).count(); };
-        static std::chrono::high_resolution_clock::time_point all_runs_start;
-        static std::chrono::high_resolution_clock::time_point run_end;
-        all_runs_start = get_time();
-        for (int n = 0; n < num_runs; n++) {
 
-            static std::chrono::high_resolution_clock::time_point run_start;
-            run_start = get_time();
-
-            // Collect results from all tests
-            vector<vector<uint16_t>> all_results(active_configs.size());
-            vector<bool> test_success(active_configs.size(), false);
-            
-            for (size_t i = 0; i < active_configs.size(); i++) {
-                cout << "\n========================================" << endl;
-                cout << "Test " << (i+1) << "/" << active_configs.size() << ": " << active_configs[i].name << endl;
-                cout << "  B=" << active_configs[i].B << ", C=" << active_configs[i].C 
-                     << ", V=" << active_configs[i].V << endl;
-                cout << "========================================" << endl;
-
-                if (run_single_test(device, active_configs[i], stress_factor, verbose, left_data, right_data, all_results[i], print_time)) {
-                    test_success[i] = true;
-                } else {
-                    cout << "\n========================================" << endl;
-                    cout << "Test " << (i+1) << "/" << active_configs.size() << ": " << active_configs[i].name << endl;
-                    cout << "  B=" << active_configs[i].B << ", C=" << active_configs[i].C 
-                         << ", V=" << active_configs[i].V << endl;
-                    cout << "========================================" << endl;
-                    cout << "[FAIL] " << active_configs[i].name << " - Hardware execution failed" << endl;
-                    failed++;
+                if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size()) ||
+                    !gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
+                    cerr << "  ERROR: Failed to DMA write matrices" << endl;
+                    return 1;
                 }
-            }
-            
-            // Validate all results (Step 11 moved here)
-            for (size_t i = 0; i < active_configs.size(); i++) {
-                if (test_success[i]) {
-        // Debug: Check if results were collected
-        if (verbose) {
-            cout << "\nDEBUG: Test " << active_configs[i].name << " collected " << all_results[i].size() << " results" << endl;
-        }
-                    
-                    // Convert FP16 results to float for comparison
-                    vector<float> result_float(all_results[i].size());
-                    for (size_t j = 0; j < all_results[i].size(); j++) {
-                        result_float[j] = fp16ToFloat(all_results[i][j]);
-                    }
-                    
-                    // Display results if verbose
-                    if (verbose) {
-                        cout << "\nHardware Results vs Golden Reference (2D Matrix View):" << endl;
-                        cout << "Matrix dimensions: B=" << active_configs[i].B << " rows × C=" << active_configs[i].C << " cols" << endl;
-                        cout << "Format: [B][C] | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
-                        cout << "--------|----------------|------------------|--------------|----------------|------" << endl;
-                    }
 
-                    int matches = 0;
-                    int C = active_configs[i].C;
-                    
-                    for (size_t j = 0; j < all_results[i].size() && j < golden_results[i].size(); j++) {
-                        uint16_t golden_fp16 = floatToFP16(golden_results[i][j]);
-                        float diff = fabs(result_float[j] - golden_results[i][j]);
-                        float rel_err = (golden_results[i][j] != 0.0f) ? diff / fabs(golden_results[i][j]) : diff;
-                        bool match = (rel_err <= 0.4f);  // 40% tolerance
-                        
-                        if (match) matches++;
-                        
-                        if (verbose) {
-                            // Convert 1D index to 2D coordinates (row-major order)
-                            int row = j / C;  // B dimension (row)
-                            int col = j % C;  // C dimension (column)
-                            
-                            if (!match) {
-                            cout << "[" << setw(2) << row << "][" << setw(2) << col << "] | 0x" << hex << setw(4) << setfill('0') << all_results[i][j] << dec 
-                                 << "         | " << setw(15) << setprecision(6) << result_float[j]
-                                 << " | 0x" << hex << setw(4) << setfill('0') << golden_fp16 << dec
-                                    << "        | " << setw(15) << setprecision(6) << golden_results[i][j]
-                                    << " | " << (match ? "Y" : "N") << endl;
-                            }
-                        }
-                    }
-                    
-                    bool validation_passed = (matches == (int)all_results[i].size());
-                    if (validation_passed) {
-                        cout << "[PASS] " << active_configs[i].name << endl;
-                        passed++;
-                    } else {
-                        cout << "\n========================================" << endl;
-                        cout << "Test " << (i+1) << "/" << active_configs.size() << ": " << active_configs[i].name << endl;
-                        cout << "  B=" << active_configs[i].B << ", C=" << active_configs[i].C 
-                             << ", V=" << active_configs[i].V << endl;
-                        cout << "========================================" << endl;
-                        cout << "[FAIL] " << active_configs[i].name << " - Validation failed (" << matches << "/" << all_results[i].size() << " matches)" << endl;
-                        failed++;
-                    }
+                uint32_t left_lines = (left_data.size() + 31) / 32;
+                uint32_t right_lines = (right_data.size() + 31) / 32;
+
+                // Submit all commands without intermediate waits (matches Stage 1 pattern)
+                gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+                uint8_t disp_left_id = gemm_device.dispatch(config.B * config.V, config.V, 0, false, col_en_mask, 0, true, false);
+                gemm_device.waitDispatch(disp_left_id);
+                gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
+                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, col_en_mask, 0, false, false);
+                gemm_device.waitDispatch(disp_right_id);
+                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true, col_en_mask);
+                gemm_device.waitTile(tile_id);
+                // if (!gemm_device.wait_idle()) {
+                //     cerr << "  ERROR: Stage 2 TILE timeout" << endl;
+                //     return 1;
+                // }
+                gemm_device.readout(0, config.B * config.C);
+                
+                // Wait only after READOUT
+                if (!gemm_device.wait_idle()) {
+                    cerr << "  ERROR: Stage 2 READOUT timeout" << endl;
+                    return 1;
                 }
+
+                uint32_t wr_after = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
+                uint32_t used_after = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+
+                cout << "  [After] wr_ptr=" << wr_after << ", rd_ptr=" << host_rd_ptr
+                     << ", used=" << used_after << " (expected +" << (config.B * config.C) << ")" << endl;
+
+                total_expected_stage2 += config.B * config.C;
+        }
+
+        // After ALL tests complete, read ALL results using byte-addressed DMA
+        cout << "\n[Stage 2 Read] Reading ALL " << total_expected_stage2 << " accumulated results..." << endl;
+
+        uint32_t byte_offset = host_rd_ptr * 2;
+        uint32_t byte_count = total_expected_stage2 * 2;
+        uint32_t offset_in_first_line = byte_offset % 32;
+        uint32_t total_bytes = offset_in_first_line + byte_count;
+        uint32_t dma_bytes = ((total_bytes + 31) / 32) * 32;
+        uint32_t dma_start = (byte_offset / 32) * 32;
+
+        cout << "  [Stage 2 DMA] rd_ptr=" << host_rd_ptr
+             << ", byte_offset=" << byte_offset
+             << ", offset_in_line=" << offset_in_first_line
+             << ", dma_start=" << dma_start
+             << ", dma_bytes=" << dma_bytes << endl;
+
+        vector<uint8_t> bram_data_stage2(dma_bytes);
+        if (!gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data_stage2.data(), dma_bytes)) {
+            cerr << "  ERROR: Failed to DMA read results" << endl;
+            return 1;
+        }
+
+        cout << "  [Stage 2 DMA] First 4 bytes read: 0x" << hex << setfill('0')
+             << setw(2) << (int)bram_data_stage2[offset_in_first_line]
+             << setw(2) << (int)bram_data_stage2[offset_in_first_line+1]
+             << setw(2) << (int)bram_data_stage2[offset_in_first_line+2]
+             << setw(2) << (int)bram_data_stage2[offset_in_first_line+3] << dec << endl;
+
+        // Unpack and collect with automatic offset handling
+        for (int j = 0; j < total_expected_stage2; j++) {
+            size_t byte_pos = offset_in_first_line + j * 2;
+            uint16_t fp16_val = *(uint16_t*)(bram_data_stage2.data() + byte_pos);
+            results_stage2.push_back(fp16_val);
+        }
+
+        cout << "[Stage 2 Complete] Collected: " << results_stage2.size() << " FP16 results\n" << endl;
+
+        // ===================================================================
+        // STAGE 3: Mini-Batches (2 Tests at a Time, Read After Each Pair)
+        // ===================================================================
+        cout << "================================================================" << endl;
+        cout << "STAGE 3: Mini-Batches (2 Tests at a Time)" << endl;
+        cout << "================================================================\n" << endl;
+
+        vector<uint16_t> results_stage3;
+        host_rd_ptr = 0;
+
+        // Initial reset before Stage 3
+        gemm_device.soft_reset();  // Only way to reset wr_ptr (via engine_rstn)
+        cout << "[Stage 3 Init] Soft reset complete (rd_ptr=0, wr_ptr=0)\n" << endl;
+
+        // Run tests in batches of 2
+        for (int batch = 0; batch < (num_tests + 1) / 2; ++batch) {
+            int test_start = batch * 2;
+            int test_end = min(test_start + 2, num_tests);
+
+            cout << "=== BATCH " << (batch+1) << ": Tests " << (test_start+1) << "-" << test_end << " ===" << endl;
+
+            int total_expected_in_batch = 0;
+
+            // Run 2 tests in batch WITHOUT reading results
+            for (int i = test_start; i < test_end; ++i) {
+                const auto& config = test_suite[i];
+
+                cout << "\n--- Test " << (i+1) << "/" << num_tests << ": " << config.name << " ---" << endl;
+
+                // NO RESET - pointers persist!
+                uint32_t wr_before = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
+                uint32_t used_before = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+
+                cout << "  [Before] wr_ptr=" << wr_before << ", rd_ptr=" << host_rd_ptr
+                     << ", used=" << used_before << endl;
+
+                // Run GEMM operation
+                gemm_device.reset_cmd_id();
+
+                string left_hex = "../../hex/left.hex";
+                string right_hex = "../../hex/right.hex";
+                vector<uint8_t> left_data, right_data;
+
+                if (!gemm_device.loadHexMatrix(left_hex, left_data) ||
+                    !gemm_device.loadHexMatrix(right_hex, right_data)) {
+                    cerr << "  ERROR: Failed to load matrices" << endl;
+                    return 1;
+                }
+
+                if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size()) ||
+                    !gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
+                    cerr << "  ERROR: Failed to DMA write matrices" << endl;
+                    return 1;
+                }
+
+                uint32_t left_lines = (left_data.size() + 31) / 32;
+                uint32_t right_lines = (right_data.size() + 31) / 32;
+
+                // Submit all commands without intermediate waits (matches Stage 1 pattern)
+                gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+                uint8_t disp_left_id = gemm_device.dispatch(config.B * config.V, config.V, 0, false, col_en_mask, 0, true, false);
+                gemm_device.waitDispatch(disp_left_id);
+                gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
+                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, col_en_mask, 0, false, false);
+                gemm_device.waitDispatch(disp_right_id);
+                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true, col_en_mask);
+                gemm_device.waitTile(tile_id);
+                // if (!gemm_device.wait_idle()) {
+                //     cerr << "  ERROR: Stage 3 TILE timeout" << endl;
+                //     return 1;
+                // }
+                gemm_device.readout(0, config.B * config.C);
+                // Wait only after READOUT
+                if (!gemm_device.wait_idle()) {
+                    cerr << "  ERROR: Stage 3 READOUT timeout" << endl;
+                    return 1;
+                }
+
+                uint32_t wr_after = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
+                uint32_t used_after = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+
+                cout << "  [After] wr_ptr=" << wr_after << ", rd_ptr=" << host_rd_ptr
+                     << ", used=" << used_after << " (expected +" << (config.B * config.C) << ")" << endl;
+
+                total_expected_in_batch += config.B * config.C;
             }
-            int print_interval = 100;
-            if (num_runs > 1 && n % print_interval == 0) {
-                run_end = get_time();
-                cout << "Running " << n << " iterations " << endl;
-                cout << "Completed " << print_interval << " iterations in " << to_us(run_end - run_start) << " us" << endl;
-                cout << "Each test took " << to_us(run_end - run_start) / print_interval / num_tests << " us on average" << endl;
-                cout << "----------------------------------------" << endl;
-                run_start = get_time();
+
+            // After each batch of 2, read accumulated results
+            cout << "\n[Batch Read] Reading " << total_expected_in_batch << " accumulated results from rd_ptr=" << host_rd_ptr << "..." << endl;
+
+            byte_offset = host_rd_ptr * 2;
+            byte_count = total_expected_in_batch * 2;
+            offset_in_first_line = byte_offset % 32;
+            total_bytes = offset_in_first_line + byte_count;
+            dma_bytes = ((total_bytes + 31) / 32) * 32;
+            dma_start = (byte_offset / 32) * 32;
+
+            cout << "  [Stage 3 DMA] rd_ptr=" << host_rd_ptr
+                 << ", byte_offset=" << byte_offset
+                 << ", offset_in_line=" << offset_in_first_line
+                 << ", dma_start=" << dma_start
+                 << ", dma_bytes=" << dma_bytes << endl;
+
+            vector<uint8_t> bram_data(dma_bytes);
+            if (!gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data.data(), dma_bytes)) {
+                cerr << "  ERROR: Failed to DMA read results" << endl;
+                return 1;
+            }
+
+            cout << "  [Stage 3 DMA] First 4 bytes read: 0x" << hex << setfill('0')
+                 << setw(2) << (int)bram_data[offset_in_first_line]
+                 << setw(2) << (int)bram_data[offset_in_first_line+1]
+                 << setw(2) << (int)bram_data[offset_in_first_line+2]
+                 << setw(2) << (int)bram_data[offset_in_first_line+3] << dec << endl;
+
+            // Unpack and collect with automatic offset handling
+            for (int j = 0; j < total_expected_in_batch; j++) {
+                size_t byte_pos = offset_in_first_line + j * 2;
+                uint16_t fp16_val = *(uint16_t*)(bram_data.data() + byte_pos);
+                results_stage3.push_back(fp16_val);
+            }
+
+            // Update rd_ptr for next batch
+            host_rd_ptr = (host_rd_ptr + total_expected_in_batch) & 0x1FFF;
+            gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
+
+            uint32_t new_used = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+            cout << "[Batch Complete] rd_ptr updated to " << host_rd_ptr
+                 << ", used_entries now " << new_used << "\n" << endl;
+        }
+
+        cout << "[Stage 3 Complete] Collected: " << results_stage3.size() << " FP16 results\n" << endl;
+
+        // ===================================================================
+        // FINAL VALIDATION: Compare All Three Stages
+        // ===================================================================
+        cout << "================================================================" << endl;
+        cout << "FINAL VALIDATION: Comparing All Three Stages" << endl;
+        cout << "================================================================" << endl;
+
+        // Check sizes
+        if (results_stage1.size() != results_stage2.size() || results_stage1.size() != results_stage3.size()) {
+            cerr << "ERROR: Size mismatch!" << endl;
+            cerr << "  Stage 1: " << results_stage1.size() << " results" << endl;
+            cerr << "  Stage 2: " << results_stage2.size() << " results" << endl;
+            cerr << "  Stage 3: " << results_stage3.size() << " results" << endl;
+            return 1;
+        }
+
+        cout << "Comparing " << results_stage1.size() << " results across all three stages..." << endl;
+
+        int mismatches_s1_s2 = 0;
+        int mismatches_s1_s3 = 0;
+        int mismatches_s2_s3 = 0;
+
+        for (size_t i = 0; i < results_stage1.size(); ++i) {
+            if (results_stage1[i] != results_stage2[i]) {
+                if (mismatches_s1_s2 < 10) {
+                    cerr << "  S1-S2 MISMATCH[" << i << "]: Stage1=0x" << hex << setw(4) << setfill('0')
+                         << results_stage1[i] << ", Stage2=0x" << setw(4) << results_stage2[i]
+                         << dec << endl;
+                }
+                mismatches_s1_s2++;
+            }
+            if (results_stage1[i] != results_stage3[i]) {
+                if (mismatches_s1_s3 < 10) {
+                    cerr << "  S1-S3 MISMATCH[" << i << "]: Stage1=0x" << hex << setw(4) << setfill('0')
+                         << results_stage1[i] << ", Stage3=0x" << setw(4) << results_stage3[i]
+                         << dec << endl;
+                }
+                mismatches_s1_s3++;
+            }
+            if (results_stage2[i] != results_stage3[i]) {
+                if (mismatches_s2_s3 < 10) {
+                    cerr << "  S2-S3 MISMATCH[" << i << "]: Stage2=0x" << hex << setw(4) << setfill('0')
+                         << results_stage2[i] << ", Stage3=0x" << setw(4) << results_stage3[i]
+                         << dec << endl;
+                }
+                mismatches_s2_s3++;
             }
         }
-        run_end = get_time();
-        cout << "Total time: " << to_us(run_end - all_runs_start) << " us" << endl;
-        cout << "Each test took " << to_us(run_end - all_runs_start) / num_tests / num_runs / stress_factor << " us on average" << endl;
-        cout << "----------------------------------------" << endl;
-        // Summary
-        cout << "\n========================================" << endl;
-        cout << "TEST SUITE SUMMARY" << endl;
-        cout << "========================================" << endl;
-        cout << "Total tests: " << num_tests*num_runs << endl;
-        cout << "Passed: " << passed << endl;
-        cout << "Failed: " << failed << endl;
-        cout << "========================================" << endl;
 
-        return (failed == 0) ? 0 : 1;
+        cout << "\n================================================================" << endl;
+        cout << "VALIDATION SUMMARY:" << endl;
+        cout << "  Stage 1 vs Stage 2: " << (mismatches_s1_s2 == 0 ? "PASS ✓" : to_string(mismatches_s1_s2) + " mismatches") << endl;
+        cout << "  Stage 1 vs Stage 3: " << (mismatches_s1_s3 == 0 ? "PASS ✓" : to_string(mismatches_s1_s3) + " mismatches") << endl;
+        cout << "  Stage 2 vs Stage 3: " << (mismatches_s2_s3 == 0 ? "PASS ✓" : to_string(mismatches_s2_s3) + " mismatches") << endl;
+        cout << "================================================================" << endl;
+
+        int total_mismatches = mismatches_s1_s2 + mismatches_s1_s3 + mismatches_s2_s3;
+        if (total_mismatches == 0) {
+            cout << "SUCCESS! All " << results_stage1.size() << " results match across all three stages!" << endl;
+            cout << "✓ Circular buffer mechanism validated!" << endl;
+            cout << "✓ Stage 1 (individual with reset)" << endl;
+            cout << "✓ Stage 2 (all tests, read once at end)" << endl;
+            cout << "✓ Stage 3 (mini-batches of 2)" << endl;
+        } else {
+            cout << "FAILURE: Mismatches detected between stages" << endl;
+        }
+        cout << "================================================================" << endl;
+
+        return (total_mismatches == 0) ? 0 : 1;
 
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;
-        return false;
+        return 1;
     }
 }
 
 // Run Single Test Configuration
-bool run_single_test(VP815& device, const TestConfig& config, int stress_factor, bool verbose, 
-                     const vector<uint8_t>& left_data, const vector<uint8_t>& right_data, vector<uint16_t>& result_fp16, bool print_time) {
-    // Set test parameters
-    MATRIX_ROWS = config.B;
-    MATRIX_COLS = config.C;
-    VLOOP_SIZE = config.V;
-
-    // Timing variables
-    static auto get_time = [](){ return std::chrono::high_resolution_clock::now(); };
-    static auto to_us = [](auto d){ return std::chrono::duration_cast<std::chrono::microseconds>(d).count(); };
-    
-    std::chrono::high_resolution_clock::time_point step_start, step_end;
-    long long step_times[12] = {0}; // Array to store timing for each step
-
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en) {
     try {
-        // ====================================================================
-        // Step 1: Load golden reference (MOVED TO MAIN FUNCTION)
-        // ====================================================================
-        // Golden reference and matrices are now pre-loaded in main()
-
-        // ====================================================================
-        // Step 2: Software reset of MS2.0 engine
-        // ====================================================================
-        step_start = get_time();
-
-        // Assert engine soft reset (Control Register bit 1)
-        device.mmioWrite32(0, 0x0, 0x2);  // Set bit 1 = soft reset
-        device.mmioWrite32(0, 0x0, 0x0);  // Release reset
-
-        // Verify engine is idle
-        uint32_t status_after_reset = device.mmioRead32(0, ENGINE_STATUS);
-        uint32_t busy_bit = status_after_reset & 0x1;
-        if (busy_bit != 0) {
-            cerr << "WARNING: Engine still busy after reset" << endl;
-        }
-
-        step_end = get_time();
-        step_times[0] = to_us(step_end - step_start);  // Step 2 (Reset) -> index 0
-
-        // ====================================================================
-        // Step 3: Load test matrices from hex files (MOVED TO MAIN FUNCTION)
-        // ====================================================================
-        // Matrices are now pre-loaded in main()
-
-        // ====================================================================
-        // Step 4: DMA matrices to GDDR6
-        // ====================================================================
-        step_start = get_time();
-
-        if (!device.dmaWrite(GDDR6_BASE_LEFT, left_data.size(), (char*)left_data.data())) {
-            cerr << "ERROR: Failed to DMA write left matrix" << endl;
-            return false;
-        }
-
-        if (!device.dmaWrite(GDDR6_BASE_RIGHT, right_data.size(), (char*)right_data.data())) {
-            cerr << "ERROR: Failed to DMA write right matrix" << endl;
-            return false;
-        }
-
-        step_end = get_time();
-        step_times[1] = to_us(step_end - step_start);  // Step 4 (DMA Write) -> index 1
-
-        // ====================================================================
-        // Step 4.5: DMA readback verification (REMOVED for cleaner output)
-        // ====================================================================    
-
-
-        // ====================================================================
-        // Step 5: Issue FETCH command
-        // ====================================================================
-        step_start = get_time();
-
-        // FETCH command format per cmd_fetch_s structure (gemm_pkg.sv):
-        //   Word0: Header [31:24]=reserved, [23:16]=len=8, [15:8]=id, [7:0]=opcode(0xF0)
-        //   Word1: start_addr[31:0] - Address in units of 32 bytes (256-bit lines)
-        //   Word2: len[15:0] + reserved[31:16] - Number of 32-byte lines
-
-        // Calculate number of 32-byte lines (256-bit) needed
-        uint32_t left_lines = (left_data.size() + 31) / 32;
-        uint32_t right_lines = (right_data.size() + 31) / 32;
-
-        // First FETCH for left matrix (id=0, addr=0, len=528 lines)
-        // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_FETCH}
-        //                cmd[1] = start_addr[31:0] (in 32-byte units!)
-        //                cmd[2] = {reserved[15:0], len[15:0]}
-        //                cmd[3] = {reserved[30:0], fetch_right}
-        uint32_t cmd_fetch_word0 = (0x00 << 24) | (16 << 16) | (0 << 8) | OPCODE_FETCH;
-        uint32_t cmd_fetch_word1 = GDDR6_BASE_LEFT / 32;  // Address in 32-byte units
-        uint32_t cmd_fetch_word2 = left_lines;  // len in [15:0]
-        uint32_t cmd_fetch_word3 = 0;  // fetch_right = 0 (left buffer)
-
-        issueCommand(device, cmd_fetch_word0, cmd_fetch_word1, cmd_fetch_word2, cmd_fetch_word3);
-
-        // Second FETCH for right matrix (id=1, addr=528, len=528 lines)
-        cmd_fetch_word0 = (0x00 << 24) | (16 << 16) | (1 << 8) | OPCODE_FETCH;
-        cmd_fetch_word1 = GDDR6_BASE_RIGHT / 32;  // Address in 32-byte units
-        cmd_fetch_word2 = right_lines;  // len in [15:0]
-        cmd_fetch_word3 = 1;  // fetch_right = 1 (right buffer)
-
-        issueCommand(device, cmd_fetch_word0, cmd_fetch_word1, cmd_fetch_word2, cmd_fetch_word3);
-
-        step_end = get_time();
-        step_times[2] = to_us(step_end - step_start);  // Step 5 (FETCH) -> index 2
-
-        // ====================================================================
-        // Step 6-9: Stress Test Loop - Repeat DISPATCH and MATMUL operations
-        // ====================================================================
-        step_start = get_time();
-        
-        for (int stress_iter = 0; stress_iter < stress_factor; stress_iter++) {
-            
-            // ====================================================================
-            // Step 6: Issue DISPATCH LEFT command (disp_right=0)
-            // ====================================================================
-
-            // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_DISPATCH}
-            //                cmd[1] = {8'b0, man_nv_cnt[7:0], 8'b0, ugd_vec_size[7:0]}
-            //                cmd[2] = {16'b0, tile_addr[15:0]}
-            //                cmd[3] = {col_en[23:0], col_start[4:0], disp_right, broadcast, man_4b}
-
-            uint8_t disp_left_id = 3;  // Command ID for left dispatch
-            uint32_t cmd_disp_left_word0 = (0x00 << 24) | (16 << 16) | (disp_left_id << 8) | OPCODE_DISPATCH;
-            uint32_t cmd_disp_left_word1 = (128 << 16) | VLOOP_SIZE;  // man_nv_cnt=128, ugd_vec_size=V
-            uint32_t cmd_disp_left_word2 = 0;  // tile_addr=0
-            uint32_t cmd_disp_left_word3 = (0x0001 << 8) | 0;  // col_en[23:0]=1, disp_right=0 (LEFT), no other flags
-
-            issueCommand(device, cmd_disp_left_word0, cmd_disp_left_word1, cmd_disp_left_word2, cmd_disp_left_word3);
-
-            // ====================================================================
-            // Step 7: Issue WAIT_DISPATCH command (wait for left dispatch)
-            // ====================================================================
-
-            // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_WAIT_DISPATCH}
-            //                cmd[1] = {24'd0, wait_id[7:0]}
-            //                cmd[2] = 32'h00000000
-            //                cmd[3] = 32'h00000000
-            uint32_t cmd_wait_disp_left_word0 = (0x00 << 24) | (16 << 16) | (4 << 8) | OPCODE_WAIT_DISPATCH;
-            uint32_t cmd_wait_disp_left_word1 = disp_left_id;  // Wait for dispatch id=3
-            issueCommand(device, cmd_wait_disp_left_word0, cmd_wait_disp_left_word1, 0, 0);
-
-            // ====================================================================
-            // Step 6b: Issue DISPATCH RIGHT command (disp_right=1)
-            // ====================================================================
-
-            uint8_t disp_right_id = 5;  // Command ID for right dispatch
-            uint32_t cmd_disp_right_word0 = (0x00 << 24) | (16 << 16) | (disp_right_id << 8) | OPCODE_DISPATCH;
-            uint32_t cmd_disp_right_word1 = (128 << 16) | VLOOP_SIZE;  // man_nv_cnt=128, ugd_vec_size=V
-            uint32_t cmd_disp_right_word2 = 0;  // tile_addr=0
-            uint32_t cmd_disp_right_word3 = (0x0001 << 8) | (1 << 2);  // col_en[23:0]=1, disp_right=1 (RIGHT), no other flags
-
-            issueCommand(device, cmd_disp_right_word0, cmd_disp_right_word1, cmd_disp_right_word2, cmd_disp_right_word3);
-
-            // ====================================================================
-            // Step 7b: Issue WAIT_DISPATCH command (wait for right dispatch)
-            // ====================================================================
-
-            uint32_t cmd_wait_disp_right_word0 = (0x00 << 24) | (16 << 16) | (6 << 8) | OPCODE_WAIT_DISPATCH;
-            uint32_t cmd_wait_disp_right_word1 = disp_right_id;  // Wait for dispatch id=5
-            issueCommand(device, cmd_wait_disp_right_word0, cmd_wait_disp_right_word1, 0, 0);
-
-            // ====================================================================
-            // Step 8: Issue MATMUL command
-            // ====================================================================
-
-            // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_MATMUL}
-            //                cmd[1] = {left_addr[15:0], right_addr[15:0]}
-            //                cmd[2] = {8'b0, left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
-            //                cmd[3] = {col_en[15:0], 13'b0, left_4b, right_4b, main_loop_left}
-
-            // MATMUL parameters (B, C, V control output dimensions):
-            uint16_t left_addr = 0;         // TWO-BRAM architecture: both start at 0
-            uint16_t right_addr = 0;
-            uint8_t left_ugd_len = MATRIX_ROWS;   // B (output rows)
-            uint8_t right_ugd_len = MATRIX_COLS;  // C (output cols)
-            uint8_t vec_len = VLOOP_SIZE;         // V (V-loop iterations)
-            bool left_4b = false;           // 8-bit mantissas
-            bool right_4b = false;
-            bool main_loop_left = true;
-            uint16_t col_en = 0x0001;       // Enable column 0
-
-            uint8_t matmul_id = 9;
-            uint32_t cmd_matmul_word0 = (0x00 << 24) | (16 << 16) | (matmul_id << 8) | OPCODE_MATMUL;
-            uint32_t cmd_matmul_word1 = (static_cast<uint32_t>(left_addr) << 16) |
-                                         static_cast<uint32_t>(right_addr);
-            uint32_t cmd_matmul_word2 = (static_cast<uint32_t>(left_ugd_len) << 16) |
-                                         (static_cast<uint32_t>(right_ugd_len) << 8) |
-                                         static_cast<uint32_t>(vec_len);
-            uint32_t cmd_matmul_word3 = (static_cast<uint32_t>(col_en) << 16) |
-                                         (left_4b ? 4u : 0u) |
-                                         (right_4b ? 2u : 0u) |
-                                         (main_loop_left ? 1u : 0u);
-
-            issueCommand(device, cmd_matmul_word0, cmd_matmul_word1, cmd_matmul_word2, cmd_matmul_word3);
-
-            // ====================================================================
-            // Step 9: Issue WAIT_MATMUL command
-            // ====================================================================
-
-            // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_WAIT_MATMUL}
-            //                cmd[1] = {24'd0, wait_id[7:0]}
-            //                cmd[2] = 32'h00000000
-            //                cmd[3] = 32'h00000000
-            uint32_t cmd_wait_matmul_word0 = (0x00 << 24) | (16 << 16) | (10 << 8) | OPCODE_WAIT_MATMUL;
-            uint32_t cmd_wait_matmul_word1 = matmul_id;  // Wait for matmul id=9
-
-            issueCommand(device, cmd_wait_matmul_word0, cmd_wait_matmul_word1, 0, 0);
-
-            if (!waitEngineIdle(device)) {
-                cerr << "ERROR: WAIT_MATMUL timeout" << endl;
-                return false;
-            }
-
-            if (stress_factor > 100 && stress_iter % 100 == 0) {
-                cout << "Stress test iteration " << stress_iter << " of " << stress_factor << " completed" << endl;
-            }
-        } // End of stress test loop
-        
-        step_end = get_time();
-        step_times[3] = to_us(step_end - step_start);  // Step 6-9 (Stress Loop) -> index 3
-
-        // ====================================================================
-        // Step 10: Read results from BRAM (after all stress iterations)
-        // ====================================================================
-        step_start = get_time();
-
-        // Result matrix is B×C = 4×4 = 16 FP16 values
-        // With simple adapter: 1 FP16 per 256-bit BRAM line (in LSB 16 bits)
-        size_t result_count_expected = MATRIX_ROWS * MATRIX_COLS;
-        size_t bram_bytes_per_result = 32;  // 256-bit line per result
-        size_t result_bytes = result_count_expected * bram_bytes_per_result;
-        vector<uint8_t> bram_data(result_bytes);
-
-        if (!device.dmaRead(BRAM_RESULT_BASE, result_bytes, (char*)bram_data.data())) {
-            cerr << "ERROR: Failed to DMA read results" << endl;
-            return false;
-        }
-
-        // Extract FP16 results from LSB 16 bits of each 256-bit line
-        result_fp16.resize(result_count_expected);
-        for (size_t i = 0; i < result_count_expected; i++) {
-            uint8_t* line_ptr = bram_data.data() + (i * 32);
-            result_fp16[i] = *(uint16_t*)line_ptr;  // Result in LSB 16 bits
-        }
-
-        step_end = get_time();
-        step_times[4] = to_us(step_end - step_start);  // Step 10 (Read Results) -> index 4
-
-        // Convert FP16 results to float for comparison
-        vector<float> result_float(MATRIX_ROWS * MATRIX_COLS);
-        for (size_t i = 0; i < result_fp16.size(); i++) {
-            result_float[i] = fp16ToFloat(result_fp16[i]);
-        }
-
-        // ====================================================================
-        // Step 12: Soft reset engine before exit
-        // ====================================================================
-        step_start = get_time();
-
-        // Assert engine soft reset (Control Register bit 1)
-        device.mmioWrite32(0, 0x0, 0x2);  // Set bit 1 = soft reset
-        device.mmioWrite32(0, 0x0, 0x0);  // Release reset
-
-        step_end = get_time();
-        step_times[5] = to_us(step_end - step_start);  // Step 12 (Final Reset) -> index 5
-
-        // Print step timing summary
-        if (verbose || print_time) {
-            cout << "\nStep Timing Summary (us):" << endl;
-            cout << "Step 2  (Reset Engine):    " << setw(8) << step_times[0] << " us" << endl;
-            cout << "Step 4  (DMA Write):       " << setw(8) << step_times[1] << " us" << endl;
-            cout << "Step 5  (FETCH):           " << setw(8) << step_times[2] << " us" << endl;
-            cout << "Step 6-9(Stress Loop):     " << setw(8) << step_times[3] << " us" << endl;
-            cout << "Step 10 (Read Results):    " << setw(8) << step_times[4] << " us" << endl;
-            cout << "Step 12 (Final Reset):     " << setw(8) << step_times[5] << " us" << endl;
-            
-            long long total_time = 0;
-            for (int i = 0; i < 6; i++) {
-                total_time += step_times[i];
-            }
-            cout << "Total Test Time:           " << setw(8) << total_time << " us" << endl;
-            cout << "----------------------------------------" << endl;
-        }
-
-        // Return success (validation done in main)
-        return true;
-
-    } catch (const exception& e) {
-        cerr << "ERROR: " << e.what() << endl;
-        return false;
-    }
-}
-
-bool run_multitile_test(VP815& device, int B, int C, int V, bool verbose) {
-    try {
-        cout << "\n========================================" << endl;
-        cout << "Multi-Tile Test: B=" << B << ", C=" << C << ", V=" << V << endl;
-        cout << "========================================" << endl;
-        
-        // Calculate tile counts
-        int num_left_tile = 128 / (B * V);
-        int num_right_tile = 128 / (C * V);
-        int total_tiles = num_left_tile * num_right_tile;
-        int total_results = total_tiles * B * C;
-        
-        if (verbose) {
-            cout << "Configuration:" << endl;
-            cout << "  Left tiles: " << num_left_tile << " (each uses " << B*V << " NVs)" << endl;
-            cout << "  Right tiles: " << num_right_tile << " (each uses " << C*V << " NVs)" << endl;
-            cout << "  Total tiles: " << total_tiles << endl;
-            cout << "  Expected results: " << total_results << " (" << total_tiles << " tiles x " << B*C << " results/tile)" << endl;
-        }
-        
         // Load matrices from hex files
         string left_hex = "../../hex/left.hex";
         string right_hex = "../../hex/right.hex";
         vector<uint8_t> left_data, right_data;
         
-        if (!loadHexMatrix(left_hex, left_data)) {
+        if (!gemm_device.loadHexMatrix(left_hex, left_data)) {
             cerr << "ERROR: Failed to load left matrix" << endl;
             return false;
         }
         
-        if (!loadHexMatrix(right_hex, right_data)) {
+        if (!gemm_device.loadHexMatrix(right_hex, right_data)) {
             cerr << "ERROR: Failed to load right matrix" << endl;
             return false;
         }
         
         if (verbose) {
-            cout << "Loaded matrices: " << left_data.size() << " + " << right_data.size() << " bytes" << endl;
+            cout << "  Loaded matrices: " << left_data.size() << " + " << right_data.size() << " bytes" << endl;
         }
         
-        // Load golden reference
+        // Software reset
+        gemm_device.soft_reset();
+        gemm_device.reset_cmd_id();
+
+        uint32_t status_after_reset = gemm_device.mmio_read32(0, MS2_STATUS);
+        if ((status_after_reset & 0x1) != 0) {
+            cerr << "  WARNING: Engine still busy after reset" << endl;
+        }
+
+        // Reset circular buffer read pointer for this test
+        // Register 0x230 (140) - REG_RD_PTR: Host read/write pointer
+        uint32_t host_rd_ptr = 0;  // Initialize to 0 at start of each test
+        gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
+
+        if (verbose) {
+            cout << "  [Circular Buffer] Reset rd_ptr to 0" << endl;
+        }
+
+        // DMA matrices to GDDR6
+        if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size())) {
+            cerr << "ERROR: Failed to DMA write left matrix" << endl;
+            return false;
+        }
+
+        if (!gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
+            cerr << "ERROR: Failed to DMA write right matrix" << endl;
+            return false;
+        }
+
+        // ===================================================================
+        // Command Flow: Batched submission matching testbench tb_engine_top.sv
+        // Strategy: Submit command batches, wait only after DISPATCH stages
+        // ===================================================================
+        uint32_t left_lines = (left_data.size() + 31) / 32;
+        uint32_t right_lines = (right_data.size() + 31) / 32;
+        size_t result_count_expected = B * C;
+        
+        // ========== BATCH 1: FETCH LEFT + DISPATCH LEFT + WAIT_DISPATCH ==========
+        // Hardware needs wait after FETCH (GDDR6→BRAM transfer) before DISPATCH
+        gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+        uint8_t disp_left_id = gemm_device.dispatch(B * V, V, 0, false, col_en, 0, true, false);
+        gemm_device.waitDispatch(disp_left_id);
+        
+        // ========== BATCH 2: FETCH RIGHT + DISPATCH RIGHT + WAIT_DISPATCH ==========
+        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);    
+        uint8_t disp_right_id = gemm_device.dispatch(C * V, V, 0, true, col_en, 0, false, false);
+        gemm_device.waitDispatch(disp_right_id);
+
+        
+        // ========== BATCH 3: TILE + WAIT_TILE + READOUT ==========
+        uint8_t tile_id = gemm_device.tile(0, 0, B, C, V, false, false, false, col_en);
+        gemm_device.waitTile(tile_id);
+        // if (!gemm_device.wait_idle()) {
+        //     cerr << "ERROR: TILE timeout" << endl;
+        //     return false;
+        // }
+        gemm_device.readout(0, result_count_expected);
+        if (!gemm_device.wait_idle()) {
+            cerr << "ERROR: READOUT timeout" << endl;
+            return false;
+        }
+
+
+        // Read results using packed BRAM format with two-pointer circular buffer
+        // New optimization: 16 FP16 values per 256-bit (32-byte) BRAM line
+        // Hardware maintains wr_ptr, host maintains rd_ptr
+
+        // Step 1: Read circular buffer pointers
+
+        // host_rd_ptr was already declared and reset at the start of this test
+
+        uint32_t wr_ptr_raw = gemm_device.mmio_read32(0, 0x234);  // Read hardware write pointer
+        uint32_t wr_ptr = wr_ptr_raw & 0x1FFF;  // 13-bit counter (0-8191)
+
+        uint32_t used_entries_raw = gemm_device.mmio_read32(0, 0x238);  // Read used entries
+        uint32_t used_entries = used_entries_raw & 0x3FFF;  // 14-bit counter (0-8192)
+
+        if (verbose) {
+            cout << "  [Circular Buffer] wr_ptr = " << wr_ptr
+                 << ", rd_ptr = " << host_rd_ptr
+                 << ", used_entries = " << used_entries << endl;
+        }
+
+        // Step 2: Calculate available results (already calculated above)
+        // size_t result_count_expected = B * C;
+
+        // Verify we have enough results
+        if (used_entries < result_count_expected) {
+            cerr << "WARNING: Not enough results yet (expected " << result_count_expected
+                 << ", available " << used_entries << ")" << endl;
+
+            // Re-read pointers
+            wr_ptr_raw = gemm_device.mmio_read32(0, 0x234);
+            wr_ptr = wr_ptr_raw & 0x1FFF;
+            used_entries_raw = gemm_device.mmio_read32(0, 0x238);
+            used_entries = used_entries_raw & 0x3FFF;
+
+            if (verbose) {
+                cout << "  [Circular Buffer] After wait: wr_ptr = " << wr_ptr
+                     << ", used_entries = " << used_entries << endl;
+            }
+        }
+
+        // Step 3: Handle partial buffers - flush if needed
+        // If result count is not a multiple of 16, we have a partial line that needs flushing
+        if ((result_count_expected % 16) != 0) {
+            if (verbose) {
+                cout << "  [DMA Read] Forcing flush (partial line: " << result_count_expected
+                     << " results, not multiple of 16)" << endl;
+            }
+
+            // Trigger flush by writing 0 to write_top_reset (register 0x22C)
+                // gemm_device.mmio_write32(0, 0x22C, 0x00000000);
+        }
+
+        // Step 4: Calculate byte-aligned DMA read
+        // Convert FP16 index to byte address (2 bytes per FP16)
+        uint32_t byte_offset = host_rd_ptr * 2;
+        uint32_t byte_count = result_count_expected * 2;
+
+        // Calculate how many complete 32-byte lines we need to read
+        // Account for starting offset within first line
+        uint32_t offset_in_first_line = byte_offset % 32;
+        uint32_t total_bytes_needed = offset_in_first_line + byte_count;
+        uint32_t lines_to_read = (total_bytes_needed + 31) / 32;
+        uint32_t dma_read_bytes = lines_to_read * 32;
+
+        // DMA read starting from rd_ptr (byte-addressed!)
+        uint32_t dma_start_addr = (byte_offset / 32) * 32;  // Round down to line boundary
+        vector<uint8_t> bram_data(dma_read_bytes);
+
+        if (verbose) {
+            cout << "  [DMA Read] rd_ptr=" << host_rd_ptr
+                 << ", byte_offset=" << byte_offset
+                 << ", reading " << dma_read_bytes << " bytes from offset " << dma_start_addr << endl;
+        }
+
+        if (!gemm_device.dma_read(BRAM_RESULT_BASE + dma_start_addr, bram_data.data(), dma_read_bytes)) {
+            cerr << "ERROR: Failed to DMA read results" << endl;
+            return false;
+        }
+
+        // Step 5: Extract FP16 results with automatic offset handling
+        vector<uint16_t> result_fp16(result_count_expected);
+
+        for (size_t i = 0; i < result_count_expected; i++) {
+            // Calculate byte position in the DMA buffer
+            size_t byte_pos = offset_in_first_line + i * 2;
+            result_fp16[i] = *(uint16_t*)(bram_data.data() + byte_pos);
+        }
+
+        if (verbose) {
+            cout << "  [DMA Read] Unpacked " << result_count_expected << " FP16 results" << endl;
+            cout << "  First 4 results: 0x" << hex << setfill('0')
+                 << setw(4) << result_fp16[0] << " 0x"
+                 << setw(4) << result_fp16[1] << " 0x"
+                 << setw(4) << result_fp16[2] << " 0x"
+                 << setw(4) << result_fp16[3] << dec << endl;
+        }
+
+        // Load and validate golden reference
         stringstream golden_ss;
-        golden_ss << "../../hex/golden_B" << B << "_C" << C << "_V" << V << "_multitile.hex";
+        golden_ss << "../../hex/golden_B" << B << "_C" << C << "_V" << V << ".hex";
         string golden_file = golden_ss.str();
         
         vector<float> golden_results;
-        if (!loadGoldenReferenceHex(golden_file, golden_results, total_results)) {
+        if (!loadGoldenReferenceHex(golden_file, golden_results, result_count_expected)) {
             cerr << "ERROR: Failed to load golden reference: " << golden_file << endl;
             return false;
         }
         
-        if (verbose) {
-            cout << "Loaded golden reference: " << golden_results.size() << " results" << endl;
-        }
-        
-        // Software reset
-        if (verbose) {
-            cout << "\n[Step 1] Resetting engine..." << endl;
-        }
-        device.mmioWrite32(0, 0x0, 0x2);
-        device.mmioWrite32(0, 0x0, 0x0);
-        
-        uint32_t status = device.mmioRead32(0, ENGINE_STATUS);
-        if ((status & 0x1) != 0) {
-            cerr << "WARNING: Engine still busy after reset" << endl;
-        }
-        
-        // DMA write matrices to GDDR6
-        if (verbose) {
-            cout << "\n[Step 2] Writing matrices to GDDR6..." << endl;
-        }
-        if (!device.dmaWrite(GDDR6_BASE_LEFT, left_data.size(), (char*)left_data.data())) {
-            cerr << "ERROR: Failed to DMA write left matrix" << endl;
-            return false;
-        }
-        
-        if (!device.dmaWrite(GDDR6_BASE_RIGHT, right_data.size(), (char*)right_data.data())) {
-            cerr << "ERROR: Failed to DMA write right matrix" << endl;
-            return false;
-        }
-        if (verbose) {
-            cout << "  DMA write complete" << endl;
-        }
-        
-        // FETCH LEFT (once for all left tiles)
-        if (verbose) {
-            cout << "\n[Step 3] FETCH left matrix (128 NVs)..." << endl;
-        }
-        uint32_t left_lines = 528;
-        uint32_t cmd_fetch_left_word0 = (0x00 << 24) | (16 << 16) | (0 << 8) | OPCODE_FETCH;
-        uint32_t cmd_fetch_left_word1 = GDDR6_BASE_LEFT / 32;  // Address in 32-byte units
-        uint32_t cmd_fetch_left_word2 = left_lines;
-        uint32_t cmd_fetch_left_word3 = 0;  // fetch_right=0 (left buffer)
-        issueCommand(device, cmd_fetch_left_word0, cmd_fetch_left_word1, cmd_fetch_left_word2, cmd_fetch_left_word3);
-
-        if (!waitEngineIdle(device)) {
-            cerr << "ERROR: Left FETCH timeout" << endl;
-            return false;
-        }
-        if (verbose) {
-            cout << "  Left FETCH complete" << endl;
-        }
-
-        // FETCH RIGHT (once for all right tiles)
-        if (verbose) {
-            cout << "\n[Step 4] FETCH right matrix (128 NVs)..." << endl;
-        }
-        uint32_t right_lines = 528;
-        uint32_t cmd_fetch_right_word0 = (0x00 << 24) | (16 << 16) | (1 << 8) | OPCODE_FETCH;
-        uint32_t cmd_fetch_right_word1 = GDDR6_BASE_RIGHT / 32;  // Address in 32-byte units
-        uint32_t cmd_fetch_right_word2 = right_lines;
-        uint32_t cmd_fetch_right_word3 = 1;  // fetch_right=1 (right buffer)
-        issueCommand(device, cmd_fetch_right_word0, cmd_fetch_right_word1, cmd_fetch_right_word2, cmd_fetch_right_word3);
-        
-        if (!waitEngineIdle(device)) {
-            cerr << "ERROR: Right FETCH timeout" << endl;
-            return false;
-        }
-        if (verbose) {
-            cout << "  Right FETCH complete" << endl;
-        }
-        
-        // Process tiles and read results after each tile to see individual results
-        if (verbose) {
-            cout << "\n[Step 5] Processing " << total_tiles << " tiles..." << endl;
-        }
-        vector<uint16_t> all_results;
-        all_results.reserve(total_results);
-        
-        for (int left_tile_idx = 0; left_tile_idx < num_left_tile; left_tile_idx++) {
-            for (int right_tile_idx = 0; right_tile_idx < num_right_tile; right_tile_idx++) {
-                int tile_num = left_tile_idx * num_right_tile + right_tile_idx;
-                
-                // Calculate tile addresses (in lines)
-                // Each NV uses 4 lines, so addr = nv_idx * 4
-                uint32_t left_addr = (left_tile_idx * B * V) * 4;
-                uint32_t right_addr = (right_tile_idx * C * V) * 4;
-                
-                // Print tile addresses only if verbose
-                if (verbose) {
-                    cout << "  Tile " << tile_num << " addrs: left=" << left_addr 
-                         << " (" << (left_addr/4) << " NVs), right=" << right_addr 
-                         << " (" << (right_addr/4) << " NVs)" << endl;
-                }
-                
-                // MATMUL command - Use 4-word format
-                // 4-Word Format: cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_MATMUL}
-                //                cmd[1] = {left_addr[15:0], right_addr[15:0]}
-                //                cmd[2] = {8'b0, left_ugd_len[7:0], right_ugd_len[7:0], vec_len[7:0]}
-                //                cmd[3] = {col_en[15:0], 13'b0, left_4b, right_4b, main_loop_left}
-
-                // TWO-BRAM architecture: both start from 0 in their respective address spaces
-                uint16_t left_addr_bram = (uint16_t)left_addr;
-                uint16_t right_addr_bram = (uint16_t)right_addr;
-                uint8_t left_ugd_len_val = B;   // Output rows
-                uint8_t right_ugd_len_val = C;  // Output cols
-                uint8_t vec_len_val = V;        // V-loop iterations
-                bool left_4b_val = false;
-                bool right_4b_val = false;
-                bool main_loop_left_val = true;
-                uint16_t col_en_val = 0x0001;
-
-                uint32_t cmd_id = tile_num;
-                uint32_t cmd_matmul_word0 = (0x00 << 24) | (16 << 16) | (cmd_id << 8) | OPCODE_MATMUL;
-                uint32_t cmd_matmul_word1 = (static_cast<uint32_t>(left_addr_bram) << 16) |
-                                             static_cast<uint32_t>(right_addr_bram);
-                uint32_t cmd_matmul_word2 = (static_cast<uint32_t>(left_ugd_len_val) << 16) |
-                                             (static_cast<uint32_t>(right_ugd_len_val) << 8) |
-                                             static_cast<uint32_t>(vec_len_val);
-                uint32_t cmd_matmul_word3 = (static_cast<uint32_t>(col_en_val) << 16) |
-                                             (left_4b_val ? 4u : 0u) |
-                                             (right_4b_val ? 2u : 0u) |
-                                             (main_loop_left_val ? 1u : 0u);
-
-                // Debug: Show command encoding only if verbose
-                if (verbose) {
-                    cout << "    Command: word0=0x" << hex << cmd_matmul_word0 << dec
-                         << " word1=0x" << hex << cmd_matmul_word1 << dec
-                         << " (left_addr=" << left_addr_bram << ", right_addr=" << right_addr_bram << ")" << endl;
-                }
-
-                issueCommand(device, cmd_matmul_word0, cmd_matmul_word1, cmd_matmul_word2, cmd_matmul_word3);
-                
-                // Wait for this tile to complete
-                if (!waitEngineIdle(device, 5000)) {
-                    cerr << "ERROR: Tile " << tile_num << " timeout" << endl;
-                    return false;
-                }
-                
-                // Reset engine to clear result BRAM between tiles
-                device.mmioWrite32(0, 0x0, 0x2);  // Set bit 1 = soft reset
-                device.mmioWrite32(0, 0x0, 0x0);  // Release reset
-                
-                // Read results for this tile immediately
-                size_t tile_results = B * C;
-                size_t result_bytes = tile_results * 32;  // 256-bit line per result
-                vector<uint8_t> bram_data(result_bytes);
-                
-                if (!device.dmaRead(BRAM_RESULT_BASE, result_bytes, (char*)bram_data.data())) {
-                    cerr << "ERROR: Failed to read tile " << tile_num << " results" << endl;
-                    return false;
-                }
-                
-                // Extract FP16 results for this tile
-                if (verbose) {
-                    cout << "  Tile " << tile_num << " results: ";
-                }
-                for (size_t i = 0; i < tile_results; i++) {
-                    uint8_t* line_ptr = bram_data.data() + (i * 32);
-                    uint16_t fp16_val = *(uint16_t*)line_ptr;
-                    all_results.push_back(fp16_val);
-                    if (verbose) {
-                        cout << "0x" << hex << fp16_val << dec << " ";
-                    }
-                }
-                if (verbose) {
-                    cout << endl;
-                }
-            }
+        // Convert FP16 results to float for comparison
+        vector<float> result_float(result_fp16.size());
+        for (size_t i = 0; i < result_fp16.size(); i++) {
+            result_float[i] = fp16ToFloat(result_fp16[i]);
         }
         
         if (verbose) {
-            cout << "\nAll tiles complete! Collected " << all_results.size() << " results" << endl;
+            cout << "\n  Hardware Results vs Golden Reference:" << endl;
+            cout << "  Index | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
+            cout << "  ------|----------------|------------------|--------------|----------------|------" << endl;
         }
         
-        // Validate results
-        if (verbose) {
-            cout << "\n[Step 7] Validating results..." << endl;
-        }
         int matches = 0;
-        int mismatches = 0;
-        
-        for (size_t i = 0; i < all_results.size() && i < golden_results.size(); i++) {
-            // Convert FP16 to float
-            float result_float = fp16ToFloat(all_results[i]);
-
-            // Compare with tolerance
-            float diff = fabs(result_float - golden_results[i]);
+        for (size_t i = 0; i < result_fp16.size() && i < golden_results.size(); i++) {
+            uint16_t golden_fp16 = floatToFP16(golden_results[i]);
+            float diff = fabs(result_float[i] - golden_results[i]);
             float rel_err = (golden_results[i] != 0.0f) ? diff / fabs(golden_results[i]) : diff;
-            bool match = (rel_err <= 0.4f);  // 40% tolerance
+            bool match = (rel_err <= 0.4f);
             
-            if (match) {
-                matches++;
-            } else {
-                mismatches++;
-                uint16_t golden_fp16 = floatToFP16(golden_results[i]);
-                cerr << "  Mismatch [" << i << "]: HW=0x" << hex << setw(4) << setfill('0')
-                     << all_results[i] << " (" << dec << result_float
-                     << "), Golden=0x" << hex << setw(4) << setfill('0')
-                     << golden_fp16 << " (" << dec << golden_results[i] << "), rel_err=" << rel_err << endl;
+            if (match) matches++;
+            
+            if (verbose) {
+                cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec 
+                     << "         | " << setw(15) << setprecision(6) << result_float[i]
+                     << " | 0x" << hex << setw(4) << setfill('0') << golden_fp16 << dec
+                        << "        | " << setw(15) << setprecision(6) << golden_results[i]
+                        << " | " << (match ? "Y" : "N") << endl;
             }
         }
         
-        cout << "Validation: " << matches << "/" << all_results.size() << " matches" << endl;
+        bool validation_passed = (matches == (int)result_fp16.size());
         
-        if (matches == (int)all_results.size()) {
-            cout << "\n[PASS] Multi-tile test passed!" << endl;
-            return true;
+        // Always report match count
+        cout << "  Validation: " << matches << "/" << result_fp16.size() << " matches" << endl;
+        
+        if (validation_passed) {
+            cout << "  [PASS] B" << B << "_C" << C << "_V" << V << endl;
         } else {
-            cout << "\n[FAIL] Multi-tile test failed (" << mismatches << " mismatches)" << endl;
-            return false;
+            cout << "  [FAIL] B" << B << "_C" << C << "_V" << V << " - Validation failed" << endl;
         }
-        
+
+        // Update host read pointer after consuming results
+        // Advance rd_ptr by the number of results we just read
+        host_rd_ptr = (host_rd_ptr + result_count_expected) & 0x1FFF;  // Wrap at 8192
+
+        // Write updated rd_ptr back to hardware (register 0x230)
+        gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
+
+        if (verbose) {
+            cout << "  [Circular Buffer] Updated rd_ptr to " << host_rd_ptr << endl;
+
+            // Verify updated state
+            uint32_t new_used_entries = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
+            cout << "  [Circular Buffer] After read: used_entries = " << new_used_entries << endl;
+        }
+
+        // Note: We do NOT reset wr_ptr - circular buffer is persistent
+        // The buffer will wrap around automatically at 8192 results
+
+        // Soft reset after test
+        gemm_device.soft_reset();
+
+        return validation_passed;
+
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;
         return false;
