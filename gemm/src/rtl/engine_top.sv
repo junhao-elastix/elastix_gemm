@@ -120,7 +120,8 @@ import gemm_pkg::*;
 
     // Master Control -> Compute Engine
     // Master Control -> Compute Engine (spec-compliant)
-    logic [23:0] mc_ce_tile_en;          // Per-tile enable (24 tiles max)
+    logic [23:0] mc_ce_tile_en;          // Per-tile enable (24 tiles max) - STATIC configuration
+    logic [23:0] mc_ce_tile_start;       // Per-tile start pulse - DYNAMIC control
     logic [15:0] mc_ce_tile_left_addr;       // 16 bits: Left matrix start address
     logic [15:0] mc_ce_tile_right_addr;      // 16 bits: Right matrix start address
     logic [7:0]  mc_ce_tile_left_ugd_len;    // 8 bits: Left UGD vectors (Batch dimension)
@@ -264,7 +265,8 @@ import gemm_pkg::*;
         .i_dc_disp_done     (dc_mc_disp_done),
 
         // Compute Engine Interface (TILE command - spec-compliant)
-        .o_ce_tile_en            (mc_ce_tile_en),
+        .o_ce_tile_en                 (mc_ce_tile_en),          // Static enable mask
+        .o_ce_tile_start              (mc_ce_tile_start),       // Dynamic start pulse
         .o_ce_tile_left_addr          (mc_ce_tile_left_addr),
         .o_ce_tile_right_addr         (mc_ce_tile_right_addr),
         .o_ce_tile_left_ugd_len       (mc_ce_tile_left_ugd_len),
@@ -407,7 +409,8 @@ import gemm_pkg::*;
                 .i_reset_n          (i_reset_n),
 
                 // Master Control Interface (TILE command with per-tile enable)
-                .i_tile_en                    (mc_ce_tile_en[tile_id]),
+                .i_tile_en                    (mc_ce_tile_en[tile_id]),      // Static: is this tile enabled?
+                .i_tile_start                 (mc_ce_tile_start[tile_id]),   // Dynamic: start pulse
                 .i_tile_left_addr             (mc_ce_tile_left_addr),
                 .i_tile_right_addr            (mc_ce_tile_right_addr),
                 .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
@@ -416,6 +419,7 @@ import gemm_pkg::*;
                 .i_tile_left_man_4b           (mc_ce_tile_left_man_4b),
                 .i_tile_right_man_4b          (mc_ce_tile_right_man_4b),
                 .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
+                .i_mc_tile_en                 (mc_ce_tile_en),   // Pass tile enable for per-tile column calculation
                 .o_tile_done                  (ce_tile_done_arr[tile_id]),
 
                 // Tile BRAM Write Interface

@@ -10,16 +10,33 @@
 #include <vector>
 #include <fstream>
 #include <cstring>
+#include <chrono>
 #include "vp815_gemm_device.hpp"
 
 using namespace std;
 using namespace achronix;
 
+// Timing helper struct
+struct TimingStats {
+    double dma_write_ms = 0;
+    double fetch_left_ms = 0;
+    double fetch_right_ms = 0;
+    double dispatch_left_ms = 0;
+    double dispatch_right_ms = 0;
+    double tile_total_ms = 0;
+    double tile_avg_ms = 0;
+    double readout_ms = 0;
+    double total_ms = 0;
+};
+
 // Parameterized multi-tile test function
-bool run_multitile_test(int B, int C, int V) {
+bool run_multitile_test(int B, int C, int V, bool show_timing = true) {
     cout << "\n========================================================================" << endl;
     cout << "Multi-Tile GEMM Test (B=" << B << ", C=" << C << ", V=" << V << ")" << endl;
     cout << "========================================================================" << endl;
+    
+    TimingStats timing;
+    auto test_start = chrono::high_resolution_clock::now();
 
     // Calculate tile counts using BOTTLENECK PRINCIPLE
     // Given 128 Native Vectors total in reference matrices
@@ -74,12 +91,17 @@ bool run_multitile_test(int B, int C, int V) {
         // Stage 1: DMA matrices to GDDR6 (ONCE)
         // ------------------------------------------------------------------------
         cout << "\n--- Stage 1: DMA Transfer to GDDR6 ---" << endl;
+        auto dma_time_start = chrono::high_resolution_clock::now();
         if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size()) ||
             !gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
             cerr << "ERROR: Failed to DMA write matrices" << endl;
             return false;
         }
-        cout << "✓ Wrote matrices to GDDR6" << endl;
+        auto dma_time_end = chrono::high_resolution_clock::now();
+        timing.dma_write_ms = chrono::duration<double, milli>(dma_time_end - dma_time_start).count();
+        cout << "✓ Wrote matrices to GDDR6";
+        if (show_timing) cout << " (" << fixed << setprecision(2) << timing.dma_write_ms << " ms)";
+        cout << endl;
 
         // ------------------------------------------------------------------------
         // Stage 2: FETCH - Load ONE memory block (left + right)
@@ -90,6 +112,7 @@ bool run_multitile_test(int B, int C, int V) {
         uint32_t left_lines = 528;   // Full 128 NVs
         uint32_t right_lines = 528;
 
+        auto fetch_left_start = chrono::high_resolution_clock::now();
         uint8_t fetch_left_id = gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
         cout << "  [" << (int)fetch_left_id << "] FETCH left @ GDDR6 (528 lines → Dispatcher BRAM[0-527])" << endl;
 
@@ -97,7 +120,10 @@ bool run_multitile_test(int B, int C, int V) {
             cerr << "ERROR: FETCH left timeout" << endl;
             return false;
         }
+        auto fetch_left_end = chrono::high_resolution_clock::now();
+        timing.fetch_left_ms = chrono::duration<double, milli>(fetch_left_end - fetch_left_start).count();
 
+        auto fetch_right_start = chrono::high_resolution_clock::now();
         uint8_t fetch_right_id = gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
         cout << "  [" << (int)fetch_right_id << "] FETCH right @ GDDR6 (528 lines → Dispatcher BRAM[528-1055])" << endl;
 
@@ -105,8 +131,15 @@ bool run_multitile_test(int B, int C, int V) {
             cerr << "ERROR: FETCH right timeout" << endl;
             return false;
         }
+        auto fetch_right_end = chrono::high_resolution_clock::now();
+        timing.fetch_right_ms = chrono::duration<double, milli>(fetch_right_end - fetch_right_start).count();
 
-        cout << "✓ FETCH complete (full memory block loaded to Dispatcher BRAM)" << endl;
+        cout << "✓ FETCH complete (full memory block loaded to Dispatcher BRAM)";
+        if (show_timing) {
+            cout << " (left: " << fixed << setprecision(2) << timing.fetch_left_ms 
+                 << " ms, right: " << timing.fetch_right_ms << " ms)";
+        }
+        cout << endl;
 
         // ------------------------------------------------------------------------
         // Stage 3: DISPATCH - Distribute memory block to compute column
@@ -115,6 +148,7 @@ bool run_multitile_test(int B, int C, int V) {
         // but we still issue it for protocol compliance
         cout << "\n--- Stage 3: DISPATCH Memory Block ---" << endl;
 
+        auto dispatch_left_start = chrono::high_resolution_clock::now();
         uint8_t disp_left_id = gemm_device.dispatch(
             128,      // man_nv_cnt = 128 (full block)
             1,        // ugd_vec_size = 1 (legacy parameter)
@@ -134,7 +168,10 @@ bool run_multitile_test(int B, int C, int V) {
             cerr << "ERROR: DISPATCH left timeout" << endl;
             return false;
         }
+        auto dispatch_left_end = chrono::high_resolution_clock::now();
+        timing.dispatch_left_ms = chrono::duration<double, milli>(dispatch_left_end - dispatch_left_start).count();
 
+        auto dispatch_right_start = chrono::high_resolution_clock::now();
         uint8_t disp_right_id = gemm_device.dispatch(
             128,      // man_nv_cnt = 128
             1,        // ugd_vec_size = 1
@@ -154,8 +191,15 @@ bool run_multitile_test(int B, int C, int V) {
             cerr << "ERROR: DISPATCH right timeout" << endl;
             return false;
         }
+        auto dispatch_right_end = chrono::high_resolution_clock::now();
+        timing.dispatch_right_ms = chrono::duration<double, milli>(dispatch_right_end - dispatch_right_start).count();
 
-        cout << "✓ DISPATCH complete (memory block distributed to compute column)" << endl;
+        cout << "✓ DISPATCH complete (memory block distributed to compute column)";
+        if (show_timing) {
+            cout << " (left: " << fixed << setprecision(2) << timing.dispatch_left_ms 
+                 << " ms, right: " << timing.dispatch_right_ms << " ms)";
+        }
+        cout << endl;
 
         // ------------------------------------------------------------------------
         // Stage 4: TILE Commands - Lockstep advancement (bottleneck principle)
@@ -166,6 +210,7 @@ bool run_multitile_test(int B, int C, int V) {
         cout << "NOTE: In production, software can use ANY addressing pattern!" << endl;
 
         vector<uint8_t> tile_ids;
+        auto tile_start = chrono::high_resolution_clock::now();
 
         // Calculate strides for lockstep advancement pattern
         int left_stride = (B * V) * 4;   // Lines per tile
@@ -214,13 +259,42 @@ bool run_multitile_test(int B, int C, int V) {
             tile_ids.push_back(tile_id);
         }
 
-        cout << "\n✓ All " << num_tiles << " TILE commands completed" << endl;
+        cout << "\n✓ All " << num_tiles << " TILE commands issued" << endl;
 
         if (!gemm_device.wait_idle(5000)) {
             cerr << "ERROR: Engine timeout waiting for tiles" << endl;
             return false;
         }
-        cout << "✓ All " << num_tiles << " TILE commands completed" << endl;
+        auto tile_end = chrono::high_resolution_clock::now();
+        timing.tile_total_ms = chrono::duration<double, milli>(tile_end - tile_start).count();
+        timing.tile_avg_ms = timing.tile_total_ms / num_tiles;
+        
+        cout << "✓ All " << num_tiles << " TILE computations completed";
+        if (show_timing) {
+            cout << " (total: " << fixed << setprecision(2) << timing.tile_total_ms 
+                 << " ms, avg: " << timing.tile_avg_ms << " ms/tile)";
+        }
+        cout << endl;
+
+        // ------------------------------------------------------------------------
+        // Stage 4.5: READOUT - Move results from tile FIFOs to result BRAM
+        // ------------------------------------------------------------------------
+        cout << "\n--- Stage 4.5: READOUT Command ---" << endl;
+        cout << "Issuing READOUT to collect " << total_results << " results from all tiles..." << endl;
+        
+        auto readout_start = chrono::high_resolution_clock::now();
+        gemm_device.readout(0, total_results);  // start_col=0, rd_len=total_results
+        
+        if (!gemm_device.wait_idle(5000)) {
+            cerr << "ERROR: READOUT timeout" << endl;
+            return false;
+        }
+        auto readout_end = chrono::high_resolution_clock::now();
+        timing.readout_ms = chrono::duration<double, milli>(readout_end - readout_start).count();
+        
+        cout << "✓ READOUT complete - results now in result BRAM";
+        if (show_timing) cout << " (" << fixed << setprecision(2) << timing.readout_ms << " ms)";
+        cout << endl;
 
         // ------------------------------------------------------------------------
         // Stage 5: Collect ALL Results (single read at end)
@@ -438,6 +512,9 @@ bool run_multitile_test(int B, int C, int V) {
             cout << "⚠ Results may be invalid!" << endl;
         }
 
+        auto test_end = chrono::high_resolution_clock::now();
+        timing.total_ms = chrono::duration<double, milli>(test_end - test_start).count();
+
         cout << "\n========================================================================" << endl;
         cout << "Multi-Tile GEMM Test Complete" << endl;
         cout << "========================================================================" << endl;
@@ -446,9 +523,32 @@ bool run_multitile_test(int B, int C, int V) {
         cout << "  1 FETCH right (GDDR6 → Dispatcher BRAM[528-1055])" << endl;
         cout << "  1 DISPATCH left + right (memory block to compute column)" << endl;
         cout << "  " << num_tiles << " TILE commands (lockstep addressing)" << endl;
+        cout << "  1 READOUT (" << total_results << " results → result BRAM)" << endl;
         cout << "  1 Result collection (" << total_results << " FP16 values)" << endl;
         cout << "  Bottleneck: " << (max_left_tiles < max_right_tiles ? "left" : "right") << " side" << endl;
         cout << "========================================================================" << endl;
+        
+        if (show_timing) {
+            cout << "\nTiming Breakdown:" << endl;
+            cout << "  DMA Write:       " << fixed << setprecision(3) << timing.dma_write_ms << " ms" << endl;
+            cout << "  FETCH Left:      " << timing.fetch_left_ms << " ms" << endl;
+            cout << "  FETCH Right:     " << timing.fetch_right_ms << " ms" << endl;
+            cout << "  DISPATCH Left:   " << timing.dispatch_left_ms << " ms" << endl;
+            cout << "  DISPATCH Right:  " << timing.dispatch_right_ms << " ms" << endl;
+            cout << "  TILE Total:      " << timing.tile_total_ms << " ms (" << num_tiles << " tiles)" << endl;
+            cout << "  TILE Average:    " << timing.tile_avg_ms << " ms/tile" << endl;
+            cout << "  READOUT:         " << timing.readout_ms << " ms" << endl;
+            cout << "  ------------------------------------------------" << endl;
+            cout << "  TOTAL:           " << timing.total_ms << " ms" << endl;
+            
+            // Calculate throughput
+            double total_ops = (double)B * C * V * 128 * 2;  // B×C×V×128 dot products, each has 128 multiply-adds
+            double gops = total_ops / (timing.tile_total_ms * 1e6);  // GOPS
+            cout << "\nPerformance:" << endl;
+            cout << "  Compute ops:     " << scientific << setprecision(2) << total_ops << " ops" << endl;
+            cout << "  Throughput:      " << fixed << setprecision(3) << gops << " GOPS" << endl;
+            cout << "========================================================================" << endl;
+        }
 
         return true;  // Success
 

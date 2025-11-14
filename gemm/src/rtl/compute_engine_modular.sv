@@ -30,15 +30,17 @@ import gemm_pkg::*;
     // ====================================================================
     // Master Control Interface (TILE command)
     // ====================================================================
-    input  logic        i_tile_en,
+    input  logic        i_tile_en,             // Static enable (configuration: is this tile active?)
+    input  logic        i_tile_start,          // Dynamic pulse (control: start computing NOW!)
     input  logic [15:0] i_tile_left_addr,      // 16 bits: Left matrix start address
     input  logic [15:0] i_tile_right_addr,     // 16 bits: Right matrix start address
     input  logic [7:0]  i_tile_left_ugd_len,   // 8 bits: Left UGD vectors (Batch dimension)
-    input  logic [7:0]  i_tile_right_ugd_len,  // 8 bits: Right UGD vectors (Column dimension)
+    input  logic [7:0]  i_tile_right_ugd_len,  // 8 bits: GLOBAL Right UGD vectors (total Column dimension across all tiles)
     input  logic [7:0]  i_tile_vec_len,        // 8 bits: UGD vector size (Vector count)
     input  logic        i_tile_left_man_4b,
     input  logic        i_tile_right_man_4b,
     input  logic        i_tile_main_loop_over_left,
+    input  logic [23:0] i_mc_tile_en,          // Per-tile enable signal for calculating per-tile columns
     output logic        o_tile_done,
 
     // ====================================================================
@@ -115,7 +117,7 @@ import gemm_pkg::*;
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             result_count <= 16'd0;
-        end else if (i_tile_en) begin
+        end else if (i_tile_start) begin  // Reset on START pulse, not static enable
             result_count <= 16'd0;
         end else if (o_result_valid && !i_result_afull) begin
             result_count <= result_count + 1;
@@ -123,6 +125,53 @@ import gemm_pkg::*;
     end
     
     assign o_result_count = result_count;
+
+    // ===================================================================
+    // Per-Tile Column Count Calculation
+    // ===================================================================
+    // Calculate how many columns THIS tile should process based on:
+    // - Global right_ugd_len (total columns across all tiles)
+    // - Number of enabled tiles (popcount of i_mc_tile_en)
+    // - This tile's ID
+    //
+    // Distribution: If C doesn't divide evenly, first (C % num_tiles) tiles
+    // get one extra column. Example: C=14, 8 tiles:
+    //   Tiles 0-5: 2 columns each
+    //   Tiles 6-7: 1 column each
+
+    logic [7:0] tile_right_ugd_len;  // Per-tile column count
+    logic [4:0] num_enabled_tiles;   // Count of enabled tiles
+    logic [7:0] cols_per_tile_base;  // Base columns (C / num_tiles)
+    logic [7:0] extra_cols;          // Remainder (C % num_tiles)
+
+    always_comb begin
+        // Count enabled tiles
+        num_enabled_tiles = $countones(i_mc_tile_en);
+
+        if (num_enabled_tiles == 0) begin
+            // Safety: no tiles enabled
+            tile_right_ugd_len = 8'd0;
+        end else begin
+            // Calculate base columns and remainder
+            cols_per_tile_base = i_tile_right_ugd_len / num_enabled_tiles;
+            extra_cols = i_tile_right_ugd_len % num_enabled_tiles;
+
+            // First extra_cols tiles get one additional column
+            if (TILE_ID < extra_cols) begin
+                tile_right_ugd_len = cols_per_tile_base + 8'd1;
+            end else begin
+                tile_right_ugd_len = cols_per_tile_base;
+            end
+
+            `ifdef SIMULATION
+            if (i_tile_start && state_reg == ST_IDLE) begin  // Check START pulse, not static enable
+                $display("[CE_TILE%0d] @%0t Per-Tile Column Calc: global_C=%0d, num_tiles=%0d, base=%0d, extra=%0d, my_cols=%0d",
+                        TILE_ID, $time, i_tile_right_ugd_len, num_enabled_tiles, cols_per_tile_base, extra_cols,
+                        (TILE_ID < extra_cols) ? (cols_per_tile_base + 8'd1) : cols_per_tile_base);
+            end
+            `endif
+        end
+    end
 
     // ===================================================================
     // Tile BRAM Instance - Private L1 Cache
@@ -180,24 +229,27 @@ import gemm_pkg::*;
         end else begin
             case (state_reg)
                 ST_IDLE: begin
-                    if (i_tile_en) begin
+                    if (i_tile_en && i_tile_start) begin  // Check BOTH enable AND start pulse
                         state_reg <= ST_COMP_BUSY;
-                        // `ifdef SIMULATION
-                        // $display("[CE_DEBUG] @%t Tile[%0d] command received: left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
-                        //          $time, TILE_ID, i_tile_left_addr, i_tile_right_addr, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len);
-                        // $display("[CE_DEBUG] @%t Tile[%0d] STARTING MATMUL computation", $time, TILE_ID);
-                        // `endif
+                        `ifdef SIMULATION
+                        $display("[CE_TILE%0d] @%0t ST_IDLE: tile_start pulse received, starting MATMUL - B=%0d, C_global=%0d, C_tile=%0d, V=%0d",
+                                 TILE_ID, $time, i_tile_left_ugd_len, i_tile_right_ugd_len, tile_right_ugd_len, i_tile_vec_len);
+                        `endif
                     end
                 end
                 ST_COMP_BUSY: begin
                     if (bcv_tile_done) begin
                         state_reg <= ST_COMP_DONE;
-                        // `ifdef SIMULATION
-                        // $display("[CE_DEBUG] @%t Tile[%0d] COMPLETED MATMUL computation", $time, TILE_ID);
-                        // `endif
+                        `ifdef SIMULATION
+                        $display("[CE_TILE%0d] @%0t ST_COMP_BUSY: bcv_tile_done asserted, transitioning to COMP_DONE", 
+                                 TILE_ID, $time);
+                        `endif
                     end
                 end
                 ST_COMP_DONE: begin
+                    `ifdef SIMULATION
+                    $display("[CE_TILE%0d] @%0t ST_COMP_DONE: returning to IDLE", TILE_ID, $time);
+                    `endif
                     state_reg <= ST_IDLE;
                 end
             endcase
@@ -215,9 +267,9 @@ import gemm_pkg::*;
         .i_reset_n          (i_reset_n),
 
         // TILE command parameters
-        .i_tile_en          (i_tile_en),
+        .i_tile_start       (i_tile_start),          // Use START pulse, not static enable
         .i_dim_b            (i_tile_left_ugd_len),   // Batch dimension (left UGD vectors)
-        .i_dim_c            (i_tile_right_ugd_len),  // Column dimension (right UGD vectors)
+        .i_dim_c            (tile_right_ugd_len),    // Column dimension (PER-TILE right UGD vectors)
         .i_dim_v            (i_tile_vec_len),        // Vector count (UGD vector size)
         .i_left_base_addr   (i_tile_left_addr),
         .i_right_base_addr  (i_tile_right_addr),

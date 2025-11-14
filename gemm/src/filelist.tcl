@@ -33,6 +33,7 @@ gfp8_nv_dot.sv
 gfp8_to_fp16.sv
 master_control.sv
 result_arbiter.sv
+flex_fifo.sv
 result_bram.sv
 result_fifo_to_simple_bram.sv
 shift_reg.sv
@@ -50,22 +51,11 @@ synplify_constraints.sdc
 synplify_constraints.fdc
 }
 
-# ioring files must be first as they specify the clocks
+# ioring files are auto-generated and auto-added by generate_ioring_design_files
+# Do not list them here to avoid duplicates
 set ace_constraints_files {
-../ioring/elastix_gemm_top_ioring.sdc
-../ioring/elastix_gemm_top_ioring.pdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_fast.sdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_0C_slow.sdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_fast.sdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_n40C_slow.sdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_fast.sdc
-../ioring/elastix_gemm_top_ioring_delays_C1_900mV_125C_slow.sdc
 ace_constraints.sdc
 ace_placements.pdc
-../ioring/elastix_gemm_top_ioring_bitstream0.hex
-../ioring/elastix_gemm_top_ioring_bitstream1.hex
-../ioring/elastix_gemm_top_ioring_util.xml
-../ioring/elastix_gemm_top_ioring_power.xml
 }
 
 set generate_ioring_path "../ioring"

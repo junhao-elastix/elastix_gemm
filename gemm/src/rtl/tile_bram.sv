@@ -85,8 +85,19 @@ module tile_bram #(
     // ===================================================================
     // SIMULATION NOTE: Memory initialization via DISPATCH operation
     // ===================================================================
-    // No initial block needed - testbench writes data via tile_bram write ports
-    // (simulating DISPATCH operation)
+    // Zero-initialize for simulation (prevents X/Z values in unbalanced distributions)
+    `ifdef SIMULATION
+    initial begin
+        for (int i = 0; i < 128; i++) begin
+            for (int j = 0; j < 4; j++) begin
+                nv_man_left[i][j] = '0;
+                nv_man_right[i][j] = '0;
+            end
+            nv_exp_left[i] = '0;
+            nv_exp_right[i] = '0;
+        end
+    end
+    `endif
 
     // ===================================================================
     // WRITE LOGIC - Pack line-based writes into NV format

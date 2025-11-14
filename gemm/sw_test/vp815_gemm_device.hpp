@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
+#include <thread>
 #include "../../../eus/shell/devices/acx/vp815/api/vp815.hpp"
 #include "Achronix_device.h"
 #include "Achronix_util.h"
@@ -48,12 +49,12 @@ public:
     void soft_reset() {
         mmio_write32(0, 0x0, 0x2);  // Assert reset
         mmio_write32(0, 0x0, 0x0);  // Deassert
-        
-        mmio_write32(0, 0x230, 0x0);  // rd_ptr = 0
+        // Note: wr_ptr auto-resets via engine_rstn (async reset)
+        // Register 0x234 is READ-ONLY (hardware wr_ptr status)
     }
 
     // ---------------------- Wait for Engine Idle ----------------------------
-    bool wait_idle(uint32_t timeout_ms = 5000) {
+    bool wait_idle(uint32_t timeout_ms = 1000) {
         auto start = std::chrono::steady_clock::now();
         while (true) {
             uint32_t status = mmio_read32(0, MS2_STATUS);
@@ -183,17 +184,18 @@ public:
     }
 
     // ---------------------- READOUT Command ---------------------------------
-    // 4-Word Format (SINGLE_ROW_REFERENCE.md):
+    // 4-Word Format (gemm_pkg.sv cmd_readout_s + testbench):
     // cmd[0] = {8'h00, 16'd16, cmd_id[7:0], OPC_READOUT}
-    // cmd[1] = {8'b0, start_col[23:0]}
-    // cmd[2] = 32'h00000000
+    // cmd[1] = {reserved[23:0], start_col[7:0]}
+    // cmd[2] = rd_len[31:0]  - Total FP16 results to read (across all tiles)
     // cmd[3] = 32'h00000000
     // Purpose: Collect results from compute tiles starting at start_col
-    uint8_t readout(uint32_t start_col = 0) {
+    uint8_t readout(uint8_t start_col, uint32_t rd_len) {
         uint8_t id = next_cmd_id();
         uint32_t w0 = build_word0(OPC_READOUT, id);
-        uint32_t w1 = start_col & 0xFFFFFF;  // start_col[23:0]
-        issue_command(w0, w1, 0, 0);
+        uint32_t w1 = static_cast<uint32_t>(start_col);  // {24'd0, start_col[7:0]}
+        uint32_t w2 = rd_len;  // rd_len[31:0]
+        issue_command(w0, w1, w2, 0);
         return id;
     }
 
@@ -284,6 +286,7 @@ private:
         mmio_write32(0, MS2_CMD_WORD2, w2);
         mmio_write32(0, MS2_CMD_WORD3, w3);
         mmio_write32(0, MS2_CMD_SUBMIT, 0x1);
+        mmio_write32(0, MS2_CMD_SUBMIT, 0x0);  // Clear for next edge detection
     }
 };
 

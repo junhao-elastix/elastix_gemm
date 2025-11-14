@@ -21,12 +21,15 @@ VP815_API = $(DEV_ROOT)/eus/shell/devices/acx/vp815/api/vp815.cpp
 
 ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram
 ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full test_multi_tile test_readback test_bulk_dma
+CORE_BINS = test_gemm test_multi_tile
 
 # Aliases for convenience
 BINS = $(ESSENTIAL_BINS)
 
 # Default target - build essential tests
 all: $(ALL_BINS)
+
+core: $(CORE_BINS)
 
 # Test build rules
 test_registers: test_registers.cpp

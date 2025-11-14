@@ -55,7 +55,8 @@ import gemm_pkg::*;
     input  logic                          i_dc_disp_done,
 
     // Compute Engine Interface (TILE command)
-    output logic [23:0]                   o_ce_tile_en,           // Per-tile enable (24 tiles max)
+    output logic [23:0]                   o_ce_tile_en,           // Per-tile enable (24 tiles max) - STATIC
+    output logic [23:0]                   o_ce_tile_start,        // Per-tile start pulse - DYNAMIC
     // Compute Engine TILE Interface (spec-compliant per SINGLE_ROW_REFERENCE.md)
     output logic [15:0] o_ce_tile_left_addr,          // 16 bits: Left matrix start address
     output logic [15:0] o_ce_tile_right_addr,         // 16 bits: Right matrix start address
@@ -141,6 +142,9 @@ import gemm_pkg::*;
     logic readout_en_reg;
     logic [7:0]  readout_start_col_reg;
     logic [31:0] readout_rd_len_reg;
+    
+    // TILE start pulse generation
+    logic [23:0] ce_tile_start_reg;
 
     // ===================================================================
     // State Transition Logic
@@ -449,6 +453,7 @@ import gemm_pkg::*;
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
             ce_tile_en_reg <= '0;
+            ce_tile_start_reg <= '0;
             ce_col_en_reg  <= '0;
             ce_tile_params_set <= 1'b0;
             o_ce_tile_left_addr  <= '0;
@@ -460,6 +465,8 @@ import gemm_pkg::*;
             o_ce_tile_right_man_4b <= 1'b0;
             o_ce_tile_main_loop_over_left <= 1'b0;
         end else begin
+            // Default: Clear start pulse every cycle (it's a 1-cycle pulse)
+            ce_tile_start_reg <= '0;
             // MS2.0 ASYNC MODEL: Keep ce_tile_en_reg set until READOUT completes
             // (Arbiter needs to know which tiles have results)
             // Clear ce_tile_en only after READOUT finishes or when new MATMUL starts
@@ -481,6 +488,10 @@ import gemm_pkg::*;
                 tile_cmd = {payload_word3_reg, payload_word2_reg, payload_word1_reg};  // Full 96 bits
 
                 if (!ce_tile_params_set) begin
+                    `ifdef SIMULATION
+                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 1: Parsing TILE command - B=%0d, C=%0d, V=%0d, col_en=0x%06x",
+                             $time, tile_cmd.left_ugd_len, tile_cmd.right_ugd_len, tile_cmd.vec_len, tile_cmd.col_en);
+                    `endif
                     // Assign TILE command parameters
                     o_ce_tile_left_addr         <= tile_cmd.left_addr;
                     o_ce_tile_right_addr        <= tile_cmd.right_addr;
@@ -492,8 +503,13 @@ import gemm_pkg::*;
                     o_ce_tile_main_loop_over_left <= tile_cmd.main_loop_left;
                     ce_col_en_reg               <= tile_cmd.col_en;        // Store column enable mask
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
-                end else begin
-                    ce_tile_en_reg <= ce_col_en_reg;  // Enable only tiles specified by col_en
+                end                 else begin
+                    `ifdef SIMULATION
+                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 2: Asserting ce_tile_en = 0x%06x, ce_tile_start pulse",
+                             $time, ce_col_en_reg);
+                    `endif
+                    ce_tile_en_reg <= ce_col_en_reg;      // Set static enable mask
+                    ce_tile_start_reg <= ce_col_en_reg;   // Pulse start to enabled tiles
                 end
             end
         end
@@ -617,7 +633,8 @@ import gemm_pkg::*;
     // ===================================================================
     assign o_dc_fetch_en = dc_fetch_en_reg;
     assign o_dc_disp_en  = dc_disp_en_reg;
-    assign o_ce_tile_en  = ce_tile_en_reg;
+    assign o_ce_tile_en  = ce_tile_en_reg;        // Static enable mask
+    assign o_ce_tile_start = ce_tile_start_reg;   // Dynamic start pulse
     assign o_readout_en  = readout_en_reg;
     assign o_readout_start_col = readout_start_col_reg;
     assign o_readout_rd_len = readout_rd_len_reg;

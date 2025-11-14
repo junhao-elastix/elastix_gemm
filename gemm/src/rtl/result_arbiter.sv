@@ -74,6 +74,8 @@ module result_arbiter
     logic [4:0]  readout_tile_reg;          // Current tile index (0-23)
     logic [31:0] readout_rd_len_reg;        // Total results to collect
     logic        readout_done_reg;          // Completion signal
+    logic [7:0]  readout_tile_col_count;    // How many results to read from current tile before advancing
+    logic [7:0]  readout_tile_results_read; // How many results read from current tile so far
 
     // Per-tile pending read counters (track reads in-flight due to 2-cycle BRAM latency)
     logic [1:0]  arb_tile_pending_reads [NUM_TILES];  // 0-2 pending reads per tile
@@ -222,8 +224,18 @@ module result_arbiter
                                         $time, readout_tile_reg, readout_count_reg + 1, readout_rd_len_reg,
                                         shadow_available, (readout_tile_reg + 1) % NUM_TILES);
                                 `endif
+                            end else if (!i_result_fifo_full) begin
+                                // No data available but result_fifo not full
+                                // For unbalanced distributions, some tiles finish early - SKIP them
+                                // Advance to next tile without reading (don't wait forever)
+                                readout_tile_reg <= (readout_tile_reg + 1) % NUM_TILES;
+
+                                `ifdef SIMULATION
+                                $display("[ARB] @%0t READOUT: Tile %0d has no data (shadow=%0d), skipping to tile %0d",
+                                        $time, readout_tile_reg, shadow_available, (readout_tile_reg + 1) % NUM_TILES);
+                                `endif
                             end
-                            // else: Enabled tile but no data available - wait
+                            // else: result_fifo is full - wait (don't advance anything)
                         end
                     end
                 end

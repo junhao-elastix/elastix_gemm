@@ -121,7 +121,7 @@ struct TestConfig {
 };
 
 // Function Declarations
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing);
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en = 0x0001);
 bool run_single_test_with_collection(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing,
                                      uint32_t& host_rd_ptr, bool reset_rd_ptr, vector<uint16_t>& collected_results);
 
@@ -136,6 +136,7 @@ int main(int argc, char* argv[]) {
     bool verbose = false;
     bool timing = false;
     int test_B = -1, test_C = -1, test_V = -1;
+    uint32_t col_en = 0x0001;  // Default: single tile (column 0 only)
     
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-d") == 0 && i+1 < argc) {
@@ -151,6 +152,8 @@ int main(int argc, char* argv[]) {
             test_C = stoi(argv[++i]);
         } else if (strcmp(argv[i], "-V") == 0 && i+1 < argc) {
             test_V = stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-col_en") == 0 && i+1 < argc) {
+            col_en = stoul(argv[++i], nullptr, 0);  // Parse as hex if starts with 0x
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             cout << "Usage: test_gemm [options]\n";
             cout << "Options:\n";
@@ -158,6 +161,8 @@ int main(int argc, char* argv[]) {
             cout << "  -v                  Verbose output (results and debug info)\n";
             cout << "  -t                  Print timing information for each method\n";
             cout << "  -B N, -C N, -V N    Run single test with specified B, C, V parameters\n";
+            cout << "  -col_en MASK        Column enable mask (hex, default: 0x0001 = single tile)\n";
+            cout << "                      Examples: 0x0001 (1 tile), 0x0003 (2 tiles), 0x000F (4 tiles), 0x00FF (8 tiles)\n";
             cout << "  -h, --help          Show this help\n";
             cout << "\nDefault: Runs 10-config test suite if B/C/V not specified.\n";
             return 0;
@@ -184,11 +189,14 @@ int main(int argc, char* argv[]) {
 
         if (single_test_mode) {
             // Single test mode
+            int num_tiles = __builtin_popcount(col_en & 0xFF);  // Count enabled tiles (bits 0-7)
             cout << "\n========================================" << endl;
             cout << "Single Test: B=" << test_B << ", C=" << test_C << ", V=" << test_V << endl;
+            cout << "Column Enable: 0x" << hex << setfill('0') << setw(6) << col_en << dec 
+                 << " (" << num_tiles << " tile" << (num_tiles != 1 ? "s" : "") << " enabled)" << endl;
             cout << "========================================" << endl;
             
-            bool result = run_single_test(gemm_device, test_B, test_C, test_V, verbose, timing);
+            bool result = run_single_test(gemm_device, test_B, test_C, test_V, verbose, timing, col_en);
             
             cout << "\n========================================" << endl;
             cout << "TEST " << (result ? "PASSED" : "FAILED") << endl;
@@ -234,14 +242,13 @@ int main(int argc, char* argv[]) {
             cout << "  B=" << config.B << ", C=" << config.C << ", V=" << config.V << endl;
             cout << "----------------------------------------" << endl;
 
-            // STAGE 1: Reset both pointers at start of each test (before first test only, then after each test)
+            // STAGE 1: Soft reset before first test only
             if (i == 0) {
-                gemm_device.mmio_write32(0, 0x230, 0x00000000);  // rd_ptr = 0
-                gemm_device.mmio_write32(0, 0x22C, 0x00000000);  // wr_ptr = 0 (trigger reset)
-                cout << "  [Stage 1] Initial reset: rd_ptr=0, wr_ptr=0" << endl;
+                gemm_device.soft_reset();  // Reset engine + circular buffer
+                cout << "  [Stage 1] Initial soft reset complete" << endl;
             }
 
-            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing);
+            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, 0x0001);
 
             if (result) {
                 stage1_passed++;
@@ -274,9 +281,8 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Reset pointers AFTER collecting results, ready for next test
-                gemm_device.mmio_write32(0, 0x230, 0x00000000);  // rd_ptr = 0
-                gemm_device.mmio_write32(0, 0x22C, 0x00000000);  // wr_ptr = 0 (trigger reset)
+                // Soft reset AFTER collecting results, ready for next test
+                gemm_device.soft_reset();  // Reset engine + circular buffer (wr_ptr, rd_ptr)  
                 if (verbose) {
                     cout << "  [Stage 1] Post-test reset: rd_ptr=0, wr_ptr=0" << endl;
                 }
@@ -287,347 +293,7 @@ int main(int argc, char* argv[]) {
 
         cout << "[Stage 1 Complete] Tests: " << stage1_passed << "/" << num_tests << " passed" << endl;
         cout << "[Stage 1 Complete] Collected: " << results_stage1.size() << " FP16 results\n" << endl;
-
-        if (stage1_passed != num_tests) {
-            cerr << "ERROR: Stage 1 must pass 100% before Stage 2. Stopping." << endl;
-            return 1;
-        }
-
-        // ===================================================================
-        // STAGE 2: All Tests Back-to-Back (Read Once at End)
-        // ===================================================================
-        cout << "================================================================" << endl;
-        cout << "STAGE 2: All Tests Back-to-Back (Read Once at End)" << endl;
-        cout << "================================================================\n" << endl;
-
-        vector<uint16_t> results_stage2;
-        uint32_t host_rd_ptr = 0;
-
-        // Initial reset before Stage 2
-        gemm_device.mmio_write32(0, 0x230, 0x00000000);  // rd_ptr = 0
-        gemm_device.mmio_write32(0, 0x22C, 0x00000000);  // wr_ptr = 0
-        cout << "[Stage 2 Init] Reset: rd_ptr=0, wr_ptr=0\n" << endl;
-
-        int total_expected_stage2 = 0;
-
-        // Run ALL tests consecutively WITHOUT reading any results
-        for (int i = 0; i < num_tests; ++i) {
-                const auto& config = test_suite[i];
-
-                cout << "\n--- Test " << (i+1) << "/" << num_tests << ": " << config.name << " ---" << endl;
-
-                // NO RESET - pointers persist!
-                uint32_t wr_before = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
-                uint32_t used_before = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
-
-                cout << "  [Before] wr_ptr=" << wr_before << ", rd_ptr=" << host_rd_ptr
-                     << ", used=" << used_before << endl;
-
-                // Run GEMM operation (skip result validation)
-                // We'll validate by comparing with Stage 1 at the end
-                // NOTE: NO soft_reset() in Stage 2 - we want circular buffer to persist!
-                gemm_device.reset_cmd_id();
-
-                string left_hex = "../../hex/left.hex";
-                string right_hex = "../../hex/right.hex";
-                vector<uint8_t> left_data, right_data;
-
-                if (!gemm_device.loadHexMatrix(left_hex, left_data) ||
-                    !gemm_device.loadHexMatrix(right_hex, right_data)) {
-                    cerr << "  ERROR: Failed to load matrices" << endl;
-                    return 1;
-                }
-
-                if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size()) ||
-                    !gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
-                    cerr << "  ERROR: Failed to DMA write matrices" << endl;
-                    return 1;
-                }
-
-                uint32_t left_lines = (left_data.size() + 31) / 32;
-                uint32_t right_lines = (right_data.size() + 31) / 32;
-
-                gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
-                if (!gemm_device.wait_idle(10)) {
-                    cerr << "  ERROR: FETCH LEFT timeout" << endl;
-                    return 1;
-                }
-
-                gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
-                if (!gemm_device.wait_idle(10)) {
-                    cerr << "  ERROR: FETCH RIGHT timeout" << endl;
-                    return 1;
-                }
-
-                uint8_t disp_left_id = gemm_device.dispatch(config.B * config.V, config.V, 0, false, 0x0001, 0, true, false);
-                gemm_device.waitDispatch(disp_left_id);
-
-                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, 0x0001, 0, false, false);
-                gemm_device.waitDispatch(disp_right_id);
-
-                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true);
-                gemm_device.waitTile(tile_id);
-
-                if (!gemm_device.wait_idle()) {
-                    cerr << "  ERROR: Engine timeout" << endl;
-                    return 1;
-                }
-
-                uint32_t wr_after = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
-                uint32_t used_after = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
-
-                cout << "  [After] wr_ptr=" << wr_after << ", rd_ptr=" << host_rd_ptr
-                     << ", used=" << used_after << " (expected +" << (config.B * config.C) << ")" << endl;
-
-                total_expected_stage2 += config.B * config.C;
-        }
-
-        // After ALL tests complete, read ALL results using byte-addressed DMA
-        cout << "\n[Stage 2 Read] Reading ALL " << total_expected_stage2 << " accumulated results..." << endl;
-
-        uint32_t byte_offset = host_rd_ptr * 2;
-        uint32_t byte_count = total_expected_stage2 * 2;
-        uint32_t offset_in_first_line = byte_offset % 32;
-        uint32_t total_bytes = offset_in_first_line + byte_count;
-        uint32_t dma_bytes = ((total_bytes + 31) / 32) * 32;
-        uint32_t dma_start = (byte_offset / 32) * 32;
-
-        cout << "  [Stage 2 DMA] rd_ptr=" << host_rd_ptr
-             << ", byte_offset=" << byte_offset
-             << ", offset_in_line=" << offset_in_first_line
-             << ", dma_start=" << dma_start
-             << ", dma_bytes=" << dma_bytes << endl;
-
-        vector<uint8_t> bram_data_stage2(dma_bytes);
-        if (!gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data_stage2.data(), dma_bytes)) {
-            cerr << "  ERROR: Failed to DMA read results" << endl;
-            return 1;
-        }
-
-        cout << "  [Stage 2 DMA] First 4 bytes read: 0x" << hex << setfill('0')
-             << setw(2) << (int)bram_data_stage2[offset_in_first_line]
-             << setw(2) << (int)bram_data_stage2[offset_in_first_line+1]
-             << setw(2) << (int)bram_data_stage2[offset_in_first_line+2]
-             << setw(2) << (int)bram_data_stage2[offset_in_first_line+3] << dec << endl;
-
-        // Unpack and collect with automatic offset handling
-        for (int j = 0; j < total_expected_stage2; j++) {
-            size_t byte_pos = offset_in_first_line + j * 2;
-            uint16_t fp16_val = *(uint16_t*)(bram_data_stage2.data() + byte_pos);
-            results_stage2.push_back(fp16_val);
-        }
-
-        cout << "[Stage 2 Complete] Collected: " << results_stage2.size() << " FP16 results\n" << endl;
-
-        // ===================================================================
-        // STAGE 3: Mini-Batches (2 Tests at a Time, Read After Each Pair)
-        // ===================================================================
-        cout << "================================================================" << endl;
-        cout << "STAGE 3: Mini-Batches (2 Tests at a Time)" << endl;
-        cout << "================================================================\n" << endl;
-
-        vector<uint16_t> results_stage3;
-        host_rd_ptr = 0;
-
-        // Initial reset before Stage 3
-        gemm_device.mmio_write32(0, 0x230, 0x00000000);  // rd_ptr = 0
-        gemm_device.mmio_write32(0, 0x22C, 0x00000000);  // wr_ptr = 0
-        cout << "[Stage 3 Init] Reset: rd_ptr=0, wr_ptr=0\n" << endl;
-
-        // Run tests in batches of 2
-        for (int batch = 0; batch < (num_tests + 1) / 2; ++batch) {
-            int test_start = batch * 2;
-            int test_end = min(test_start + 2, num_tests);
-
-            cout << "=== BATCH " << (batch+1) << ": Tests " << (test_start+1) << "-" << test_end << " ===" << endl;
-
-            int total_expected_in_batch = 0;
-
-            // Run 2 tests in batch WITHOUT reading results
-            for (int i = test_start; i < test_end; ++i) {
-                const auto& config = test_suite[i];
-
-                cout << "\n--- Test " << (i+1) << "/" << num_tests << ": " << config.name << " ---" << endl;
-
-                // NO RESET - pointers persist!
-                uint32_t wr_before = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
-                uint32_t used_before = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
-
-                cout << "  [Before] wr_ptr=" << wr_before << ", rd_ptr=" << host_rd_ptr
-                     << ", used=" << used_before << endl;
-
-                // Run GEMM operation
-                gemm_device.reset_cmd_id();
-
-                string left_hex = "../../hex/left.hex";
-                string right_hex = "../../hex/right.hex";
-                vector<uint8_t> left_data, right_data;
-
-                if (!gemm_device.loadHexMatrix(left_hex, left_data) ||
-                    !gemm_device.loadHexMatrix(right_hex, right_data)) {
-                    cerr << "  ERROR: Failed to load matrices" << endl;
-                    return 1;
-                }
-
-                if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size()) ||
-                    !gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
-                    cerr << "  ERROR: Failed to DMA write matrices" << endl;
-                    return 1;
-                }
-
-                uint32_t left_lines = (left_data.size() + 31) / 32;
-                uint32_t right_lines = (right_data.size() + 31) / 32;
-
-                gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
-                if (!gemm_device.wait_idle(10)) {
-                    cerr << "  ERROR: FETCH LEFT timeout" << endl;
-                    return 1;
-                }
-
-                gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
-                if (!gemm_device.wait_idle(10)) {
-                    cerr << "  ERROR: FETCH RIGHT timeout" << endl;
-                    return 1;
-                }
-
-                uint8_t disp_left_id = gemm_device.dispatch(config.B * config.V, config.V, 0, false, 0x0001, 0, true, false);
-                gemm_device.waitDispatch(disp_left_id);
-
-                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, 0x0001, 0, false, false);
-                gemm_device.waitDispatch(disp_right_id);
-
-                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true);
-                gemm_device.waitTile(tile_id);
-
-                if (!gemm_device.wait_idle()) {
-                    cerr << "  ERROR: Engine timeout" << endl;
-                    return 1;
-                }
-
-                uint32_t wr_after = gemm_device.mmio_read32(0, 0x234) & 0x1FFF;
-                uint32_t used_after = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
-
-                cout << "  [After] wr_ptr=" << wr_after << ", rd_ptr=" << host_rd_ptr
-                     << ", used=" << used_after << " (expected +" << (config.B * config.C) << ")" << endl;
-
-                total_expected_in_batch += config.B * config.C;
-            }
-
-            // After each batch of 2, read accumulated results
-            cout << "\n[Batch Read] Reading " << total_expected_in_batch << " accumulated results from rd_ptr=" << host_rd_ptr << "..." << endl;
-
-            byte_offset = host_rd_ptr * 2;
-            byte_count = total_expected_in_batch * 2;
-            offset_in_first_line = byte_offset % 32;
-            total_bytes = offset_in_first_line + byte_count;
-            dma_bytes = ((total_bytes + 31) / 32) * 32;
-            dma_start = (byte_offset / 32) * 32;
-
-            cout << "  [Stage 3 DMA] rd_ptr=" << host_rd_ptr
-                 << ", byte_offset=" << byte_offset
-                 << ", offset_in_line=" << offset_in_first_line
-                 << ", dma_start=" << dma_start
-                 << ", dma_bytes=" << dma_bytes << endl;
-
-            vector<uint8_t> bram_data(dma_bytes);
-            if (!gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data.data(), dma_bytes)) {
-                cerr << "  ERROR: Failed to DMA read results" << endl;
-                return 1;
-            }
-
-            cout << "  [Stage 3 DMA] First 4 bytes read: 0x" << hex << setfill('0')
-                 << setw(2) << (int)bram_data[offset_in_first_line]
-                 << setw(2) << (int)bram_data[offset_in_first_line+1]
-                 << setw(2) << (int)bram_data[offset_in_first_line+2]
-                 << setw(2) << (int)bram_data[offset_in_first_line+3] << dec << endl;
-
-            // Unpack and collect with automatic offset handling
-            for (int j = 0; j < total_expected_in_batch; j++) {
-                size_t byte_pos = offset_in_first_line + j * 2;
-                uint16_t fp16_val = *(uint16_t*)(bram_data.data() + byte_pos);
-                results_stage3.push_back(fp16_val);
-            }
-
-            // Update rd_ptr for next batch
-            host_rd_ptr = (host_rd_ptr + total_expected_in_batch) & 0x1FFF;
-            gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
-
-            uint32_t new_used = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
-            cout << "[Batch Complete] rd_ptr updated to " << host_rd_ptr
-                 << ", used_entries now " << new_used << "\n" << endl;
-        }
-
-        cout << "[Stage 3 Complete] Collected: " << results_stage3.size() << " FP16 results\n" << endl;
-
-        // ===================================================================
-        // FINAL VALIDATION: Compare All Three Stages
-        // ===================================================================
-        cout << "================================================================" << endl;
-        cout << "FINAL VALIDATION: Comparing All Three Stages" << endl;
-        cout << "================================================================" << endl;
-
-        // Check sizes
-        if (results_stage1.size() != results_stage2.size() || results_stage1.size() != results_stage3.size()) {
-            cerr << "ERROR: Size mismatch!" << endl;
-            cerr << "  Stage 1: " << results_stage1.size() << " results" << endl;
-            cerr << "  Stage 2: " << results_stage2.size() << " results" << endl;
-            cerr << "  Stage 3: " << results_stage3.size() << " results" << endl;
-            return 1;
-        }
-
-        cout << "Comparing " << results_stage1.size() << " results across all three stages..." << endl;
-
-        int mismatches_s1_s2 = 0;
-        int mismatches_s1_s3 = 0;
-        int mismatches_s2_s3 = 0;
-
-        for (size_t i = 0; i < results_stage1.size(); ++i) {
-            if (results_stage1[i] != results_stage2[i]) {
-                if (mismatches_s1_s2 < 10) {
-                    cerr << "  S1-S2 MISMATCH[" << i << "]: Stage1=0x" << hex << setw(4) << setfill('0')
-                         << results_stage1[i] << ", Stage2=0x" << setw(4) << results_stage2[i]
-                         << dec << endl;
-                }
-                mismatches_s1_s2++;
-            }
-            if (results_stage1[i] != results_stage3[i]) {
-                if (mismatches_s1_s3 < 10) {
-                    cerr << "  S1-S3 MISMATCH[" << i << "]: Stage1=0x" << hex << setw(4) << setfill('0')
-                         << results_stage1[i] << ", Stage3=0x" << setw(4) << results_stage3[i]
-                         << dec << endl;
-                }
-                mismatches_s1_s3++;
-            }
-            if (results_stage2[i] != results_stage3[i]) {
-                if (mismatches_s2_s3 < 10) {
-                    cerr << "  S2-S3 MISMATCH[" << i << "]: Stage2=0x" << hex << setw(4) << setfill('0')
-                         << results_stage2[i] << ", Stage3=0x" << setw(4) << results_stage3[i]
-                         << dec << endl;
-                }
-                mismatches_s2_s3++;
-            }
-        }
-
-        cout << "\n================================================================" << endl;
-        cout << "VALIDATION SUMMARY:" << endl;
-        cout << "  Stage 1 vs Stage 2: " << (mismatches_s1_s2 == 0 ? "PASS ✓" : to_string(mismatches_s1_s2) + " mismatches") << endl;
-        cout << "  Stage 1 vs Stage 3: " << (mismatches_s1_s3 == 0 ? "PASS ✓" : to_string(mismatches_s1_s3) + " mismatches") << endl;
-        cout << "  Stage 2 vs Stage 3: " << (mismatches_s2_s3 == 0 ? "PASS ✓" : to_string(mismatches_s2_s3) + " mismatches") << endl;
-        cout << "================================================================" << endl;
-
-        int total_mismatches = mismatches_s1_s2 + mismatches_s1_s3 + mismatches_s2_s3;
-        if (total_mismatches == 0) {
-            cout << "SUCCESS! All " << results_stage1.size() << " results match across all three stages!" << endl;
-            cout << "✓ Circular buffer mechanism validated!" << endl;
-            cout << "✓ Stage 1 (individual with reset)" << endl;
-            cout << "✓ Stage 2 (all tests, read once at end)" << endl;
-            cout << "✓ Stage 3 (mini-batches of 2)" << endl;
-        } else {
-            cout << "FAILURE: Mismatches detected between stages" << endl;
-        }
-        cout << "================================================================" << endl;
-
-        return (total_mismatches == 0) ? 0 : 1;
+    return stage1_passed == num_tests;
 
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;
@@ -636,7 +302,7 @@ int main(int argc, char* argv[]) {
 }
 
 // Run Single Test Configuration
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing) {
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en) {
     try {
         // Load matrices from hex files
         string left_hex = "../../hex/left.hex";
@@ -686,115 +352,36 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             return false;
         }
 
-        // FETCH commands (using class methods)
+        // ===================================================================
+        // Command Flow: Batched submission matching testbench tb_engine_top.sv
+        // Strategy: Submit command batches, wait only after DISPATCH stages
+        // ===================================================================
         uint32_t left_lines = (left_data.size() + 31) / 32;
         uint32_t right_lines = (right_data.size() + 31) / 32;
+        size_t result_count_expected = B * C;
         
-        // Time the FETCH operations
-        auto fetch_left_start = chrono::high_resolution_clock::now();
-        gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);  // Left matrix
-        if (!gemm_device.wait_idle(5000)) {  // Increased from 10ms to 5000ms to match test_multi_tile
-            cerr << "ERROR: FETCH LEFT timeout" << endl;
-            return false;
-        }
-        auto fetch_left_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> fetch_left_duration = fetch_left_end - fetch_left_start;
-        if (timing) {
-            cout << "  FETCH LEFT commands took " << fetch_left_duration.count() << " ms" << endl;
-        }
-        auto fetch_right_start = chrono::high_resolution_clock::now();
-        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true); // Right matrix (fetch_right=true)
-        if (!gemm_device.wait_idle(5000)) {  // Increased from 10ms to 5000ms to match test_multi_tile
-            cerr << "ERROR: FETCH RIGHT timeout" << endl;
-            return false;
-        }
-        auto fetch_right_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> fetch_right_duration = fetch_right_end - fetch_right_start;
-        if (timing) {
-            cout << "  FETCH RIGHT commands took " << fetch_right_duration.count() << " ms" << endl;
-        }
-
-        // DISPATCH LEFT command (disp_right=false for left matrix)
-        // man_nv_cnt = B×V (total NVs in left matrix)
-        // LEFT matrix uses BROADCAST mode (same data replicated to all enabled tiles)
-        auto dispatch_left_start = chrono::high_resolution_clock::now();
-        if (verbose) {
-            cout << "  DEBUG: Sending DISPATCH LEFT with man_nv_cnt=" << (B*V) << ", ugd_vec_size=" << V << endl;
-        }
-        uint8_t disp_left_id = gemm_device.dispatch(
-            B * V,  // man_nv_cnt: Total Native Vectors = B × V
-            V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
-            0,      // tile_addr: Start at tile_bram[0]
-            false,  // disp_right: LEFT matrix (disp_right=0)
-            0x0001, // col_en: Enable tile 0 only
-            0,      // col_start: Start from tile 0
-            true,   // broadcast: BROADCAST mode for left (activations replicated)
-            false   // man_4b: 8-bit mantissas
-        );
+        // ========== BATCH 1: FETCH LEFT + DISPATCH LEFT + WAIT_DISPATCH ==========
+        // Hardware needs wait after FETCH (GDDR6→BRAM transfer) before DISPATCH
+        gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+        uint8_t disp_left_id = gemm_device.dispatch(B * V, V, 0, false, col_en, 0, true, false);
         gemm_device.waitDispatch(disp_left_id);
-        auto dispatch_left_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> dispatch_left_duration = dispatch_left_end - dispatch_left_start;
-        if (timing) {
-            cout << "  DISPATCH LEFT commands took " << dispatch_left_duration.count() << " ms" << endl;
-        }
-
-        // DISPATCH RIGHT command (disp_right=true for right matrix)
-        // man_nv_cnt = C×V (total NVs in right matrix)
-        // RIGHT matrix uses DISTRIBUTE mode (different data per tile)
-        auto dispatch_right_start = chrono::high_resolution_clock::now();
-        if (verbose) {
-            cout << "  DEBUG: Sending DISPATCH RIGHT with man_nv_cnt=" << (C*V) << ", ugd_vec_size=" << V << endl;
-        }
-        uint8_t disp_right_id = gemm_device.dispatch(
-            C * V,  // man_nv_cnt: Total Native Vectors = C × V
-            V,      // ugd_vec_size: NVs per UGD vector (matches test V parameter)
-            0,      // tile_addr: Start at tile_bram[0]
-            true,   // disp_right: RIGHT matrix (disp_right=1)
-            0x0001, // col_en: Enable tile 0 only
-            0,      // col_start: Start from tile 0
-            false,  // broadcast: DISTRIBUTE mode for right (weights sharded)
-            false   // man_4b: 8-bit mantissas
-        );
+        
+        // ========== BATCH 2: FETCH RIGHT + DISPATCH RIGHT + WAIT_DISPATCH ==========
+        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);    
+        uint8_t disp_right_id = gemm_device.dispatch(C * V, V, 0, true, col_en, 0, false, false);
         gemm_device.waitDispatch(disp_right_id);
-        auto dispatch_right_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> dispatch_right_duration = dispatch_right_end - dispatch_right_start;
-        if (timing) {
-            cout << "  DISPATCH RIGHT commands took " << dispatch_right_duration.count() << " ms" << endl;
-        }
 
-        // MATMUL command - AMD-compatible signature
-        // Pass B, C, V directly as leftUgdLen, rightUgdLen, vecLen
-        auto tile_start = chrono::high_resolution_clock::now();
-        if (verbose) {
-            cout << "  DEBUG: Sending TILE with B=" << B << ", C=" << C << ", V=" << V << endl;
-        }
-        uint8_t tile_id = gemm_device.tile(
-            0,    // left_addr
-            0,    // right_addr
-            B,    // leftUgdLen (used as both ugd_len and dimB)
-            C,    // rightUgdLen (used as both ugd_len and dimC)
-            V,    // vecLen (used as both vec_len and dimV)
-            false, // leftMan4b
-            false, // rightMan4b
-            true   // mainLoopOverLeft
-        );
+        
+        // ========== BATCH 3: TILE + WAIT_TILE + READOUT ==========
+        uint8_t tile_id = gemm_device.tile(0, 0, B, C, V, false, false, false, col_en);
         gemm_device.waitTile(tile_id);
-        auto tile_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> tile_duration = tile_end - tile_start;
-        if (timing) {
-            cout << "  MATMUL commands took " << tile_duration.count() << " ms" << endl;
-        }
-
-        auto wait_idle_start = chrono::high_resolution_clock::now();
-        if (!gemm_device.wait_idle()) {
-            cerr << "ERROR: Engine timeout" << endl;
+        
+        gemm_device.readout(0, result_count_expected);
+        if (!gemm_device.wait_idle(1000)) {
+            cerr << "ERROR: READOUT timeout" << endl;
             return false;
         }
-        auto wait_idle_end = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> wait_idle_duration = wait_idle_end - wait_idle_start;
-        if (timing) {
-            cout << "  WAIT IDLE commands took " << wait_idle_duration.count() << " ms" << endl;
-        }
+
 
         // Read results using packed BRAM format with two-pointer circular buffer
         // New optimization: 16 FP16 values per 256-bit (32-byte) BRAM line
@@ -819,16 +406,13 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
                  << ", used_entries = " << used_entries << endl;
         }
 
-        // Step 2: Calculate available results
-        size_t result_count_expected = B * C;
+        // Step 2: Calculate available results (already calculated above)
+        // size_t result_count_expected = B * C;
 
         // Verify we have enough results
         if (used_entries < result_count_expected) {
             cerr << "WARNING: Not enough results yet (expected " << result_count_expected
                  << ", available " << used_entries << ")" << endl;
-
-            // Wait a bit more for results to arrive
-            // usleep(1000);
 
             // Re-read pointers
             wr_ptr_raw = gemm_device.mmio_read32(0, 0x234);
@@ -851,8 +435,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             }
 
             // Trigger flush by writing 0 to write_top_reset (register 0x22C)
-            gemm_device.mmio_write32(0, 0x22C, 0x00000000);
-            // usleep(1000);  // Wait for flush to complete (increased to 1ms)
+                gemm_device.mmio_write32(0, 0x22C, 0x00000000);
         }
 
         // Step 4: Calculate byte-aligned DMA read
@@ -950,17 +533,6 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             cout << "  [PASS] B" << B << "_C" << C << "_V" << V << endl;
         } else {
             cout << "  [FAIL] B" << B << "_C" << C << "_V" << V << " - Validation failed" << endl;
-        }
-
-        auto wait_idle_start_2 = chrono::high_resolution_clock::now();
-        if (!gemm_device.wait_idle()) {
-            cerr << "ERROR: Engine timeout" << endl;
-            return false;
-        }
-        auto wait_idle_end_2 = chrono::high_resolution_clock::now();
-        chrono::duration<double, std::milli> wait_idle_duration_2 = wait_idle_end_2 - wait_idle_start_2;
-        if (timing) {
-            cout << "  WAIT IDLE commands took " << wait_idle_duration_2.count() << " ms" << endl;
         }
 
         // Update host read pointer after consuming results

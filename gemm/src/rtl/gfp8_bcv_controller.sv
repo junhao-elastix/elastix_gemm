@@ -23,7 +23,7 @@ module gfp8_bcv_controller (
     input  logic        i_reset_n,
 
     // TILE Command Interface
-    input  logic        i_tile_en,
+    input  logic        i_tile_start,         // Start pulse (was i_tile_en - renamed for clarity)
     input  logic [7:0]  i_dim_b,              // Output rows (batch)
     input  logic [7:0]  i_dim_c,              // Output columns
     input  logic [7:0]  i_dim_v,              // Inner dimension multiplier (V Native Vectors)
@@ -69,11 +69,11 @@ module gfp8_bcv_controller (
     logic [7:0] dim_b_reg, dim_c_reg, dim_v_reg;
     logic [8:0] left_base_reg, right_base_reg;
 
-    // Rising edge detection for i_tile_en
-    logic i_tile_en_prev;
-    logic i_tile_en_rising;
+    // Rising edge detection for i_tile_start
+    logic i_tile_start_prev;
+    logic i_tile_start_rising;
 
-    assign i_tile_en_rising = i_tile_en && !i_tile_en_prev;
+    assign i_tile_start_rising = i_tile_start && !i_tile_start_prev;
 
     // ===================================================================
     // OPTIMIZATION: Direct NV Index Generation (COMBINATIONAL)
@@ -138,7 +138,11 @@ module gfp8_bcv_controller (
 
         case (state_reg)
             ST_IDLE: begin
-                if (i_tile_en_rising) begin
+                if (i_tile_start_rising) begin
+                    `ifdef SIMULATION
+                    $display("[BCV] @%0t ST_IDLE: tile_start_rising detected, starting compute - B=%0d, C=%0d, V=%0d", 
+                             $time, i_dim_b, i_dim_c, i_dim_v);
+                    `endif
                     // Skip FILL_BUFFER, go directly to compute
                     state_next = ST_COMPUTE_NV;
                 end
@@ -164,6 +168,10 @@ module gfp8_bcv_controller (
             ST_RETURN: begin
                 // Check if all BxC outputs are complete
                 if (c_idx >= dim_c_reg - 1 && b_idx >= dim_b_reg - 1) begin
+                    `ifdef SIMULATION
+                    $display("[BCV] @%0t ST_RETURN: All complete (b=%0d/%0d, c=%0d/%0d), returning to IDLE", 
+                             $time, b_idx, dim_b_reg-1, c_idx, dim_c_reg-1);
+                    `endif
                     state_next = ST_IDLE;  // All done, return to IDLE
                 end else begin
                     // Start next output element - direct to compute
@@ -277,14 +285,14 @@ module gfp8_bcv_controller (
             dim_v_reg <= 8'd0;
             left_base_reg <= 9'd0;
             right_base_reg <= 9'd0;
-            i_tile_en_prev <= 1'b0;
+            i_tile_start_prev <= 1'b0;
         end else begin
             // Update previous value for edge detection
-            i_tile_en_prev <= i_tile_en;
+            i_tile_start_prev <= i_tile_start;
 
             case (state_reg)
                 ST_IDLE: begin
-                    if (i_tile_en_rising) begin
+                    if (i_tile_start_rising) begin
                         // Capture dimensions
                         dim_b_reg <= i_dim_b;
                         dim_c_reg <= i_dim_c;
@@ -338,6 +346,15 @@ module gfp8_bcv_controller (
             o_tile_done <= 1'b0;
 
             case (state_reg)
+                // ST_IDLE: begin
+                //     o_tile_done <= 1'b1;
+                // end
+                // ST_COMPUTE_NV: begin
+                //     o_tile_done <= 1'b0;
+                // end
+                // ST_ACCUM: begin
+                //     o_tile_done <= 1'b0;
+                // end
                 ST_RETURN: begin
                     // Output accumulated result for this (b,c) pair
                     o_result_mantissa <= accum_mantissa;
@@ -346,6 +363,10 @@ module gfp8_bcv_controller (
 
                     // Signal completion when returning to IDLE
                     if (state_next == ST_IDLE) begin
+                        `ifdef SIMULATION
+                        $display("[BCV] @%0t ST_RETURN: Completing - b=%0d, c=%0d, v=%0d (final), asserting tile_done", 
+                                 $time, b_idx, c_idx, v_idx);
+                        `endif
                         o_tile_done <= 1'b1;
                     end
                 end
