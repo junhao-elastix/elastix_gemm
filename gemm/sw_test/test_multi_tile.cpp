@@ -30,9 +30,12 @@ struct TimingStats {
 };
 
 // Parameterized multi-tile test function
-bool run_multitile_test(int B, int C, int V, bool show_timing = true) {
+bool run_multitile_test(int B, int C, int V, bool show_timing = true, uint32_t col_en = 0x0001) {
+    int num_tiles_enabled = __builtin_popcount(col_en & 0xFF);
     cout << "\n========================================================================" << endl;
     cout << "Multi-Tile GEMM Test (B=" << B << ", C=" << C << ", V=" << V << ")" << endl;
+    cout << "Column Enable: 0x" << hex << setfill('0') << setw(6) << col_en << dec 
+         << " (" << num_tiles_enabled << " tile" << (num_tiles_enabled != 1 ? "s" : "") << " enabled)" << endl;
     cout << "========================================================================" << endl;
     
     TimingStats timing;
@@ -154,7 +157,7 @@ bool run_multitile_test(int B, int C, int V, bool show_timing = true) {
             1,        // ugd_vec_size = 1 (legacy parameter)
             0,        // tile_addr = 0
             false,    // disp_right = false (left side)
-            0x0001,   // col_en = 0x0001 (column 0 enabled)
+            col_en,   // col_en: Column enable mask (parameterized)
             0,        // col_start = 0
             true,     // broadcast = true (distribute to all enabled columns)
             false     // man_4b = false (8-bit mantissa)
@@ -177,7 +180,7 @@ bool run_multitile_test(int B, int C, int V, bool show_timing = true) {
             1,        // ugd_vec_size = 1
             0,        // tile_addr = 0
             true,     // disp_right = true (right side)
-            0x0001,   // col_en = 0x0001
+            col_en,   // col_en: Column enable mask (parameterized)
             0,        // col_start = 0
             false,    // broadcast = false (distribute mode)
             false     // man_4b = false
@@ -241,7 +244,7 @@ bool run_multitile_test(int B, int C, int V, bool show_timing = true) {
                 false,        // leftMan4b
                 false,        // rightMan4b
                 true,         // mainLoopOverLeft
-                0x0001        // col_en (column 0)
+                col_en        // col_en: Column enable mask (parameterized)
             );
 
             cout << "  [" << (int)tile_id << "] TILE " << tile_idx << endl;
@@ -564,13 +567,41 @@ int main(int argc, char* argv[]) {
     cout << "Multi-Tile GEMM Test Suite (Parameterized)" << endl;
     cout << "========================================================================" << endl;
 
-    // Single test mode (command-line arguments)
-    if (argc > 3) {
-        int B = stoi(argv[1]);
-        int C = stoi(argv[2]);
-        int V = stoi(argv[3]);
+    uint32_t col_en = 0x0001;  // Default: single tile (column 0 only)
+    bool show_timing = true;
+    int B = -1, C = -1, V = -1;
 
-        bool success = run_multitile_test(B, C, V);
+    // Parse command-line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-col_en") == 0 && i+1 < argc) {
+            col_en = stoul(argv[++i], nullptr, 0);  // Parse as hex if starts with 0x
+        } else if (strcmp(argv[i], "-no-timing") == 0) {
+            show_timing = false;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            cout << "Usage: test_multi_tile [B] [C] [V] [options]" << endl;
+            cout << "Options:" << endl;
+            cout << "  B C V              Test parameters (if provided, runs single test)" << endl;
+            cout << "  -col_en MASK       Column enable mask (hex, default: 0x0001 = single tile)" << endl;
+            cout << "                     Examples: 0x0001 (1 tile), 0x0003 (2 tiles), 0x000F (4 tiles), 0x00FF (8 tiles)" << endl;
+            cout << "  -no-timing         Disable timing output" << endl;
+            cout << "  -h, --help         Show this help" << endl;
+            cout << "\nIf B, C, V are not provided, runs default test suite." << endl;
+            return 0;
+        } else if (B == -1 && i < argc) {
+            // First non-option argument is B
+            B = stoi(argv[i]);
+        } else if (C == -1 && i < argc) {
+            // Second non-option argument is C
+            C = stoi(argv[i]);
+        } else if (V == -1 && i < argc) {
+            // Third non-option argument is V
+            V = stoi(argv[i]);
+        }
+    }
+
+    // Single test mode (command-line arguments)
+    if (B > 0 && C > 0 && V > 0) {
+        bool success = run_multitile_test(B, C, V, show_timing, col_en);
         return success ? 0 : 1;
     }
 
@@ -605,7 +636,7 @@ int main(int argc, char* argv[]) {
 
     for (const auto& config : test_configs) {
         cout << "\n>>> Test: " << config.description << " <<<" << endl;
-        bool success = run_multitile_test(config.B, config.C, config.V);
+        bool success = run_multitile_test(config.B, config.C, config.V, show_timing, col_en);
 
         if (success) {
             passed++;

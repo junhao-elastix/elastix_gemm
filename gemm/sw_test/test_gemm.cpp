@@ -23,6 +23,18 @@ using namespace achronix;
 // Test Configuration
 static uint64_t BRAM_RESULT_BASE = 0;
 
+// Timing helper struct
+struct TimingStats {
+    double dma_write_ms = 0;
+    double fetch_left_ms = 0;
+    double fetch_right_ms = 0;
+    double dispatch_left_ms = 0;
+    double dispatch_right_ms = 0;
+    double tile_ms = 0;
+    double readout_ms = 0;
+    double total_ms = 0;
+};
+
 // Helper Functions
 
 float fp16ToFloat(uint16_t fp16_val) {
@@ -303,6 +315,9 @@ int main(int argc, char* argv[]) {
 
 // Run Single Test Configuration
 bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en) {
+    TimingStats timing_stats;
+    auto test_start = chrono::high_resolution_clock::now();
+    
     try {
         // Load matrices from hex files
         string left_hex = "../../hex/left.hex";
@@ -342,6 +357,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // DMA matrices to GDDR6
+        auto dma_start = chrono::high_resolution_clock::now();
         if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size())) {
             cerr << "ERROR: Failed to DMA write left matrix" << endl;
             return false;
@@ -351,6 +367,8 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             cerr << "ERROR: Failed to DMA write right matrix" << endl;
             return false;
         }
+        auto dma_end = chrono::high_resolution_clock::now();
+        timing_stats.dma_write_ms = chrono::duration<double, milli>(dma_end - dma_start).count();
 
         // ===================================================================
         // Command Flow: Batched submission matching testbench tb_engine_top.sv
@@ -362,25 +380,45 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         
         // ========== BATCH 1: FETCH LEFT + DISPATCH LEFT + WAIT_DISPATCH ==========
         // Hardware needs wait after FETCH (GDDR6→BRAM transfer) before DISPATCH
+        auto fetch_left_start = chrono::high_resolution_clock::now();
         gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+        auto fetch_left_end = chrono::high_resolution_clock::now();
+        timing_stats.fetch_left_ms = chrono::duration<double, milli>(fetch_left_end - fetch_left_start).count();
+        
+        auto dispatch_left_start = chrono::high_resolution_clock::now();
         uint8_t disp_left_id = gemm_device.dispatch(B * V, V, 0, false, col_en, 0, true, false);
         gemm_device.waitDispatch(disp_left_id);
+        auto dispatch_left_end = chrono::high_resolution_clock::now();
+        timing_stats.dispatch_left_ms = chrono::duration<double, milli>(dispatch_left_end - dispatch_left_start).count();
         
         // ========== BATCH 2: FETCH RIGHT + DISPATCH RIGHT + WAIT_DISPATCH ==========
-        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);    
+        auto fetch_right_start = chrono::high_resolution_clock::now();
+        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
+        auto fetch_right_end = chrono::high_resolution_clock::now();
+        timing_stats.fetch_right_ms = chrono::duration<double, milli>(fetch_right_end - fetch_right_start).count();
+        
+        auto dispatch_right_start = chrono::high_resolution_clock::now();
         uint8_t disp_right_id = gemm_device.dispatch(C * V, V, 0, true, col_en, 0, false, false);
         gemm_device.waitDispatch(disp_right_id);
+        auto dispatch_right_end = chrono::high_resolution_clock::now();
+        timing_stats.dispatch_right_ms = chrono::duration<double, milli>(dispatch_right_end - dispatch_right_start).count();
 
         
         // ========== BATCH 3: TILE + WAIT_TILE + READOUT ==========
+        auto tile_start = chrono::high_resolution_clock::now();
         uint8_t tile_id = gemm_device.tile(0, 0, B, C, V, false, false, false, col_en);
         gemm_device.waitTile(tile_id);
+        auto tile_end = chrono::high_resolution_clock::now();
+        timing_stats.tile_ms = chrono::duration<double, milli>(tile_end - tile_start).count();
         
+        auto readout_start = chrono::high_resolution_clock::now();
         gemm_device.readout(0, result_count_expected);
         if (!gemm_device.wait_idle(1000)) {
             cerr << "ERROR: READOUT timeout" << endl;
             return false;
         }
+        auto readout_end = chrono::high_resolution_clock::now();
+        timing_stats.readout_ms = chrono::duration<double, milli>(readout_end - readout_start).count();
 
 
         // Read results using packed BRAM format with two-pointer circular buffer
@@ -552,6 +590,36 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
 
         // Note: We do NOT reset wr_ptr - circular buffer is persistent
         // The buffer will wrap around automatically at 8192 results
+
+        // Calculate total time
+        auto test_end = chrono::high_resolution_clock::now();
+        timing_stats.total_ms = chrono::duration<double, milli>(test_end - test_start).count();
+
+        // Print timing information if requested
+        if (timing) {
+            int num_tiles = __builtin_popcount(col_en & 0xFF);
+            cout << "\n  ====================================================================" << endl;
+            cout << "  TIMING BREAKDOWN (B=" << B << ", C=" << C << ", V=" << V 
+                 << ", " << num_tiles << " tile" << (num_tiles != 1 ? "s" : "") << ")" << endl;
+            cout << "  ====================================================================" << endl;
+            cout << "  DMA Write:       " << fixed << setprecision(3) << timing_stats.dma_write_ms << " ms" << endl;
+            cout << "  FETCH Left:      " << timing_stats.fetch_left_ms << " ms" << endl;
+            cout << "  FETCH Right:     " << timing_stats.fetch_right_ms << " ms" << endl;
+            cout << "  DISPATCH Left:   " << timing_stats.dispatch_left_ms << " ms" << endl;
+            cout << "  DISPATCH Right:  " << timing_stats.dispatch_right_ms << " ms" << endl;
+            cout << "  TILE:            " << timing_stats.tile_ms << " ms" << endl;
+            cout << "  READOUT:         " << timing_stats.readout_ms << " ms" << endl;
+            cout << "  ------------------------------------------------" << endl;
+            cout << "  TOTAL:           " << timing_stats.total_ms << " ms" << endl;
+            
+            // Calculate throughput (GOPS)
+            double total_ops = (double)B * C * V * 128 * 2;  // B×C×V×128 dot products, each has 128 multiply-adds
+            double gops = total_ops / (timing_stats.tile_ms * 1e6);  // GOPS
+            cout << "\n  Performance:" << endl;
+            cout << "  Compute ops:     " << scientific << setprecision(2) << total_ops << " ops" << endl;
+            cout << "  Throughput:      " << fixed << setprecision(3) << gops << " GOPS" << endl;
+            cout << "  ====================================================================" << endl;
+        }
 
         // Soft reset after test
         gemm_device.soft_reset();
