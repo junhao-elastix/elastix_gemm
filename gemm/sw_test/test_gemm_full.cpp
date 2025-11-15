@@ -662,20 +662,24 @@ int main(int argc, char* argv[]) {
 
         cout << "\n================================================================" << endl;
         cout << "VALIDATION SUMMARY:" << endl;
+        cout << "  Stage 1 (individual tests): " << (stage1_passed == num_tests ? "PASS ✓ (" + to_string(stage1_passed) + "/" + to_string(num_tests) + " tests)" : "FAIL (" + to_string(stage1_passed) + "/" + to_string(num_tests) + " tests)") << endl;
         cout << "  Stage 1 vs Stage 2: " << (mismatches_s1_s2 == 0 ? "PASS ✓" : to_string(mismatches_s1_s2) + " mismatches") << endl;
         cout << "  Stage 1 vs Stage 3: " << (mismatches_s1_s3 == 0 ? "PASS ✓" : to_string(mismatches_s1_s3) + " mismatches") << endl;
         cout << "  Stage 2 vs Stage 3: " << (mismatches_s2_s3 == 0 ? "PASS ✓" : to_string(mismatches_s2_s3) + " mismatches") << endl;
         cout << "================================================================" << endl;
 
         int total_mismatches = mismatches_s1_s2 + mismatches_s1_s3 + mismatches_s2_s3;
-        if (total_mismatches == 0) {
+        if (total_mismatches == 0 && stage1_passed == num_tests) {
             cout << "SUCCESS! All " << results_stage1.size() << " results match across all three stages!" << endl;
             cout << "✓ Circular buffer mechanism validated!" << endl;
-            cout << "✓ Stage 1 (individual with reset)" << endl;
+            cout << "✓ Stage 1 (individual with reset): " << stage1_passed << "/" << num_tests << " tests passed" << endl;
             cout << "✓ Stage 2 (all tests, read once at end)" << endl;
             cout << "✓ Stage 3 (mini-batches of 2)" << endl;
         } else {
             cout << "FAILURE: Mismatches detected between stages" << endl;
+            if (stage1_passed != num_tests) {
+                cout << "  Stage 1 validation: " << stage1_passed << "/" << num_tests << " tests passed" << endl;
+            }
         }
         cout << "================================================================" << endl;
 
@@ -967,10 +971,8 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // Note: We do NOT reset wr_ptr - circular buffer is persistent
         // The buffer will wrap around automatically at 8192 results
 
-        // Soft reset after test (unless caller wants to read results first)
-        if (!skip_final_reset) {
-            gemm_device.soft_reset();
-        }
+        // Soft reset after test
+        gemm_device.soft_reset();
 
         return validation_passed;
 
