@@ -362,15 +362,15 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
 
         int num_tiles = __builtin_popcount(col_en & 0xFF);
-        if (C < num_tiles) {
-            if (C == 1) {
-                col_en = 0x0001;
-            } else if (C == 2) {
-                col_en = 0x0003;
-            } else if (C == 4) {
-                col_en = 0x000F;
-            }
-        }
+        // if (C < num_tiles) {
+        //     if (C == 1) {
+        //         col_en = 0x0001;
+        //     } else if (C == 2) {
+        //         col_en = 0x0003;
+        //     } else if (C == 4) {
+        //         col_en = 0x000F;
+        //     }
+        // }
 
         if (verbose) {
             cout << "  [Circular Buffer] Reset rd_ptr to 0" << endl;
@@ -541,51 +541,74 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
                  << setw(4) << result_fp16[3] << dec << endl;
         }
 
-        // Load and validate golden reference
+        // Load and validate golden reference (raw FP16 bits)
         stringstream golden_ss;
         golden_ss << "../../hex/golden_B" << B << "_C" << C << "_V" << V << ".hex";
         string golden_file = golden_ss.str();
         
-        vector<float> golden_results;
-        if (!loadGoldenReferenceHex(golden_file, golden_results, result_count_expected)) {
+        vector<uint16_t> golden_results;
+        ifstream golden(golden_file);
+        if (!golden.is_open()) {
             cerr << "ERROR: Failed to load golden reference: " << golden_file << endl;
             return false;
         }
         
-        // Convert FP16 results to float for comparison
-        vector<float> result_float(result_fp16.size());
-        for (size_t i = 0; i < result_fp16.size(); i++) {
-            result_float[i] = fp16ToFloat(result_fp16[i]);
+        string line;
+        while (getline(golden, line)) {
+            if (line.empty()) continue;
+            uint16_t val = (uint16_t)strtoul(line.c_str(), NULL, 16);
+            golden_results.push_back(val);
+        }
+        golden.close();
+        
+        if (golden_results.size() != result_count_expected) {
+            cerr << "ERROR: Expected " << result_count_expected << " values, got " << golden_results.size() << endl;
+            return false;
         }
         
         if (verbose) {
             cout << "\n  Hardware Results vs Golden Reference:" << endl;
-            cout << "  Index | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
-            cout << "  ------|----------------|------------------|--------------|----------------|------" << endl;
+            cout << "  Index | Hardware (Hex) | Golden (Hex) | Match" << endl;
+            cout << "  ------|----------------|--------------|------" << endl;
         }
         
         int matches = 0;
+        int close_matches = 0;  // Results within 4 LSB (acceptable rounding)
+        int mismatches = 0;
+        
         for (size_t i = 0; i < result_fp16.size() && i < golden_results.size(); i++) {
-            uint16_t golden_fp16 = floatToFP16(golden_results[i]);
-            float diff = fabs(result_float[i] - golden_results[i]);
-            float rel_err = (golden_results[i] != 0.0f) ? diff / fabs(golden_results[i]) : diff;
-            bool match = (rel_err <= 0.4f);
+            uint16_t diff = (result_fp16[i] > golden_results[i]) ? 
+                           (result_fp16[i] - golden_results[i]) : 
+                           (golden_results[i] - result_fp16[i]);
             
-            if (match) matches++;
+            bool match = false;
+            if (result_fp16[i] == golden_results[i]) {
+                matches++;
+                match = true;
+            } else if (diff <= 4) {
+                close_matches++;
+                match = true;
+            } else {
+                mismatches++;
+                if (verbose && mismatches <= 10) {
+                    cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec
+                         << "      | 0x" << hex << setw(4) << setfill('0') << golden_results[i] << dec
+                         << "    | N (diff=" << diff << " LSB)" << endl;
+                }
+            }
             
-            if (verbose) {
-                cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec 
-                     << "         | " << setw(15) << setprecision(6) << result_float[i]
-                     << " | 0x" << hex << setw(4) << setfill('0') << golden_fp16 << dec
-                        << "        | " << setw(15) << setprecision(6) << golden_results[i]
-                        << " | " << (match ? "Y" : "N") << endl;
+            if (verbose && match && i < 10) {
+                cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec
+                     << "      | 0x" << hex << setw(4) << setfill('0') << golden_results[i] << dec
+                     << "    | " << (result_fp16[i] == golden_results[i] ? "Y" : "Y (close)") << endl;
             }
         }
         
-        bool validation_passed = (matches == (int)result_fp16.size());
+        bool validation_passed = (mismatches == 0);
         
         // Always report match count
-        cout << "  Validation: " << matches << "/" << result_fp16.size() << " matches" << endl;
+        cout << "  Validation: " << (matches + close_matches) << "/" << result_fp16.size() 
+             << " within tolerance (" << matches << " exact, " << close_matches << " within 4 LSB)" << endl;
         
         if (validation_passed) {
             cout << "  [PASS] B" << B << "_C" << C << "_V" << V << endl;

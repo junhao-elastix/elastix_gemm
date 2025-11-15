@@ -121,7 +121,7 @@ struct TestConfig {
 };
 
 // Function Declarations
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en = 0x0001);
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en = 0x0001, bool skip_final_reset = false, vector<uint16_t>* collected_results = nullptr);
 
 // Main
 int main(int argc, char* argv[]) {
@@ -244,6 +244,7 @@ int main(int argc, char* argv[]) {
         cout << "================================================================\n" << endl;
 
         vector<uint16_t> results_stage1;
+        vector<vector<uint16_t>> stage1_results_per_test;
         int stage1_passed = 0;
 
         for (int i = 0; i < num_tests; ++i) {
@@ -255,39 +256,25 @@ int main(int argc, char* argv[]) {
             cout << "----------------------------------------" << endl;
 
             // STAGE 1: Soft reset before first test only
+            if (i == 0) {
+                gemm_device.soft_reset();  // Reset engine + circular buffer
+                cout << "  [Stage 1] Initial soft reset complete" << endl;
+            }
 
-            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, col_en_mask);
+            // Collect results directly from run_single_test to avoid re-reading
+            vector<uint16_t> test_results;
+            bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, col_en_mask, true, &test_results);  // Skip final reset, collect results
 
             if (result) {
                 stage1_passed++;
 
-                // Collect results into stage1 array
-                // Read results again to collect (already validated in run_single_test)
-                size_t result_count = config.B * config.C;
-
-                // Byte-addressed read from rd_ptr=0 (reset before each test)
-                uint32_t rd_ptr = 0;
-                uint32_t byte_offset = rd_ptr * 2;
-                uint32_t byte_count = result_count * 2;
-                uint32_t offset_in_first_line = byte_offset % 32;
-                uint32_t total_bytes = offset_in_first_line + byte_count;
-                uint32_t dma_bytes = ((total_bytes + 31) / 32) * 32;
-                uint32_t dma_start = (byte_offset / 32) * 32;
-
-                cout << "  [Stage 1 DMA] rd_ptr=" << rd_ptr
-                     << ", byte_offset=" << byte_offset
-                     << ", offset_in_line=" << offset_in_first_line
-                     << ", dma_start=" << dma_start
-                     << ", dma_bytes=" << dma_bytes << endl;
-
-                vector<uint8_t> bram_data(dma_bytes);
-                if (gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data.data(), dma_bytes)) {
-                    for (size_t j = 0; j < result_count; j++) {
-                        size_t byte_pos = offset_in_first_line + j * 2;
-                        uint16_t fp16_val = *(uint16_t*)(bram_data.data() + byte_pos);
-                        results_stage1.push_back(fp16_val);
-                    }
+                // Use results collected by run_single_test (already validated)
+                for (auto val : test_results) {
+                    results_stage1.push_back(val);
                 }
+                stage1_results_per_test.push_back(test_results);
+                
+                cout << "  [Stage 1] Collected " << test_results.size() << " results from run_single_test" << endl;
 
                 // Soft reset AFTER collecting results, ready for next test
                 gemm_device.soft_reset();  // Reset engine + circular buffer (wr_ptr, rd_ptr)  
@@ -319,6 +306,7 @@ int main(int argc, char* argv[]) {
 
         // Initial reset before Stage 2
         gemm_device.soft_reset();  // Only way to reset wr_ptr (via engine_rstn)
+        gemm_device.mmio_write32(0, 0x230, 0x00000000);  // Reset rd_ptr to 0
         cout << "[Stage 2 Init] Soft reset complete (rd_ptr=0, wr_ptr=0)\n" << endl;
 
         int total_expected_stage2 = 0;
@@ -367,7 +355,7 @@ int main(int argc, char* argv[]) {
                 gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
                 uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, col_en_mask, 0, false, false);
                 gemm_device.waitDispatch(disp_right_id);
-                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true, col_en_mask);
+                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, false, col_en_mask);
                 gemm_device.waitTile(tile_id);
                 // if (!gemm_device.wait_idle()) {
                 //     cerr << "  ERROR: Stage 2 TILE timeout" << endl;
@@ -427,6 +415,22 @@ int main(int argc, char* argv[]) {
 
         cout << "[Stage 2 Complete] Collected: " << results_stage2.size() << " FP16 results\n" << endl;
 
+        // Derive per-test slices for Stage 2 to compare with Stage 1
+        vector<vector<uint16_t>> stage2_results_per_test;
+        {
+            size_t offset = 0;
+            for (int i = 0; i < num_tests; ++i) {
+                size_t count = test_suite[i].B * test_suite[i].C;
+                if (offset + count > results_stage2.size()) {
+                    cerr << "  ERROR: Stage 2 slice exceeds collected results (test " << (i + 1) << ")" << endl;
+                    break;
+                }
+                stage2_results_per_test.emplace_back(results_stage2.begin() + offset,
+                                                     results_stage2.begin() + offset + count);
+                offset += count;
+            }
+        }
+
         // ===================================================================
         // STAGE 3: Mini-Batches (2 Tests at a Time, Read After Each Pair)
         // ===================================================================
@@ -439,6 +443,7 @@ int main(int argc, char* argv[]) {
 
         // Initial reset before Stage 3
         gemm_device.soft_reset();  // Only way to reset wr_ptr (via engine_rstn)
+        gemm_device.mmio_write32(0, 0x230, 0x00000000);  // Reset rd_ptr to 0
         cout << "[Stage 3 Init] Soft reset complete (rd_ptr=0, wr_ptr=0)\n" << endl;
 
         // Run tests in batches of 2
@@ -492,7 +497,7 @@ int main(int argc, char* argv[]) {
                 gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
                 uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, col_en_mask, 0, false, false);
                 gemm_device.waitDispatch(disp_right_id);
-                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, true, col_en_mask);
+                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, false, col_en_mask);
                 gemm_device.waitTile(tile_id);
                 // if (!gemm_device.wait_idle()) {
                 //     cerr << "  ERROR: Stage 3 TILE timeout" << endl;
@@ -578,6 +583,52 @@ int main(int argc, char* argv[]) {
 
         cout << "Comparing " << results_stage1.size() << " results across all three stages..." << endl;
 
+        // Identify first test that diverges between Stage 1 and Stage 2
+        if (stage1_results_per_test.size() == stage2_results_per_test.size()) {
+            bool per_test_reported = false;
+            for (size_t test_idx = 0; test_idx < stage1_results_per_test.size(); ++test_idx) {
+                const auto& s1 = stage1_results_per_test[test_idx];
+                const auto& s2 = stage2_results_per_test[test_idx];
+                size_t compare_len = min(s1.size(), s2.size());
+                size_t mismatch_pos = compare_len;
+                for (size_t k = 0; k < compare_len; ++k) {
+                    if (s1[k] != s2[k]) {
+                        mismatch_pos = k;
+                        break;
+                    }
+                }
+                if (s1.size() != s2.size()) {
+                    cout << "\n[Stage Comparison] Test " << (test_idx + 1)
+                         << " size mismatch: Stage1=" << s1.size()
+                         << ", Stage2=" << s2.size() << endl;
+                    per_test_reported = true;
+                    break;
+                } else if (mismatch_pos != compare_len) {
+                    cout << "\n[Stage Comparison] First mismatch in Test " << (test_idx + 1)
+                         << " (" << test_suite[test_idx].name << ") at element "
+                         << mismatch_pos << endl;
+                    cout << "    Stage1=0x" << hex << setw(4) << setfill('0') << s1[mismatch_pos]
+                         << ", Stage2=0x" << setw(4) << s2[mismatch_pos] << dec << endl;
+                    per_test_reported = true;
+                    break;
+                }
+            }
+            if (!per_test_reported) {
+                cout << "\n[Stage Comparison] Stage 1 vs Stage 2 matched per-test (unexpected, yet mismatch seen globally)" << endl;
+            }
+        } else {
+            cout << "\n[Stage Comparison] Stage1 per-test count (" << stage1_results_per_test.size()
+                 << ") differs from Stage2 (" << stage2_results_per_test.size() << ")" << endl;
+        }
+        
+        // Debug: Print first 5 values from each stage
+        cout << "\nFirst 5 values from each stage:" << endl;
+        for (int i = 0; i < 5 && i < (int)results_stage1.size(); i++) {
+            cout << "  [" << i << "] Stage1=0x" << hex << setfill('0') << setw(4) << results_stage1[i]
+                 << ", Stage2=0x" << setw(4) << results_stage2[i]
+                 << ", Stage3=0x" << setw(4) << results_stage3[i] << dec << endl;
+        }
+
         int mismatches_s1_s2 = 0;
         int mismatches_s1_s3 = 0;
         int mismatches_s2_s3 = 0;
@@ -637,7 +688,7 @@ int main(int argc, char* argv[]) {
 }
 
 // Run Single Test Configuration
-bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en) {
+bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en, bool skip_final_reset, vector<uint16_t>* collected_results) {
     try {
         // Load matrices from hex files
         string left_hex = "../../hex/left.hex";
@@ -808,6 +859,11 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             size_t byte_pos = offset_in_first_line + i * 2;
             result_fp16[i] = *(uint16_t*)(bram_data.data() + byte_pos);
         }
+        
+        // If caller wants to collect results, save them now (before rd_ptr is advanced)
+        if (collected_results != nullptr) {
+            *collected_results = result_fp16;
+        }
 
         if (verbose) {
             cout << "  [DMA Read] Unpacked " << result_count_expected << " FP16 results" << endl;
@@ -818,51 +874,74 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
                  << setw(4) << result_fp16[3] << dec << endl;
         }
 
-        // Load and validate golden reference
+        // Load and validate golden reference (raw FP16 bits)
         stringstream golden_ss;
         golden_ss << "../../hex/golden_B" << B << "_C" << C << "_V" << V << ".hex";
         string golden_file = golden_ss.str();
         
-        vector<float> golden_results;
-        if (!loadGoldenReferenceHex(golden_file, golden_results, result_count_expected)) {
+        vector<uint16_t> golden_results;
+        ifstream golden(golden_file);
+        if (!golden.is_open()) {
             cerr << "ERROR: Failed to load golden reference: " << golden_file << endl;
             return false;
         }
         
-        // Convert FP16 results to float for comparison
-        vector<float> result_float(result_fp16.size());
-        for (size_t i = 0; i < result_fp16.size(); i++) {
-            result_float[i] = fp16ToFloat(result_fp16[i]);
+        string line;
+        while (getline(golden, line)) {
+            if (line.empty()) continue;
+            uint16_t val = (uint16_t)strtoul(line.c_str(), NULL, 16);
+            golden_results.push_back(val);
+        }
+        golden.close();
+        
+        if (golden_results.size() != result_count_expected) {
+            cerr << "ERROR: Expected " << result_count_expected << " values, got " << golden_results.size() << endl;
+            return false;
         }
         
         if (verbose) {
             cout << "\n  Hardware Results vs Golden Reference:" << endl;
-            cout << "  Index | Hardware (Hex) | Hardware (Float) | Golden (Hex) | Golden (Float) | Match" << endl;
-            cout << "  ------|----------------|------------------|--------------|----------------|------" << endl;
+            cout << "  Index | Hardware (Hex) | Golden (Hex) | Match" << endl;
+            cout << "  ------|----------------|--------------|------" << endl;
         }
         
         int matches = 0;
+        int close_matches = 0;  // Results within 4 LSB (acceptable rounding)
+        int mismatches = 0;
+        
         for (size_t i = 0; i < result_fp16.size() && i < golden_results.size(); i++) {
-            uint16_t golden_fp16 = floatToFP16(golden_results[i]);
-            float diff = fabs(result_float[i] - golden_results[i]);
-            float rel_err = (golden_results[i] != 0.0f) ? diff / fabs(golden_results[i]) : diff;
-            bool match = (rel_err <= 0.4f);
+            uint16_t diff = (result_fp16[i] > golden_results[i]) ? 
+                           (result_fp16[i] - golden_results[i]) : 
+                           (golden_results[i] - result_fp16[i]);
             
-            if (match) matches++;
+            bool match = false;
+            if (result_fp16[i] == golden_results[i]) {
+                matches++;
+                match = true;
+            } else if (diff <= 4) {
+                close_matches++;
+                match = true;
+            } else {
+                mismatches++;
+                if (verbose && mismatches <= 10) {
+                    cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec
+                         << "      | 0x" << hex << setw(4) << setfill('0') << golden_results[i] << dec
+                         << "    | N (diff=" << diff << " LSB)" << endl;
+                }
+            }
             
-            if (verbose) {
-                cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec 
-                     << "         | " << setw(15) << setprecision(6) << result_float[i]
-                     << " | 0x" << hex << setw(4) << setfill('0') << golden_fp16 << dec
-                        << "        | " << setw(15) << setprecision(6) << golden_results[i]
-                        << " | " << (match ? "Y" : "N") << endl;
+            if (verbose && match && i < 10) {
+                cout << "  " << setw(5) << i << " | 0x" << hex << setw(4) << setfill('0') << result_fp16[i] << dec
+                     << "      | 0x" << hex << setw(4) << setfill('0') << golden_results[i] << dec
+                     << "    | " << (result_fp16[i] == golden_results[i] ? "Y" : "Y (close)") << endl;
             }
         }
         
-        bool validation_passed = (matches == (int)result_fp16.size());
+        bool validation_passed = (mismatches == 0);
         
         // Always report match count
-        cout << "  Validation: " << matches << "/" << result_fp16.size() << " matches" << endl;
+        cout << "  Validation: " << (matches + close_matches) << "/" << result_fp16.size() 
+             << " within tolerance (" << matches << " exact, " << close_matches << " within 4 LSB)" << endl;
         
         if (validation_passed) {
             cout << "  [PASS] B" << B << "_C" << C << "_V" << V << endl;
@@ -888,8 +967,10 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // Note: We do NOT reset wr_ptr - circular buffer is persistent
         // The buffer will wrap around automatically at 8192 results
 
-        // Soft reset after test
-        gemm_device.soft_reset();
+        // Soft reset after test (unless caller wants to read results first)
+        if (!skip_final_reset) {
+            gemm_device.soft_reset();
+        }
 
         return validation_passed;
 
