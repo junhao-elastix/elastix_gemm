@@ -35,6 +35,8 @@ import gemm_pkg::*;
     input  logic [3:0]                  i_dc_state,        // Dispatcher Control state
     input  logic [3:0]                  i_ce_state,        // Compute Engine state
     input  logic                        i_result_fifo_afull, // Result FIFO almost-full flag
+    input  logic                        i_arb_collection_done, // Arbiter collection complete
+    input  logic                        i_arb_overflow_error,  // Arbiter overflow error flag
 
     // Dispatcher Control Interface (FETCH/DISP commands)
     output logic                         o_dc_fetch_en,
@@ -68,7 +70,11 @@ import gemm_pkg::*;
     output logic        o_ce_tile_main_loop_over_left,
     input  logic        i_ce_tile_done,
 
-    // Result Arbiter Interface (READOUT command)
+    // Result Arbiter Interface (MATMUL automatic collection)
+    output logic        o_arb_matmul_en,           // Trigger automatic collection (with MATMUL)
+    output logic [31:0] o_arb_matmul_total_results, // Expected total FP16 results (B×C)
+
+    // Result Bridge Interface (READOUT command - to result_fifo_to_simple_bram)
     output logic        o_readout_en,
     output logic [7:0]  o_readout_start_col,
     output logic [31:0] o_readout_rd_len,
@@ -142,9 +148,13 @@ import gemm_pkg::*;
     logic readout_en_reg;
     logic [7:0]  readout_start_col_reg;
     logic [31:0] readout_rd_len_reg;
-    
+
     // TILE start pulse generation
     logic [23:0] ce_tile_start_reg;
+
+    // Arbiter MATMUL interface registers
+    logic arb_matmul_en_reg;
+    logic [31:0] arb_matmul_total_results_reg;
 
     // ===================================================================
     // State Transition Logic
@@ -283,9 +293,10 @@ import gemm_pkg::*;
             end
 
             ST_WAIT_TILE: begin
-                // WAIT_MATMUL barrier: Block until compute engine returns to IDLE
+                // WAIT_MATMUL barrier: Block until BOTH compute engine AND arbiter complete
                 // MS2.0 ASYNC MODEL: Check state machine directly (not ID comparison)
-                if (i_ce_state == 4'd0) begin  // Check: i_ce_state == IDLE
+                // NEW: Also wait for arbiter collection to finish (automatic collection)
+                if (i_ce_state == 4'd0 && i_arb_collection_done) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_TILE; // Keep blocking
@@ -448,7 +459,7 @@ import gemm_pkg::*;
     end
 
     // ===================================================================
-    // Command Execution - Compute Engine (TILE)
+    // Command Execution - Compute Engine (TILE) + Arbiter Collection
     // ===================================================================
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
@@ -464,9 +475,13 @@ import gemm_pkg::*;
             o_ce_tile_left_man_4b  <= 1'b0;
             o_ce_tile_right_man_4b <= 1'b0;
             o_ce_tile_main_loop_over_left <= 1'b0;
+            arb_matmul_en_reg <= 1'b0;
+            arb_matmul_total_results_reg <= 32'd0;
         end else begin
-            // Default: Clear start pulse every cycle (it's a 1-cycle pulse)
+            // Default: Clear pulses every cycle (they're 1-cycle pulses)
             ce_tile_start_reg <= '0;
+            arb_matmul_en_reg <= 1'b0;  // Make arb_matmul_en a pulse (1-cycle only)
+
             // MS2.0 ASYNC MODEL: Keep ce_tile_en_reg set until READOUT completes
             // (Arbiter needs to know which tiles have results)
             // Clear ce_tile_en only after READOUT finishes or when new MATMUL starts
@@ -503,13 +518,24 @@ import gemm_pkg::*;
                     o_ce_tile_main_loop_over_left <= tile_cmd.main_loop_left;
                     ce_col_en_reg               <= tile_cmd.col_en;        // Store column enable mask
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
-                end                 else begin
+
+                    // Calculate total FP16 results for arbiter: B × C
+                    arb_matmul_total_results_reg <= {24'd0, tile_cmd.left_ugd_len} * {24'd0, tile_cmd.right_ugd_len};
+                end else begin
                     `ifdef SIMULATION
-                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 2: Asserting ce_tile_en = 0x%06x, ce_tile_start pulse",
+                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 2: Asserting ce_tile_en = 0x%06x, ce_tile_start pulse, arb_matmul_en trigger",
                              $time, ce_col_en_reg);
                     `endif
+                    // Trigger compute engines
                     ce_tile_en_reg <= ce_col_en_reg;      // Set static enable mask
                     ce_tile_start_reg <= ce_col_en_reg;   // Pulse start to enabled tiles
+
+                    // Trigger arbiter automatic collection (NEW architecture)
+                    arb_matmul_en_reg <= 1'b1;
+
+                    // UNCONDITIONAL DEBUG (to verify code path is reached)
+                    $display("[MC_DEBUG_UNCONDITIONAL] @%0t ST_EXEC_TILE Cycle 2: arb_matmul_en=1, total_results=%0d",
+                             $time, arb_matmul_total_results_reg);
                 end
             end
         end
@@ -635,7 +661,9 @@ import gemm_pkg::*;
     assign o_dc_disp_en  = dc_disp_en_reg;
     assign o_ce_tile_en  = ce_tile_en_reg;        // Static enable mask
     assign o_ce_tile_start = ce_tile_start_reg;   // Dynamic start pulse
-    assign o_readout_en  = readout_en_reg;
+    assign o_arb_matmul_en = arb_matmul_en_reg;   // Arbiter automatic collection trigger
+    assign o_arb_matmul_total_results = arb_matmul_total_results_reg;  // Expected FP16 count (B×C)
+    assign o_readout_en  = readout_en_reg;        // Bridge READOUT trigger
     assign o_readout_start_col = readout_start_col_reg;
     assign o_readout_rd_len = readout_rd_len_reg;
 

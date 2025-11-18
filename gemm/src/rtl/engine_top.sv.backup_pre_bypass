@@ -50,26 +50,22 @@ import gemm_pkg::*;
     output logic [12:0]                  o_cmd_fifo_count,
 
     // ====================================================================
-    // Result Line Output Interface (256-bit packed lines from arbiter)
+    // Host Result FIFO Interface (Direct Read)
     // ====================================================================
-    output logic [255:0]                 o_line_data,            // Packed 256-bit lines
-    output logic [8:0]                   o_line_addr,            // Line address
-    output logic                         o_line_valid,           // Line write strobe
-    output logic                         o_overflow_error,       // Arbiter overflow detection
-    output logic                         o_collection_done,      // Arbiter collection completion
-
-    // ====================================================================
-    // READOUT Command Interface (master_control -> result_fifo_to_simple_bram bridge)
-    // ====================================================================
-    output logic                         o_readout_en,           // READOUT command trigger
-    output logic [7:0]                   o_readout_start_col,    // Start column
-    output logic [31:0]                  o_readout_rd_len,       // Read length
-    input  logic                         i_readout_done,         // READOUT completion
+    output logic [15:0]                  o_result_fifo_rdata,    // FP16 result data
+    input  logic                         i_result_fifo_ren,      // Read enable from host
+    output logic                         o_result_fifo_empty,    // FIFO empty flag
+    output logic [14:0]                  o_result_fifo_count,    // Number of results available
 
     // ====================================================================
     // NAP AXI Interface (to GDDR6)
     // ====================================================================
     t_AXI4.initiator                     nap_axi,
+
+    // ====================================================================
+    // Flow Control
+    // ====================================================================
+    input  logic                         i_result_almost_full,   // Backpressure from result BRAM
 
     // ====================================================================
     // Status Outputs
@@ -136,14 +132,11 @@ import gemm_pkg::*;
     logic        mc_ce_tile_main_loop_over_left;
     logic        ce_mc_tile_done;
 
-    // Master Control -> Result Arbiter (MATMUL command for automatic collection)
-    logic        mc_arb_matmul_en;           // MATMUL command trigger
-    logic [31:0] mc_arb_matmul_total_results; // B×C total FP16 results
-    logic        arb_mc_collection_done;     // Collection completion
-
-    // Master Control -> Result Bridge (READOUT command)
-    logic        mc_bridge_readout_en;
-    logic        bridge_mc_readout_done;
+    // Master Control -> Result Arbiter (READOUT command)
+    logic        mc_arb_readout_en;
+    logic [7:0]  mc_arb_readout_start_col;
+    logic [31:0] mc_arb_readout_rd_len;
+    logic        arb_mc_readout_done;
 
     // Dispatcher Control BRAM Read Ports (dispatcher_control ↔ dispatcher_bram)
     // Mantissa read data (dual ports) - used during DISPATCH operations
@@ -189,16 +182,11 @@ import gemm_pkg::*;
     // Multi-tile DISPATCH control (NEW: Per-tile write enables)
     logic [23:0]   dc_tile_wr_en;        // Per-tile write enable array [0:23]
 
-    // Result arbiter outputs (256-bit line interface to result_fifo_to_simple_bram)
-    logic [255:0]  arb_line_data;        // Packed 256-bit lines
-    logic [8:0]    arb_line_addr;        // Line address
-    logic          arb_line_valid;       // Line write strobe
-    logic          arb_overflow_error;   // Overflow detection
-
-    // READOUT command interface (master_control -> bridge)
-    logic          mc_readout_en;
-    logic [7:0]    mc_readout_start_col;
-    logic [31:0]   mc_readout_rd_len;
+    // Compute Engine -> Result FIFO
+    logic [15:0]   ce_result_data;     // FP16 results
+    logic          ce_result_valid;
+    logic          result_fifo_full;
+    logic          result_fifo_afull;
 
     // Debug signals
     logic [3:0]  mc_state;
@@ -256,7 +244,7 @@ import gemm_pkg::*;
         // Peripheral State Inputs (for command synchronization)
         .i_dc_state         (dc_state),
         .i_ce_state         (ce_state),
-        .i_result_fifo_afull(1'b0),  // No backpressure (arbiter has private BRAM)
+        .i_result_fifo_afull(i_result_almost_full),  // Use external backpressure signal
 
         // Dispatcher Control Interface (FETCH/DISP commands)
         .o_dc_fetch_en      (mc_dc_fetch_en),
@@ -289,17 +277,11 @@ import gemm_pkg::*;
         .o_ce_tile_main_loop_over_left (mc_ce_tile_main_loop_over_left),
         .i_ce_tile_done          (ce_mc_tile_done),
 
-        // Result Arbiter Interface (MATMUL automatic collection)
-        .o_arb_matmul_en         (mc_arb_matmul_en),
-        .o_arb_matmul_total_results (mc_arb_matmul_total_results),
-        .i_arb_collection_done   (arb_mc_collection_done),
-        .i_arb_overflow_error    (arb_overflow_error),
-
-        // Result Bridge Interface (READOUT command)
-        .o_readout_en            (mc_readout_en),
-        .o_readout_start_col     (mc_readout_start_col),
-        .o_readout_rd_len        (mc_readout_rd_len),
-        .i_readout_done          (i_readout_done),
+        // Result Arbiter Interface (READOUT command)
+        .o_readout_en            (mc_arb_readout_en),
+        .o_readout_start_col     (mc_arb_readout_start_col),
+        .o_readout_rd_len        (mc_arb_readout_rd_len),
+        .i_readout_done          (arb_mc_readout_done),
 
         // Status/Debug
         .o_mc_state         (mc_state),
@@ -539,10 +521,10 @@ import gemm_pkg::*;
     end
 
     // ------------------------------------------------------------------
-    // Result Arbiter - Automatic Collection with Line Packing
-    // Automatically collects results from ALL enabled tiles during MATMUL
-    // Packs FP16 results into 256-bit lines (16 FP16 per line)
-    // Private 256-bit×512 BRAM for pre-packed results
+    // Result Arbiter - Concurrent Result Collection
+    // Collects results from ALL enabled tiles
+    // Tiles produce results in parallel, arbiter fairly collects from all
+    // Uses standalone result_arbiter module with chunked collection support
     // ------------------------------------------------------------------
     result_arbiter #(
         .NUM_TILES (NUM_TILES)
@@ -550,11 +532,14 @@ import gemm_pkg::*;
         .i_clk                  (i_clk),
         .i_reset_n              (i_reset_n),
 
-        // MATMUL Command Interface (from Master Control)
-        .i_matmul_en             (mc_arb_matmul_en),
+        // MATMUL Command Interface (from Master Control) - for col_en only
         .i_mc_tile_en            (mc_ce_tile_en),
-        .i_matmul_total_results  (mc_arb_matmul_total_results),
-        .o_collection_done       (arb_mc_collection_done),
+
+        // READOUT Command Interface (from Master Control)
+        .i_readout_en            (mc_arb_readout_en),
+        .i_readout_start_col     (mc_arb_readout_start_col),
+        .i_readout_rd_len        (mc_arb_readout_rd_len),
+        .o_readout_done          (arb_mc_readout_done),
 
         // Tile FIFO Read Interface (to per-tile FIFOs)
         .o_tile_fifo_rd_en      (tile_fifo_rd_en),
@@ -564,11 +549,10 @@ import gemm_pkg::*;
         // Tile Write Indicators (from Compute Engines)
         .i_ce_result_valid      (ce_result_valid_arr),
 
-        // Packed Line Output Interface (to result_fifo_to_simple_bram)
-        .o_line_data             (arb_line_data),
-        .o_line_addr             (arb_line_addr),
-        .o_line_valid            (arb_line_valid),
-        .o_overflow_error        (arb_overflow_error)
+        // Result BRAM Interface (to result_fifo)
+        .o_result_data           (ce_result_data),
+        .o_result_valid         (ce_result_valid),
+        .i_result_fifo_full     (result_fifo_full)
     );
 
     // Debug outputs: Use tile 0 for state monitoring
@@ -576,20 +560,26 @@ import gemm_pkg::*;
     assign result_count = result_count_arr[0];
 
     // ------------------------------------------------------------------
-    // Result Line Output - Direct Connection from Arbiter
+    // Result FIFO - Buffers FP16 computation results
     // ------------------------------------------------------------------
-    assign o_line_data = arb_line_data;
-    assign o_line_addr = arb_line_addr;
-    assign o_line_valid = arb_line_valid;
-    assign o_overflow_error = arb_overflow_error;
-    assign o_collection_done = arb_mc_collection_done;
+    result_bram u_result_fifo (
+        .i_clk              (i_clk),
+        .i_reset_n          (i_reset_n),
 
-    // ------------------------------------------------------------------
-    // READOUT Command Output - Direct Connection from Master Control
-    // ------------------------------------------------------------------
-    assign o_readout_en = mc_readout_en;
-    assign o_readout_start_col = mc_readout_start_col;
-    assign o_readout_rd_len = mc_readout_rd_len;
+        // Write Interface (from Compute Engine)
+        .i_wr_data          (ce_result_data),
+        .i_wr_en            (ce_result_valid),
+        .o_full             (result_fifo_full),
+        .o_afull            (result_fifo_afull),
+
+        // Read Interface (to Host/PCIe)
+        .o_rd_data          (o_result_fifo_rdata),
+        .i_rd_en            (i_result_fifo_ren),
+        .o_empty            (o_result_fifo_empty),
+
+        // Status
+        .o_count            (o_result_fifo_count)
+    );
 
     // ===================================================================
     // Status Logic

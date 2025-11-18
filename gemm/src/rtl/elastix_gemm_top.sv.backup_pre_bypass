@@ -216,21 +216,20 @@ module elastix_gemm_top
     localparam      IRQ_GEN_REGS_BASE      = 26;                // Start IRQ registers after debug regs (25 = DC_DEBUG)
     localparam      MSIX_IRQ_REGS_BASE     = IRQ_GEN_REGS_BASE + NUM_IRQ_GEN_REGS; // 26 + 6 = 32
     localparam      GDDR_REGS_BASE         = MSIX_IRQ_REGS_BASE + NUM_MSIX_IRQ_REGS; // 32 + 12 = 44
-    localparam      NUM_USER_REGS          = GDDR_REGS_BASE + NUM_GDDR_REGS + 4 + 5 + 4 + 1; // 44 + 87 + 4 + 5 + 4 + 1 = 145 (added overflow_error register)
-    localparam      LTSSM_STATE_REG        = NUM_USER_REGS - 14; // 145 - 14 = 131, offset 131*4 = 524 = 0x20C
-    localparam      ADM_STATUS_REG         = NUM_USER_REGS - 13; // 145 - 13 = 132, offset 132*4 = 528 = 0x210
-    localparam      BITSTREAM_ID           = NUM_USER_REGS - 12; // 145 - 12 = 133, offset 133*4 = 532 = 0x214
-    localparam      SCRATCH_REG            = NUM_USER_REGS - 11; // 145 - 11 = 134, offset 134*4 = 536 = 0x218
-    localparam      RESULT_REG_0           = NUM_USER_REGS - 10; // 145 - 10 = 135, offset 135*4 = 540 = 0x21C
-    localparam      RESULT_REG_1           = NUM_USER_REGS - 9;  // 145 - 9 = 136, offset 136*4 = 544 = 0x220
-    localparam      RESULT_REG_2           = NUM_USER_REGS - 8;  // 145 - 8 = 137, offset 137*4 = 548 = 0x224
-    localparam      RESULT_REG_3           = NUM_USER_REGS - 7;  // 145 - 7 = 138, offset 138*4 = 552 = 0x228
-    localparam      ENGINE_WRITE_TOP       = NUM_USER_REGS - 6;  // 145 - 6 = 139, offset 139*4 = 556 = 0x22C (write_top)
-    localparam      REG_RD_PTR             = NUM_USER_REGS - 5;  // 145 - 5 = 140, offset 140*4 = 560 = 0x230 (read pointer)
-    localparam      REG_WR_PTR             = NUM_USER_REGS - 4;  // 145 - 4 = 141, offset 141*4 = 564 = 0x234 (write pointer)
-    localparam      REG_USED_ENTRIES       = NUM_USER_REGS - 3;  // 145 - 3 = 142, offset 142*4 = 568 = 0x238 (used entries)
-    localparam      REG_RESULT_EMPTY       = NUM_USER_REGS - 2;  // 145 - 2 = 143, offset 143*4 = 572 = 0x23C (empty flag)
-    localparam      ARBITER_OVERFLOW_ERROR = NUM_USER_REGS - 1;  // 145 - 1 = 144, offset 144*4 = 576 = 0x240 (NEW: arbiter overflow error)
+    localparam      NUM_USER_REGS          = GDDR_REGS_BASE + NUM_GDDR_REGS + 4 + 5 + 4; // 44 + 87 + 4 + 5 + 4 = 144 (added circular buffer registers)
+    localparam      LTSSM_STATE_REG        = NUM_USER_REGS - 13; // 144 - 13 = 131, offset 131*4 = 524 = 0x20C
+    localparam      ADM_STATUS_REG         = NUM_USER_REGS - 12; // 144 - 12 = 132, offset 132*4 = 528 = 0x210
+    localparam      BITSTREAM_ID           = NUM_USER_REGS - 11; // 144 - 11 = 133, offset 133*4 = 532 = 0x214
+    localparam      SCRATCH_REG            = NUM_USER_REGS - 10; // 144 - 10 = 134, offset 134*4 = 536 = 0x218
+    localparam      RESULT_REG_0           = NUM_USER_REGS - 9; // 144 - 9 = 135, offset 135*4 = 540 = 0x21C
+    localparam      RESULT_REG_1           = NUM_USER_REGS - 8; // 144 - 8 = 136, offset 136*4 = 544 = 0x220
+    localparam      RESULT_REG_2           = NUM_USER_REGS - 7; // 144 - 7 = 137, offset 137*4 = 548 = 0x224
+    localparam      RESULT_REG_3           = NUM_USER_REGS - 6; // 144 - 6 = 138, offset 138*4 = 552 = 0x228
+    localparam      ENGINE_WRITE_TOP       = NUM_USER_REGS - 5; // 144 - 5 = 139, offset 139*4 = 556 = 0x22C (write_top)
+    localparam      REG_RD_PTR             = NUM_USER_REGS - 4; // 144 - 4 = 140, offset 140*4 = 560 = 0x230 (NEW: read pointer)
+    localparam      REG_WR_PTR             = NUM_USER_REGS - 3; // 144 - 3 = 141, offset 141*4 = 564 = 0x234 (NEW: write pointer)
+    localparam      REG_USED_ENTRIES       = NUM_USER_REGS - 2; // 144 - 2 = 142, offset 142*4 = 568 = 0x238 (NEW: used entries)
+    localparam      REG_RESULT_EMPTY       = NUM_USER_REGS - 1; // 144 - 1 = 143, offset 143*4 = 572 = 0x23C (NEW: empty flag)
     t_ACX_USER_REG  user_regs_write [NUM_USER_REGS -1:0];
     t_ACX_USER_REG  user_regs_read  [NUM_USER_REGS -1:0];
 
@@ -598,16 +597,14 @@ module elastix_gemm_top
                         .i_fifo_afull  (cmd_fifo_afull)
                     );
 
-                    // Result path: engine_top -> result_fifo_to_simple_bram -> BRAM + Registers (LINE interface)
-                    // NEW ARCHITECTURE (Nov 17, 2025): Arbiter owns private BRAM, outputs 256-bit packed lines
-                    logic [255:0] line_data;         // Packed 256-bit lines from arbiter
-                    logic [8:0]   line_addr;         // Line address (0-511)
-                    logic         line_valid;        // Line write strobe
-                    logic         overflow_error;    // Arbiter overflow detection
-                    logic         collection_done;   // Arbiter collection completion
-                    logic [15:0] result_count_16bit; // FP16 result count
+                    // Result path: engine_top -> result FIFO -> result_fifo_to_bram -> BRAM + Registers
+                    logic [15:0] result_fifo_rdata;
+                    logic        result_fifo_ren;
+                    logic        result_fifo_empty;
+                    logic [14:0] result_fifo_count;
+                    logic [15:0] result_count_16bit;  // FP16 result count
                     logic [3:0]  last_opcode;
-                    logic [9:0]  bram_wr_count;      // Dispatcher BRAM write count (debug)
+                    logic [9:0]  bram_wr_count;  // Dispatcher BRAM write count (debug)
 
                     engine_top #(
                         .GDDR6_PAGE_ID  (9'd0),   // Page 0 (matches DMA write address 0x0)
@@ -623,19 +620,15 @@ module elastix_gemm_top
                         .o_cmd_fifo_full    (cmd_fifo_full),
                         .o_cmd_fifo_afull   (cmd_fifo_afull),
                         .o_cmd_fifo_count   (cmd_fifo_count),
-                        // Result Line Output Interface (NEW: 256-bit packed lines from arbiter)
-                        .o_line_data        (line_data),
-                        .o_line_addr        (line_addr),
-                        .o_line_valid       (line_valid),
-                        .o_overflow_error   (overflow_error),
-                        .o_collection_done  (collection_done),
-                        // READOUT Command Interface (NEW: master_control -> bridge routing)
-                        .o_readout_en       (readout_en),
-                        .o_readout_start_col (readout_start_col),
-                        .o_readout_rd_len   (readout_rd_len),
-                        .i_readout_done     (readout_done),
+                        // Result FIFO interface
+                        .o_result_fifo_rdata  (result_fifo_rdata),
+                        .i_result_fifo_ren    (result_fifo_ren),
+                        .o_result_fifo_empty  (result_fifo_empty),
+                        .o_result_fifo_count  (result_fifo_count),
                         // NAP AXI interface
                         .nap_axi            (nap),
+                        // Flow control
+                        .i_result_almost_full (result_almost_full),
                         // Status outputs
                         .o_engine_busy      (engine_busy),
                         .o_mc_state         (mc_state),
@@ -657,31 +650,19 @@ module elastix_gemm_top
                     // Local signals for capturing results
                     logic [15:0] local_result_0, local_result_1, local_result_2, local_result_3;
                     logic        result_almost_full;     // Backpressure signal
-
+                    
                     // Circular buffer interface signals (direct connections, no intermediate registers)
                     logic [12:0] result_rd_ptr;          // Read pointer to module (direct from CSR write register)
                     logic [12:0] result_wr_ptr;          // Write pointer from hardware (registered in module)
                     logic [13:0] result_used_entries;     // Used entries from hardware (combinational in module)
                     logic        result_empty;            // Empty flag from hardware (combinational in module)
 
-                    // READOUT command interface (engine_top -> bridge)
-                    logic        readout_en;
-                    logic [7:0]  readout_start_col;
-                    logic [31:0] readout_rd_len;
-                    logic        readout_done;
-
                     result_fifo_to_simple_bram i_result_adapter (
                         .i_clk              (i_reg_clk),
                         .i_reset_n          (engine_rstn),
-                        // READOUT Command Interface (NEW: from master_control via engine_top)
-                        .i_readout_en       (readout_en),
-                        .o_readout_done     (readout_done),
-                        // Line interface (NEW: 256-bit packed lines from arbiter)
-                        .i_line_data        (line_data),
-                        .i_line_addr        (line_addr),
-                        .i_line_valid       (line_valid),
-                        .i_collection_done  (collection_done),
-                        // BRAM interface
+                        .i_fifo_rdata       (result_fifo_rdata),
+                        .o_fifo_ren         (result_fifo_ren),
+                        .i_fifo_empty       (result_fifo_empty),
                         .o_bram_wr_addr     (result_bram_wr_addr),
                         .o_bram_wr_data     (result_bram_wr_data),
                         .o_bram_wr_en       (result_bram_wr_en),
@@ -690,7 +671,7 @@ module elastix_gemm_top
                         .o_result_1         (local_result_1),
                         .o_result_2         (local_result_2),
                         .o_result_3         (local_result_3),
-                        // Circular buffer interface
+                        // Circular buffer interface (updated for circular buffer optimization)
                         .i_rd_ptr           (result_rd_ptr),
                         .o_wr_ptr           (result_wr_ptr),
                         .o_used_entries     (result_used_entries),
@@ -733,7 +714,6 @@ module elastix_gemm_top
                     assign user_regs_read[REG_WR_PTR] = {19'h0, result_wr_ptr};            // RO: Hardware write pointer (0x234)
                     assign user_regs_read[REG_USED_ENTRIES] = {18'h0, result_used_entries}; // RO: Used entries (0x238)
                     assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, result_empty};        // RO: Empty flag (0x23C)
-                    assign user_regs_read[ARBITER_OVERFLOW_ERROR] = {31'h0, overflow_error}; // RO: Arbiter overflow error (0x240)
                     assign user_regs_read[NAP_ERROR_STATUS] = {28'h0, error_valid_nap, error_info_nap};  // NAP Channel 1 error monitoring
                     assign user_regs_read[DC_BRAM_WR_COUNT] = {22'h0, bram_wr_count};  // Dispatcher BRAM write count (verify FETCH worked)
                     assign user_regs_read[DC_DEBUG] = {28'h0, dc_state};  // Dispatcher state debug
