@@ -184,11 +184,11 @@ module result_arbiter
 
                         // Check if current tile is enabled
                         if (!i_mc_tile_en[current_tile_reg]) begin
-                            // Tile disabled - wrap to tile 0
-                            current_tile_reg <= 5'd0;
+                            // Tile disabled - skip to next tile (don't wrap to 0)
+                            current_tile_reg <= (current_tile_reg + 1) % NUM_TILES;
                             `ifdef SIMULATION
-                            $display("[ARB] @%0t COLLECT: Tile %0d disabled, wrapping to tile 0",
-                                    $time, current_tile_reg);
+                            $display("[ARB] @%0t COLLECT: Tile %0d disabled, skipping to tile %0d",
+                                    $time, current_tile_reg, (current_tile_reg + 1) % NUM_TILES);
                             `endif
                         end else begin
                             // Tile enabled - check for data availability

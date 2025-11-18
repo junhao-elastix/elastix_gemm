@@ -318,25 +318,24 @@ module tb_engine_top;
         '{B: 16,  C: 16,  V: 8,   col_en: TILE_COUNT, name: "B16_C16_V8"},    // Test 7: 256 results, cumulative=361
         '{B: 1,   C: 128, V: 1,   col_en: TILE_COUNT, name: "B1_C128_V1"},    // Test 8: 128 results, cumulative=489
         '{B: 128, C: 1,   V: 1,   col_en: TILE_COUNT, name: "B128_C1_V1"},    // Test 9: 128 results, cumulative=617
-        '{B: 1,   C: 1,   V: 128, col_en: TILE_COUNT, name: "B1_C1_V128"}     // Test 10: 1 result, cumulative=618
+        '{B: 1,   C: 1,   V: 128, col_en: TILE_COUNT, name: "B1_C1_V128"},    // Test 10: 1 result, cumulative=618
 
-        // Multi-tile tests DISABLED for circular buffer bug reproduction
-        // These will be re-enabled after bug is fixed to test multi-tile behavior
-        '{B: 2, C: 2, V: 64,   col_en: 24'h000003, name: "B2_C2_V64"},
-        '{B: 2, C: 2, V: 64,   col_en: 24'h00000F, name: "B2_C2_V64"},
-        '{B: 2, C: 2, V: 64,   col_en: 24'h0000FF, name: "B2_C2_V64"},
-        '{B: 4, C: 4, V: 32,  col_en: 24'h000003, name: "B4_C4_V32"},
-        '{B: 4, C: 4, V: 32,  col_en: 24'h00000F, name: "B4_C4_V32"},
-        '{B: 4, C: 4, V: 32,  col_en: 24'h0000FF, name: "B4_C4_V32"},
-        '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"},
-        '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"},
-        '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"},
-        '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"},
-        '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"},
-        '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"},
-        '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"},
-        '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"},
-        '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"}
+        // Multi-tile tests re-enabled after circular buffer bug fix
+        '{B: 2, C: 2, V: 64,   col_en: 24'h000003, name: "B2_C2_V64"}, // Test 11: 4 results, 2 columns enabled
+        '{B: 2, C: 2, V: 64,   col_en: 24'h00000F, name: "B2_C2_V64"}, // Test 12: 4 results, 4 columns enabled
+        '{B: 2, C: 2, V: 64,   col_en: 24'h0000FF, name: "B2_C2_V64"}, // Test 13: 4 results, 8 columns enabled
+        '{B: 4, C: 4, V: 32,  col_en: 24'h000003, name: "B4_C4_V32"}, // Test 14: 16 results, 2 columns enabled
+        '{B: 4, C: 4, V: 32,  col_en: 24'h00000F, name: "B4_C4_V32"}, // Test 15: 16 results, 4 columns enabled
+        '{B: 4, C: 4, V: 32,  col_en: 24'h0000FF, name: "B4_C4_V32"}, // Test 16: 16 results, 8 columns enabled
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"}, // Test 17: 64 results, 2 columns enabled
+        '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"}, // Test 18: 64 results, 4 columns enabled
+        '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"}, // Test 19: 64 results, 8 columns enabled
+        '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"}, // Test 20: 256 results, 2 columns enabled
+        '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"}, // Test 21: 256 results, 4 columns enabled
+        '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"}, // Test 22: 256 results, 8 columns enabled
+        '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"}, // Test 23: 128 results, 2 columns enabled
+        '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"}, // Test 24: 128 results, 4 columns enabled
+        '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"}, // Test 25: 128 results, 8 columns enabled
     };
 
     // ===================================================================
