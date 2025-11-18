@@ -22,21 +22,18 @@ For each output element C[i,j]:
   3. Sum aligned mantissas as integers
   4. Convert GFP result to FP16 with IEEE 754 rounding
 
-EMULATOR ALGORITHM:
--------------------
-For each output element C[i,j]:
-  1. Collect V dot products (one per Native Vector)
-  2. Find global maximum exponent across all V results
-  3. Align all mantissas to max exponent
-  4. Sum aligned mantissas
-  5. Convert to FP16
+V-LOOP ACCUMULATION (matching gfp8_bcv_controller.sv):
+------------------------------------------------------
+For each output element C[i,j] with V Native Vectors:
+  1. Compute V dot products (one per Native Vector)
+  2. INCREMENTAL ACCUMULATION (pairwise max-align-sum):
+     - For v=0: Initialize accumulator with first dot product
+     - For v>0: Find max between accumulator and current dot product
+     - Align both mantissas to max exponent
+     - Sum aligned mantissas and update accumulator
+  3. Convert final GFP result to FP16
 
-KEY DIFFERENCE:
----------------
-Hardware: Group-by-group processing with incremental accumulation
-Emulator: Batch alignment across all V dot products (global max-align-sum)
-Both are mathematically correct but produce tiny FP16 rounding differences
-in high-V configurations.
+This matches the hardware's incremental accumulation algorithm exactly.
 
 USAGE:
 ------
@@ -185,13 +182,12 @@ class HardwareGFPCompute:
         """
         Compute GEMM with B, C, V parameters and V-loop accumulation.
 
-        Uses hardware algorithm for group dot products, then applies global
-        max-exponent alignment for V-loop accumulation:
+        Uses hardware algorithm for group dot products, then applies incremental
+        accumulation for V-loop (matching gfp8_bcv_controller.sv):
         1. Compute V dot products (one per Native Vector) using compute_dot_product()
-        2. Find global maximum exponent across all V results
-        3. Align all mantissas to max exponent
-        4. Sum aligned mantissas as integers
-        5. Convert final GFP result to FP16
+        2. INCREMENTAL ACCUMULATION: For each V iteration, find max between
+           accumulator and current dot product, align both, sum, update accumulator
+        3. Convert final GFP result to FP16
 
         Args:
             left_mant: [128, 128] left mantissa matrix
@@ -211,7 +207,7 @@ class HardwareGFPCompute:
 
         print(f"   Computing with V-loop accumulation:")
         print(f"   - For each of {B}x{C} outputs: collect {V} dot products")
-        print(f"   - Apply global max-exponent alignment and sum")
+        print(f"   - Apply incremental accumulation (pairwise max-align-sum)")
         print(f"   - Total: {B*C*V} dot products")
 
         # Iterate over output positions
@@ -239,22 +235,56 @@ class HardwareGFPCompute:
                     )
                     v_dot_products.append(dot_gfp)
 
-                # V-loop accumulation: Global max-align-sum
-                # Find maximum exponent across all V dot products
-                max_exponent = max(dot[1] for dot in v_dot_products)
+                # V-loop accumulation: INCREMENTAL/PAIRWISE (matching hardware)
+                # Hardware uses incremental accumulation: for each V iteration,
+                # find max between accumulator and new dot product, align both, sum
+                # This matches gfp8_bcv_controller.sv lines 223-255
+                accumulator_mant = None
+                accumulator_exp = None
                 
-                # Align all mantissas to max exponent and sum
-                aligned_sum = 0
-                for mant, exp in v_dot_products:
-                    exp_diff = max_exponent - exp
-                    if exp_diff > 31:
-                        aligned_mant = 0
+                for v_idx, (mant, exp) in enumerate(v_dot_products):
+                    if v_idx == 0:
+                        # First V iteration - initialize accumulator
+                        accumulator_mant = mant
+                        accumulator_exp = exp
                     else:
-                        aligned_mant = mant >> exp_diff
-                    aligned_sum += aligned_mant
+                        # Incremental accumulation: find max between accumulator and current dot
+                        # Hardware uses signed comparison: $signed(accum_exponent) > $signed(nv_dot_exponent)
+                        # Convert to signed 8-bit for comparison (matching hardware)
+                        def to_signed8(x):
+                            """Convert 8-bit value to signed integer"""
+                            return x if x < 128 else x - 256
+                        
+                        accum_exp_signed = to_signed8(accumulator_exp & 0xFF)
+                        exp_signed = to_signed8(exp & 0xFF)
+                        
+                        # Use signed comparison (matching hardware line 236)
+                        if accum_exp_signed > exp_signed:
+                            max_exp = accumulator_exp
+                        else:
+                            max_exp = exp
+                        
+                        # Align both mantissas to max exponent
+                        exp_diff_accum = max_exp - accumulator_exp
+                        exp_diff_dot = max_exp - exp
+                        
+                        if exp_diff_accum > 31:
+                            aligned_accum = 0
+                        else:
+                            # Python's >> performs arithmetic right shift for negative numbers
+                            aligned_accum = accumulator_mant >> exp_diff_accum
+                        
+                        if exp_diff_dot > 31:
+                            aligned_dot = 0
+                        else:
+                            aligned_dot = mant >> exp_diff_dot
+                        
+                        # Sum aligned mantissas
+                        accumulator_mant = aligned_accum + aligned_dot
+                        accumulator_exp = max_exp
                 
-                # Result is (aligned_sum, max_exponent)
-                accumulator_gfp = (aligned_sum, max_exponent)
+                # Result is (accumulator_mant, accumulator_exp)
+                accumulator_gfp = (accumulator_mant, accumulator_exp)
 
                 # Convert GFP to FP16
                 fp16_result = self.gfp_to_fp16(accumulator_gfp)
@@ -262,7 +292,7 @@ class HardwareGFPCompute:
 
                 # Debug first output
                 if b == 0 and c == 0:
-                    print(f"   Output[{b},{c}]: {V} dots, max_exp={max_exponent}")
+                    print(f"   Output[{b},{c}]: {V} dots, final_exp={accumulator_exp}")
                     print(f"                acc_gfp=({accumulator_gfp[0]}, {accumulator_gfp[1]})")
                     print(f"                     -> FP16=0x{fp16_result:04x}")
         

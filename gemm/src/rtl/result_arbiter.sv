@@ -151,8 +151,9 @@ module result_arbiter
                 end
 
                 ARB_COLLECT: begin
-                    // Automatic round-robin collection with stall behavior
-                    // Check current tile → take 1 if available else stall → next tile
+                    // Strict round-robin collection with STALL behavior
+                    // Check current tile → take 1 if available else STALL (wait) → next tile
+                    // This ensures results are collected in the exact interleaved order expected
 
                     // Clear all FIFO read enables first
                     for (int i = 0; i < NUM_TILES; i++) begin
@@ -186,9 +187,9 @@ module result_arbiter
                         if (!i_mc_tile_en[current_tile_reg]) begin
                             // Tile disabled - skip to next tile (don't wrap to 0)
                             current_tile_reg <= (current_tile_reg + 1) % NUM_TILES;
-                            `ifdef SIMULATION
-                            $display("[ARB] @%0t COLLECT: Tile %0d disabled, skipping to tile %0d",
-                                    $time, current_tile_reg, (current_tile_reg + 1) % NUM_TILES);
+                            `ifdef SIMULATION_VERBOSE  // Commented out to reduce log size
+                            // $display("[ARB] @%0t COLLECT: Tile %0d disabled, skipping to tile %0d",
+                            //         $time, current_tile_reg, (current_tile_reg + 1) % NUM_TILES);
                             `endif
                         end else begin
                             // Tile enabled - check for data availability
@@ -205,18 +206,24 @@ module result_arbiter
                                 current_tile_reg <= (current_tile_reg + 1) % NUM_TILES;
 
                                 `ifdef SIMULATION
-                                $display("[ARB] @%0t COLLECT: Reading from tile %0d (count=%0d/%0d, fifo=%0d) -> tile %0d",
-                                        $time, current_tile_reg, collect_count_reg + 1, collect_total_reg,
-                                        actual_count, (current_tile_reg + 1) % NUM_TILES);
+                                if (collect_count_reg < 20 || collect_count_reg > (collect_total_reg - 5)) begin
+                                    // Only print first 20 and last 5 collections
+                                    $display("[ARB] @%0t COLLECT: Reading from tile %0d (count=%0d/%0d, fifo=%0d) -> tile %0d",
+                                            $time, current_tile_reg, collect_count_reg + 1, collect_total_reg,
+                                            actual_count, (current_tile_reg + 1) % NUM_TILES);
+                                end
                                 `endif
                             end else begin
-                                // No data available - SKIP to next tile (don't stall)
-                                // Move to next tile in round-robin
-                                current_tile_reg <= (current_tile_reg + 1) % NUM_TILES;
+                                // No data available - STALL and wait for this tile (strict round-robin)
+                                // Do NOT advance tile counter - enforce strict ordering
+                                // This ensures results are collected in the exact expected order
 
                                 `ifdef SIMULATION
-                                $display("[ARB] @%0t COLLECT: Tile %0d has no data (fifo=%0d), SKIPPING to tile %0d",
-                                        $time, current_tile_reg, actual_count, (current_tile_reg + 1) % NUM_TILES);
+                                // Log first few stalls to debug ordering issues
+                                if (collect_count_reg < 20) begin
+                                    $display("[ARB] @%0t COLLECT: Tile %0d has no data (fifo=%0d), STALLING (count=%0d/%0d)",
+                                            $time, current_tile_reg, actual_count, collect_count_reg, collect_total_reg);
+                                end
                                 `endif
                             end
                         end
