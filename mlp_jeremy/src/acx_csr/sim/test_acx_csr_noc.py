@@ -1,0 +1,87 @@
+# This file is public domain, it can be freely copied without restrictions.
+# SPDX-License-Identifier: CC0-1.0
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from sim_utils.build_misc import get_acx_vlog_flags
+from cocotb_tools.runner import get_runner
+
+
+def test_runner():
+    """Simulate using the Python runner.
+
+    This file can be run directly or via pytest discovery, e.g.
+    uv run pytest -s
+    """
+    hdl_toplevel_lang = os.getenv("HDL_TOPLEVEL_LANG", "verilog")
+    sim = os.getenv("SIM", "riviera")
+    proj_path = Path(__file__).resolve().parent.parent
+
+    # Order matters, glob won't guarantee it
+    # sources = proj_path.glob("rtl/*.sv")
+    rtl_files = [
+        "nap_initiator_wrapper.sv",
+        "nap_responder_wrapper.sv",
+        "reg_control_block.sv",
+        "axi_csr_system.sv",
+    ]
+    top_level_module = "axi_csr_system"
+    build_dir = proj_path / "sim_builds" / (top_level_module + "_build")
+
+    include_dirs = [proj_path / "include"]
+
+    sources = []
+    for f in rtl_files:
+        sources.append(proj_path / "rtl" / f)
+    # Only pass top-level as a source file, pass the rest as build_args
+    top_level_source = sources.pop(-1)
+
+    build_args = []
+
+    if sim in ["riviera", "activehdl"]:
+        build_args = ["-sv2k12"]
+
+    acx_build_args = get_acx_vlog_flags()
+    for incdir in include_dirs:
+        acx_build_args.append(f"+incdir+{str(incdir)}")
+
+    extra_args = []
+    if sim == "ghdl":
+        extra_args = ["--std=08"]
+    elif sim == "xcelium":
+        extra_args = ["-v200x"]
+
+    parameters = {
+        "NUM_USER_REGS": 4,
+    }
+
+    runner = get_runner(sim)
+
+
+
+    # Riviera runner calls 'alog' for EVERY source file, only pass top-level RTL as 'sources'
+    runner.build(
+        hdl_toplevel=top_level_module,
+        sources=[top_level_source],
+        build_args=build_args + extra_args + acx_build_args + [str(s) for s in sources],
+        parameters=parameters,
+        always=False, # <-- (!) Set to True when iterating verilog, False when only changing tests
+        build_dir=build_dir,
+    )
+
+    # Location of 'test_module' (passed to runner.test)
+    sys.path.append(str(proj_path / "tests"))
+    runner.test(
+        hdl_toplevel=top_level_module,
+        hdl_toplevel_lang=hdl_toplevel_lang,
+        test_module="acx_csr_noc_tests",
+        test_args=extra_args, # + ["-advdataflow"],
+        build_dir=build_dir,
+    )
+
+
+if __name__ == "__main__":
+    test_runner()

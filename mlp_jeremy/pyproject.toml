@@ -1,0 +1,31 @@
+[project]
+name = "hardware"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jeremy Freeman", email = "jeremy@elastix.ai" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "emulator",
+    "cocotb>=2.0.0",
+    "pytest>=8.4.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "isort>=6.0.1",
+    "mypy>=1.17.0",
+    "pytest>=8.4.1",
+    "ruff>=0.12.3",
+]
+
+[tool.uv.sources]
+quantpack = { path = "../quantpack", editable = true }
+emulator = { path = "../emulator", editable = true }
