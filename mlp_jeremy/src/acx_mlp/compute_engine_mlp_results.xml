@@ -1,0 +1,13 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1765266572" />
+    <testcase name="test_first_8_elements" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="229" time="0.5003907680511475" sim_time_ns="4770.0" ratio_time="9532.549968053036" />
+    <testcase name="test_first_32_elements" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="282" time="0.06870889663696289" sim_time_ns="4780.0" ratio_time="69568.8656631481" />
+    <testcase name="test_identity_matrix" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="335" time="0.06967854499816895" sim_time_ns="4780.0" ratio_time="68600.7436022898" />
+    <testcase name="test_all_ones" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="431" time="0.06968975067138672" sim_time_ns="4780.0" ratio_time="68589.71303455354" />
+    <testcase name="test_multi_nv" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="493" time="0.1331160068511963" sim_time_ns="9400.0" ratio_time="70615.09898285777" />
+    <testcase name="test_different_columns" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="568" time="0.07005095481872559" sim_time_ns="4779.999999999996" ratio_time="68236.04349675811" />
+    <testcase name="test_gfp_random_floats" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="633" time="0.12314391136169434" sim_time_ns="4780.0" ratio_time="38816.37303171521" />
+    <testcase name="test_gfp_large_values" classname="compute_engine_mlp_tests" file="/home/dev/Dev/elastix_gemm/mlp_jeremy/src/acx_mlp/tests/compute_engine_mlp_tests.py" lineno="782" time="0.09322929382324219" sim_time_ns="4780.0" ratio_time="51271.438450050126" />
+  </testsuite>
+</testsuites>

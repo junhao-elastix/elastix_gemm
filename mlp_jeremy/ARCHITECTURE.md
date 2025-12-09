@@ -358,5 +358,138 @@ Before integrating into a larger system:
 - Provide golden software model in repository (`python` reference implementing identical BFP rounding semantics).
 
 ---
-## 18. Summary
-The provided RTL forms a modular, extensible vertical compute column optimized for dual 8×8 dot products per tile with support for both INT8 and Block-FP8 representations. Careful mapping of control signals (`load`, `accumulate`, internal `ce` bits) enables scalable accumulation across large parameter sets. Timing flexibility is achieved via numerous optional pipeline registers, while cascade chaining reduces redundant data distribution for stacked MLP instances. The design can be evolved toward higher precision, streaming capability, and energy efficiency with modest structural changes.
+## 18. Concrete Example: 8 MLPs Configuration
+
+This section provides a concrete example of the `mlp_bram_col` configured with `NUM_MLPS=8`.
+
+### 18.1 Output Count
+
+```
+8 MLPs × 2 banks/MLP = 16 parallel dot products per cycle
+```
+
+Each MLP produces two independent 8-element dot product results (bank0 and bank1).
+
+### 18.2 Data Flow (Broadcast Architecture)
+
+```
+                    din (72-bit)
+                         │
+           ┌─────────────┼─────────────┐
+           │             │             │
+           ▼             ▼             ▼
+        ┌─────┐       ┌─────┐       ┌─────┐
+        │MLP 0│  ...  │MLP 3│  ...  │MLP 7│
+        ├─────┤       ├─────┤       ├─────┤
+        │bank0│       │bank0│       │bank0│  ← weights from BRAM (different per MLP)
+        │bank1│       │bank1│       │bank1│
+        └──┬──┘       └──┬──┘       └──┬──┘
+           │             │             │
+           ▼             ▼             ▼
+        dout[0]       dout[3]       dout[7]
+        (2×FP24)     (2×FP24)      (2×FP24)
+```
+
+**Key Point**: ALL MLPs receive the SAME `din` (activations are broadcast). Each MLP has DIFFERENT weights in its BRAM. Both banks within an MLP compute the same activations × different weights.
+
+### 18.3 Pipeline Timing
+
+```
+Cycle 0: din[0] applied, rdaddr=0, ce=1, load=0, accumulate=0
+         → Pipeline stage 0 (input registers)
+
+Cycle 1: din[1] applied, rdaddr=1, ce=1, load=0, accumulate=1
+         → Pipeline stage 1 (multiply)
+
+Cycle 2: din[2] applied, rdaddr=2, ce=1, load=1, accumulate=1
+         → First valid result appears, loaded into accumulator
+
+Cycle 3+: din[n] applied, rdaddr=n, ce=1, load=0, accumulate=1
+         → Subsequent results accumulated
+```
+
+**Pipeline Latency: 2 cycles** from first valid activation input to first valid output.
+
+### 18.4 Single-Cycle vs Multi-Cycle Dot Products
+
+| Mode | Activations | Weights per MLP | Results |
+|------|-------------|-----------------|---------|
+| Single-cycle (8 elements) | 8 elements × 1 cycle | 8 per bank × 2 banks = 16 | 16 dot products |
+| Multi-cycle (32 elements) | 8 elements × 4 cycles | 32 per bank × 2 banks = 64 | 16 dot products (accumulated) |
+| Multi-cycle (N×8 elements) | 8 elements × N cycles | N×8 per bank × 2 banks | 16 dot products (accumulated) |
+
+### 18.5 Result Format
+
+Each `dout[i]` (72-bit) contains (per `outmode_sel=2'b11` in `mlp_dot16_bfp8.sv`):
+- `dout[i][47:24]`: Bank 0 result (AB/Lower, FP24)
+- `dout[i][23:0]`: Bank 1 result (CD/Upper, FP24)
+- `dout[i][71:48]`: Status (fp_ab_status[3:0], fp_cd_status[3:0], zeros)
+
+### 18.6 Use Case Mapping
+
+This architecture is designed for **neural network inference**:
+- One input activation vector broadcasts to all MLPs
+- Each MLP holds a different weight column (output neuron)
+- Result: One forward pass computes multiple output neurons in parallel
+
+**NOT designed for**: Single large dot product (e.g., 128 elements → 1 scalar). That would require splitting activations across MLPs with different din per MLP, which `mlp_bram_col` does not support (din is broadcast).
+
+### 18.7 Vector-Matrix Multiplication Interpretation
+
+The `mlp_bram_col` architecture naturally implements **vector-matrix multiplication** (batch=1):
+
+```
+y = x · W
+
+Where:
+  x: (1 × N) activation row vector
+  W: (N × 16) weight matrix (16 columns stored in 8 MLPs × 2 banks)
+  y: (1 × 16) output row vector
+```
+
+**Computation:**
+```
+y[0]  = Σ x[i] × W[i, 0]    (MLP0, result at dout[0][23:0])
+y[1]  = Σ x[i] × W[i, 1]    (MLP0, result at dout[0][47:24])
+y[2]  = Σ x[i] × W[i, 2]    (MLP1, result at dout[1][23:0])
+y[3]  = Σ x[i] × W[i, 3]    (MLP1, result at dout[1][47:24])
+...
+y[14] = Σ x[i] × W[i, 14]   (MLP7, result at dout[7][23:0])
+y[15] = Σ x[i] × W[i, 15]   (MLP7, result at dout[7][47:24])
+```
+
+**Data Layout (verified against `acx_mlp_tests.py`):**
+- Activation `x` streams via `din` (8 elements per cycle, N/8 cycles total)
+- Weight column `W[:, j]` loaded via `write_bram_params()`:
+  - Even columns (j=0,2,4...) → `bank0_params` → odd wraddr → physical Bank 1 (CD)
+  - Odd columns (j=1,3,5...) → `bank1_params` → even wraddr → physical Bank 0 (AB)
+- Output `y[j]` read from `dout[j//2]`:
+  - Even columns (j%2==0) → `dout[j//2][23:0]`
+  - Odd columns (j%2==1) → `dout[j//2][47:24]`
+
+**Note:** The logical column index (0,1) maps inversely to physical bank (1,0) due to the BRAM write interleaving in `write_bram_params()`.
+
+This is the standard **linear layer** / **fully-connected layer** computation in neural networks.
+
+---
+## 19. Parallelism and Throughput
+
+For detailed throughput analysis including:
+- Peak parallelism (128 MACs/cycle)
+- Efficiency formulas: `V / (V + 3)`
+- Measured vs theoretical efficiency tables
+- Weight loading amortization
+
+See **[BCV Computation Guide Section 7](BCV_COMPUTATION_GUIDE.md#7-parallelism-and-throughput)**.
+
+---
+## 20. Summary
+
+The RTL forms a modular, extensible vertical compute column optimized for dual 8×8 dot products per tile with support for both INT8 and Block-FP8 representations. Key features:
+
+- **Control signals**: `load`, `accumulate`, internal `ce` bits enable scalable accumulation
+- **Timing flexibility**: Optional pipeline registers for Fmax tuning
+- **Cascade chaining**: Reduces redundant data distribution for stacked MLPs
+- **Peak throughput**: 128 MACs/cycle (see [BCV Guide](BCV_COMPUTATION_GUIDE.md#7-parallelism-and-throughput))
+
+The design can evolve toward higher precision, streaming capability, and energy efficiency with modest structural changes.

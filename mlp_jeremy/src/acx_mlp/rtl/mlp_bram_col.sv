@@ -21,7 +21,7 @@
 
 module mlp_bram_col #(
     // How many MLPs to stack in this column
-    parameter integer NUM_MLPS = 2,
+    parameter integer NUM_MLPS = 8,
     parameter logic dump_waves = 0
 ) (
     // Clock and Reset

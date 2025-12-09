@@ -17,9 +17,9 @@ from cocotb.triggers import  RisingEdge
 from emulator import group_floating_point as gfp
 from sim_utils.build_misc import int_to_float24
 
-GFP8E8_BIAS = 128
-BFP8E8_BIAS = 133
-ACX_BFP_M8E8_BIAS = BFP8E8_BIAS - GFP8E8_BIAS # Exponent bias compensation (GFP8 -> BFP8)
+GFP8E8_BIAS = 127  # IEEE standard: 2^(8-1) - 1 = 127
+BFP8E8_BIAS = 133  # MLP native bias: 127 + 6 (mantissa format offset)
+ACX_BFP_M8E8_BIAS = BFP8E8_BIAS - GFP8E8_BIAS  # = 6 (mantissa_bits - 2)
 
 
 def pack_bytes(byte_list: list[int]) -> int:
