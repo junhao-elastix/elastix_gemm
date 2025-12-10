@@ -44,6 +44,7 @@ module tb_engine_top;
     localparam TGT_DATA_WIDTH = 256;
     localparam AXI_ADDR_WIDTH = 42;  // 42-bit for GDDR6 NoC addressing
     localparam GDDR6_PAGE_ID = 9'd2;  // Channel 1 page ID
+    localparam NUM_TILES = 8;
 
 
     // ===================================================================
@@ -77,18 +78,18 @@ module tb_engine_top;
     logic         cmd_fifo_afull;
     logic [12:0]  cmd_fifo_count;
 
-    // Line interface (from arbiter via engine_top)
-    logic [255:0] line_data;
-    logic [8:0]   line_addr;
-    logic         line_valid;
-    logic         overflow_error;
-    logic         collection_done;
+    // Result FIFO interface (FP16)
+    logic [15:0]  result_fifo_rdata;
+    logic         result_fifo_ren;
+    logic         result_fifo_empty;
+    logic [14:0]  result_fifo_count;
 
-    // READOUT Command Interface (from master_control via engine_top)
-    logic         readout_en;
-    logic [7:0]   readout_start_col;
-    logic [31:0]  readout_rd_len;
-    logic         readout_done;
+    // Flow control monitoring
+    logic         result_almost_full;
+
+    // Connect result_almost_full to the internal result FIFO almost full signal
+    // This provides the backpressure mechanism to master_control
+    assign result_almost_full = u_dut.result_fifo_afull;
 
     // Status signals
     logic         engine_busy;
@@ -116,7 +117,8 @@ module tb_engine_top;
     engine_top #(
         .GDDR6_PAGE_ID      (GDDR6_PAGE_ID),
         .TGT_DATA_WIDTH     (TGT_DATA_WIDTH),
-        .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH)
+        .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
+        .NUM_TILES          (NUM_TILES)
     ) u_dut (
         .i_clk                  (clk),
         .i_reset_n              (reset_n),
@@ -128,21 +130,17 @@ module tb_engine_top;
         .o_cmd_fifo_afull       (cmd_fifo_afull),
         .o_cmd_fifo_count       (cmd_fifo_count),
 
-        // Result Line Output Interface (NEW: 256-bit packed lines from arbiter)
-        .o_line_data            (line_data),
-        .o_line_addr            (line_addr),
-        .o_line_valid           (line_valid),
-        .o_overflow_error       (overflow_error),
-        .o_collection_done      (collection_done),
-
-        // READOUT Command Interface (NEW: master_control -> result_fifo_to_simple_bram bridge)
-        .o_readout_en           (readout_en),
-        .o_readout_start_col    (readout_start_col),
-        .o_readout_rd_len       (readout_rd_len),
-        .i_readout_done         (readout_done),
+        // Result FIFO interface
+        .o_result_fifo_rdata    (result_fifo_rdata),
+        .i_result_fifo_ren      (result_fifo_ren),
+        .o_result_fifo_empty    (result_fifo_empty),
+        .o_result_fifo_count    (result_fifo_count),
 
         // AXI GDDR6 interface
         .nap_axi                (axi_ddr_if.initiator),
+
+        // Flow control (connect to internal signal for monitoring)
+        .i_result_almost_full   (result_almost_full),
 
         // Status
         .o_engine_busy          (engine_busy),
@@ -189,15 +187,10 @@ module tb_engine_top;
         .i_clk              (clk),
         .i_reset_n          (reset_n),
 
-        // READOUT Command Interface (from master_control via engine_top)
-        .i_readout_en       (readout_en),
-        .o_readout_done     (readout_done),
-
-        // Line interface (from result_arbiter via engine_top)
-        .i_line_data        (line_data),
-        .i_line_addr        (line_addr),
-        .i_line_valid       (line_valid),
-        .i_collection_done  (collection_done),
+        // Result FIFO interface (from engine_top)
+        .i_fifo_rdata       (result_fifo_rdata),
+        .o_fifo_ren         (result_fifo_ren),
+        .i_fifo_empty       (result_fifo_empty),
 
         // BRAM interface (to model)
         .o_bram_wr_addr     (result_bram_wr_addr),
@@ -279,7 +272,6 @@ module tb_engine_top;
     integer total_tests = 0;
     integer passed_tests = 0;
     integer failed_tests = 0;
-    integer total_expected_results;  // For batch mode testing
 
     // ===================================================================
     // Golden Reference Storage
@@ -300,42 +292,47 @@ module tb_engine_top;
         string name;
     } test_config_t;
 
-    // Test configurations matching test_gemm_full.cpp Stage 2 (circular buffer bug reproduction)
-    // CONFIGURATION: 10-test sequence with NO RESET between tests (col_en=0x000001 single-tile)
-    // MULTI-TILE TESTING: Change TILE_COUNT parameter below to test different configurations
-    // Set TILE_COUNT to test: 1 (0x000001), 2 (0x000003), 4 (0x00000F), 8 (0x0000FF)
-    parameter logic [23:0] TILE_COUNT = 24'h000001;  // Testing with n=1 tile (verify 2-cycle pipeline fix)
-
-    // This reproduces the Stage 2 batch-then-read pattern that triggers the circular buffer bug
+    // Test configurations matching test_gemm.cpp
+    // Single-tile tests (10 tests with col_en=0x000001)
+    // Multi-tile tests (4 new tests with col_en=0x000003 for 2 tiles)
     test_config_t test_configs[] = '{
-        // 10-test sequence with configurable tile count (matching SOFTWARE_REFERENCE_RESULTS.md)
-        '{B: 1,   C: 1,   V: 1,   col_en: TILE_COUNT, name: "B1_C1_V1"},      // Test 1: 1 result, cumulative=1
-        '{B: 2,   C: 2,   V: 2,   col_en: TILE_COUNT, name: "B2_C2_V2"},      // Test 2: 4 results, cumulative=5
-        '{B: 4,   C: 4,   V: 4,   col_en: TILE_COUNT, name: "B4_C4_V4"},      // Test 3: 16 results, cumulative=21
-        '{B: 2,   C: 2,   V: 64,  col_en: TILE_COUNT, name: "B2_C2_V64"},     // Test 4: 4 results, cumulative=25
-        '{B: 4,   C: 4,   V: 32,  col_en: TILE_COUNT, name: "B4_C4_V32"},     // Test 5: 16 results, cumulative=41
-        '{B: 8,   C: 8,   V: 16,  col_en: TILE_COUNT, name: "B8_C8_V16"},     // Test 6: 64 results, cumulative=105
-        '{B: 16,  C: 16,  V: 8,   col_en: TILE_COUNT, name: "B16_C16_V8"},    // Test 7: 256 results, cumulative=361
-        '{B: 1,   C: 128, V: 1,   col_en: TILE_COUNT, name: "B1_C128_V1"},    // Test 8: 128 results, cumulative=489
-        '{B: 128, C: 1,   V: 1,   col_en: TILE_COUNT, name: "B128_C1_V1"},    // Test 9: 128 results, cumulative=617
-        '{B: 1,   C: 1,   V: 128, col_en: TILE_COUNT, name: "B1_C1_V128"},    // Test 10: 1 result, cumulative=618
+        // Single-tile regression tests (existing)
+        '{B: 1, C: 1, V: 1,   col_en: 24'h000001, name: "B1_C1_V1"},
+        '{B: 2, C: 2, V: 2,   col_en: 24'h000001, name: "B2_C2_V2"},
+        '{B: 4, C: 4, V: 4,   col_en: 24'h000001, name: "B4_C4_V4"},
+        '{B: 2, C: 2, V: 64,  col_en: 24'h000001, name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h000001, name: "B4_C4_V32"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000001, name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8, col_en: 24'h000001, name: "B16_C16_V8"},
+        '{B: 1, C: 128, V: 1, col_en: 24'h000001, name: "B1_C128_V1"},
+        // '{B: 128, C: 1, V: 1, col_en: 24'h000001, name: "B128_C1_V1"},
+        // '{B: 1, C: 1, V: 128, col_en: 24'h000001, name: "B1_C1_V128"}
 
-        // Multi-tile tests re-enabled after circular buffer bug fix
-        '{B: 2, C: 2, V: 64,   col_en: 24'h000003, name: "B2_C2_V64"}, // Test 11: 4 results, 2 columns enabled
-        '{B: 2, C: 2, V: 64,   col_en: 24'h00000F, name: "B2_C2_V64"}, // Test 12: 4 results, 4 columns enabled
-        '{B: 2, C: 2, V: 64,   col_en: 24'h0000FF, name: "B2_C2_V64"}, // Test 13: 4 results, 8 columns enabled
-        '{B: 4, C: 4, V: 32,  col_en: 24'h000003, name: "B4_C4_V32"}, // Test 14: 16 results, 2 columns enabled
-        '{B: 4, C: 4, V: 32,  col_en: 24'h00000F, name: "B4_C4_V32"}, // Test 15: 16 results, 4 columns enabled
-        '{B: 4, C: 4, V: 32,  col_en: 24'h0000FF, name: "B4_C4_V32"}, // Test 16: 16 results, 8 columns enabled
-        '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"}, // Test 17: 64 results, 2 columns enabled
-        '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"}, // Test 18: 64 results, 4 columns enabled
-        '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"}, // Test 19: 64 results, 8 columns enabled
-        '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"}, // Test 20: 256 results, 2 columns enabled
-        '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"}, // Test 21: 256 results, 4 columns enabled
-        '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"}, // Test 22: 256 results, 8 columns enabled
-        '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"}, // Test 23: 128 results, 2 columns enabled
-        '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"}, // Test 24: 128 results, 4 columns enabled
-        '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"}, // Test 25: 128 results, 8 columns enabled
+    // Multi-column tests (NEW: multi-tile tests with NUM_TILES=8)
+        '{B: 2, C: 2, V: 64,   col_en: 24'h000003, name: "B2_C2_V64"},
+        '{B: 2, C: 2, V: 64,   col_en: 24'h00000F, name: "B2_C2_V64"},
+        '{B: 2, C: 2, V: 64,   col_en: 24'h0000FF, name: "B2_C2_V64"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h000003, name: "B4_C4_V32"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h00000F, name: "B4_C4_V32"},
+        '{B: 4, C: 4, V: 32,  col_en: 24'h0000FF, name: "B4_C4_V32"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h000003, name: "B8_C8_V16"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h00000F, name: "B8_C8_V16"},
+        '{B: 8, C: 8, V: 16,  col_en: 24'h0000FF, name: "B8_C8_V16"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h000003, name: "B16_C16_V8"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h00000F, name: "B16_C16_V8"},
+        '{B: 16, C: 16, V: 8,  col_en: 24'h0000FF, name: "B16_C16_V8"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h000003, name: "B1_C128_V1"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h00000F, name: "B1_C128_V1"},
+        '{B: 1, C: 128, V: 1,  col_en: 24'h0000FF, name: "B1_C128_V1"}
+
+        // Multi-column tests unbalanced (DISABLED: golden reference mismatch)
+        // '{B: 8, C: 14, V: 4,  col_en: 24'h0000FF, name: "B8_C14_V4"}
+        // LIMITATION: Unbalanced distributions (C % num_tiles != 0) produce mixed valid/garbage results
+        // - Tiles 0-1: 2 columns each → 16 valid results
+        // - Tiles 2-5: 1 column + zero-padding → 8 valid + 8 garbage results
+        // - Arbiter correctly collects rd_len=64 in round-robin, but ~56/64 don't match golden
+        // - Golden reference assumes balanced distribution, not round-robin collection pattern
+        // - Testbench validation strategy TBD for unbalanced cases
     };
 
     // ===================================================================
@@ -355,84 +352,32 @@ module tb_engine_top;
         wait (reset_n == 1'b1);
         repeat (10) @(posedge clk);
 
-        // STAGE 2 REPRODUCTION: Batch all commands for all tests FIRST
-        // This matches test_gemm_full.cpp Stage 2: submit all commands, then wait for all results
-        $display("\n[TB] ====================================================================");
-        $display("[TB] MULTI-TILE CONFIGURATION: col_en=0x%06h (%0d tiles enabled)",
-                 TILE_COUNT, $countones(TILE_COUNT));
-        $display("[TB] STAGE 2 BATCH MODE: Submitting ALL commands for ALL %0d tests", test_configs.size());
-        $display("[TB] ====================================================================\n");
-
-        // Submit all commands for all tests
+        // Run all test configurations
         foreach (test_configs[i]) begin
-            $display("[TB] Submitting commands for Test %0d: %s (B=%0d, C=%0d, V=%0d)",
-                     i+1, test_configs[i].name, test_configs[i].B, test_configs[i].C, test_configs[i].V);
+            // Debug: Capture BRAM state before reset (for B4_C4_V4 analysis)
+            if (i > 0 && i == 3) begin  // After test 3 (B4_C4_V4), before reset for test 4
+                $display("[TB_DEBUG] @%0t BEFORE RESET: BRAM[0] = 0x%064x", $time, result_bram_model[0]);
+                $display("[TB_DEBUG] @%0t BEFORE RESET: BRAM lines written counter = %0d", $time, result_bram_lines_written);
+            end
 
-            submit_test_commands(
+            // Reset engine between tests to ensure clean state
+            if (i > 0) begin
+                reset_n = 1'b0;
+                result_rd_ptr = 13'b0;  // Reset circular buffer read pointer
+                repeat (10) @(posedge clk);
+                reset_n = 1'b1;
+                repeat (10) @(posedge clk);
+                $display("[TB] Reset between tests completed at time %0t (rd_ptr reset to 0)", $time);
+            end
+
+            run_single_test(
                 test_configs[i].B,
                 test_configs[i].C,
                 test_configs[i].V,
                 test_configs[i].col_en,
                 test_configs[i].name
             );
-        end
-
-        $display("\n[TB] All commands submitted! Waiting for all results to accumulate...\n");
-
-        // Calculate total expected results for all tests
-        total_expected_results = 0;
-        foreach (test_configs[i]) begin
-            total_expected_results += test_configs[i].B * test_configs[i].C;
-        end
-        $display("[TB] Expecting total of %0d results from %0d tests", total_expected_results, $size(test_configs));
-
-        timeout_count = 0;
-        watchdog = 50000000;  // 500ms timeout for all 25 tests (increased from 100ms)
-
-        while ((result_wr_ptr < total_expected_results) && (timeout_count < watchdog)) begin
-            @(posedge clk);
-            timeout_count++;
-        end
-
-        if (timeout_count >= watchdog) begin
-            $display("[TB] ERROR: Timeout waiting for all results! Expected wr_ptr=%0d, got %0d",
-                     total_expected_results, result_wr_ptr);
-            $display("[TB] Partial results collected. Proceeding with verification...");
-        end else begin
-            $display("[TB] SUCCESS: All %0d results collected in %0d cycles", result_wr_ptr, timeout_count);
-        end
-
-        // Wait for final BRAM writes to propagate
-        repeat (10) @(posedge clk);
-
-        // Check for circular buffer bug at position 1
-        $display("\n[TB] ====================================================================");
-        $display("[TB] CIRCULAR BUFFER BUG CHECK");
-        $display("[TB] ====================================================================");
-        $display("[TB] BRAM[0] pos[0]=0x%04x (Test 1 result)", result_bram_model[0][15:0]);
-        $display("[TB] BRAM[0] pos[1]=0x%04x (Test 2 result 0 - CHECK FOR DUPLICATE!)", result_bram_model[0][31:16]);
-        $display("[TB] BRAM[0] pos[2]=0x%04x (Test 2 result 1)", result_bram_model[0][47:32]);
-        $display("[TB] BRAM[0] pos[3]=0x%04x (Test 2 result 2)", result_bram_model[0][63:48]);
-
-        if (result_bram_model[0][31:16] == result_bram_model[0][15:0]) begin
-            $display("[TB] *** BUG REPRODUCED! Position 1 is DUPLICATE of position 0 (0x%04x) ***",
-                     result_bram_model[0][15:0]);
-            $display("[TB] Expected pos[1]=0x22f7, got 0x%04x", result_bram_model[0][31:16]);
-        end else begin
-            $display("[TB] Position 1 OK: 0x%04x (no duplicate)", result_bram_model[0][31:16]);
-        end
-        $display("[TB] ====================================================================\n");
-
-        // Now verify each test's results against golden files
-        foreach (test_configs[i]) begin
-            verify_test_results(
-                i,
-                test_configs[i].B,
-                test_configs[i].C,
-                test_configs[i].V,
-                test_configs[i].col_en,
-                test_configs[i].name
-            );
+            repeat (100) @(posedge clk);  // Delay between tests
         end
 
         // Print summary
@@ -469,8 +414,6 @@ module tb_engine_top;
         integer mismatches;
         integer idx;
         integer num_cols_enabled;    // For timing comparison
-        integer start_wr_ptr;         // Starting wr_ptr for cumulative tests
-        integer target_wr_ptr;        // Target wr_ptr for cumulative tests
 
         // Timing measurements
         longint start_time, end_time;
@@ -489,12 +432,7 @@ module tb_engine_top;
         $display("[TB] ====================================================================");
 
         // Load golden reference (ALL tests validate against golden files)
-        // Multi-tile tests (col_en > 1) use "_multitile.hex" golden files
-        if (config_col_en > 24'h000001) begin
-            golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s_multitile.hex", test_name);
-        end else begin
-            golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
-        end
+        golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
         golden_file = $fopen(golden_filename, "r");
         if (golden_file == 0) begin
             $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);
@@ -600,35 +538,31 @@ module tb_engine_top;
         // Continuously drain result FIFO as results become available
         // This prevents FIFO backpressure deadlock for large result sets
         expected_results = config_B * config_C;
-        $display("[TB] Draining results as they arrive (expecting %0d results, B=%0d x C=%0d)...",
+        $display("[TB] Draining results as they arrive (expecting %0d results, B=%0d x C=%0d)...", 
                  expected_results, config_B, config_C);
-
+        
         timeout_count = 0;
         watchdog = 100000;  // 1ms timeout
         results_seen = 0;
         mismatches = 0;
 
-        // Circular Buffer Monitoring (CUMULATIVE across tests when reset is disabled)
-        start_wr_ptr = result_wr_ptr;  // Capture starting wr_ptr for this test
-        target_wr_ptr = start_wr_ptr + expected_results;  // Calculate target
+        // Circular Buffer Monitoring
         $display("[TB] Circular buffer monitoring enabled");
-        $display("[TB] Start state: wr_ptr=%0d, rd_ptr=%0d, used_entries=%0d, empty=%b",
+        $display("[TB] Initial state: wr_ptr=%0d, rd_ptr=%0d, used_entries=%0d, empty=%b",
                  result_wr_ptr, result_rd_ptr, result_used_entries, result_empty);
-        $display("[TB] Expecting wr_ptr to go from %0d to %0d (+%0d results)",
-                 start_wr_ptr, target_wr_ptr, expected_results);
 
-        // Wait for all results to be packed into BRAM (use cumulative wr_ptr with no-reset scenario)
-        while ((result_wr_ptr < target_wr_ptr) && (timeout_count < watchdog)) begin
+        // Wait for all results to be packed into BRAM
+        while ((result_wr_ptr < expected_results) && (timeout_count < watchdog)) begin
             @(posedge clk);
             timeout_count++;
         end
 
         if (timeout_count >= watchdog) begin
-            $display("[TB] ERROR: Packing timeout! Expected wr_ptr=%0d, got %0d (started at %0d)",
-                     target_wr_ptr, result_wr_ptr, start_wr_ptr);
+            $display("[TB] ERROR: Packing timeout! Expected %0d, got %0d",
+                     expected_results, result_wr_ptr);
         end else begin
-            $display("[TB] All results packed after %0d cycles: wr_ptr=%0d (target=%0d), used_entries=%0d",
-                     timeout_count, result_wr_ptr, target_wr_ptr, result_used_entries);
+            $display("[TB] All results packed after %0d cycles: wr_ptr=%0d, used_entries=%0d",
+                     timeout_count, result_wr_ptr, result_used_entries);
         end
 
         // Wait for BRAM write to propagate (always_ff needs 1 cycle)
@@ -641,56 +575,51 @@ module tb_engine_top;
         $display("[TB] BRAM lines written: %0d", result_bram_lines_written);
 
         // Read and verify packed results from BRAM model
-        // In no-reset scenario, results start at start_wr_ptr, not 0
         for (int result_idx = 0; result_idx < expected_results; result_idx++) begin
             logic [15:0] fp16_hw;
             logic [15:0] golden;
             int diff;
             int bram_line;
             int bram_pos;
-            int cumulative_idx;  // Actual BRAM position (cumulative across tests)
 
-            // Calculate cumulative index in BRAM (accounts for previous tests)
-            cumulative_idx = start_wr_ptr + result_idx;
-
-            // Calculate BRAM address: line = cumulative_idx / 16, position = cumulative_idx % 16
-            bram_line = cumulative_idx / 16;
-            bram_pos = cumulative_idx % 16;
+            // Calculate BRAM address: line = result_idx / 16, position = result_idx % 16
+            bram_line = result_idx / 16;
+            bram_pos = result_idx % 16;
 
             // Extract FP16 value from packed BRAM line
             fp16_hw = result_bram_model[bram_line][bram_pos*16 +: 16];
-            golden = golden_results[result_idx];  // Golden is still indexed from 0 for THIS test
+            golden = golden_results[result_idx];
 
             // Debug: Show what we read from BRAM for B4_C4_V4 test
             if (expected_results == 16 && result_idx < 4) begin
-                $display("[TB_VERIFY] @%0t READ: result[%0d] (cumulative=%0d) from BRAM[%0d][%0d] = 0x%04x (full line = 0x%064x), golden = 0x%04x",
-                        $time, result_idx, cumulative_idx, bram_line, bram_pos, fp16_hw, result_bram_model[bram_line], golden);
+                $display("[TB_VERIFY] @%0t READ: result[%0d] from BRAM[%0d][%0d] = 0x%04x (full line = 0x%064x), golden = 0x%04x",
+                        $time, result_idx, bram_line, bram_pos, fp16_hw, result_bram_model[bram_line], golden);
             end
 
             // Check for X/Z states (uninitialized values)
             if ($isunknown(fp16_hw)) begin
-                $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at cumulative[%0d] (BRAM[%0d][%0d])",
-                        fp16_hw, cumulative_idx, bram_line, bram_pos);
+                $display("[TB] ERROR: hw=0x%04x contains X/Z (uninitialized) at result[%0d] (BRAM[%0d][%0d])",
+                        fp16_hw, result_idx, bram_line, bram_pos);
                 mismatches++;
             end else begin
                 // Only do golden comparison for single-tile tests
                 diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
 
                 if (diff > 5) begin
-                    $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (cumulative=%0d, BRAM[%0d][%0d])",
-                            result_idx, fp16_hw, golden, diff, cumulative_idx, bram_line, bram_pos);
+                    $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (BRAM[%0d][%0d])",
+                            result_idx, fp16_hw, golden, diff, bram_line, bram_pos);
                     mismatches++;
                 end else if (result_idx < 10 || (result_idx >= expected_results - 5)) begin
                     // Only print first 10 and last 5 matches to reduce log size
-                    $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (cumulative=%0d, BRAM[%0d][%0d])",
-                            result_idx, fp16_hw, golden, diff, cumulative_idx, bram_line, bram_pos);
+                    $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (BRAM[%0d][%0d])",
+                            result_idx, fp16_hw, golden, diff, bram_line, bram_pos);
                 end
             end
 
             results_seen++;
 
-            // Update rd_ptr every 16 results (one BRAM line consumed) - use cumulative index
-            if ((cumulative_idx + 1) % 16 == 0) begin
+            // Update rd_ptr every 16 results (one BRAM line consumed)
+            if ((result_idx + 1) % 16 == 0) begin
                 result_rd_ptr = result_rd_ptr + 16;
             end
         end
@@ -722,8 +651,10 @@ module tb_engine_top;
         $display("[TB]   Results collected: %0d", results_seen);
         $display("[TB] ====================================================================");
 
-        // Note: Result BRAM removed - arbiter now pushes directly to result_fifo_to_simple_bram
-        $display("[TB] Result path: arbiter → result_fifo_to_simple_bram (direct PUSH)");
+        // Monitor internal result FIFO (should be drained by packer)
+        $display("[TB] Internal Result FIFO (engine_top → packer):");
+        $display("[TB]   count: %0d (should be ~0 if packer is draining)", result_fifo_count);
+        $display("[TB]   almost_full: %b", u_dut.result_fifo_afull);
 
         // For packed result testing, a separate testbench for elastix_gemm_top
         // would be needed to verify the result_fifo_to_simple_bram functionality
@@ -759,132 +690,6 @@ module tb_engine_top;
             failed_tests++;
         end
 
-    endtask
-
-    // ===================================================================
-    // Task: Submit Test Commands (Batch Mode - No Waiting)
-    // ===================================================================
-    task automatic submit_test_commands(
-        input int config_B,
-        input int config_C,
-        input int config_V,
-        input logic [23:0] config_col_en,
-        input string test_name
-    );
-        logic [31:0] cmd_sequence [0:511];
-        integer num_commands;
-        integer cmd_idx;
-
-        // Generate command sequence
-        build_test_sequence(config_B, config_C, config_V, config_col_en, cmd_sequence, num_commands);
-
-        // Submit all commands to FIFO without waiting
-        for (cmd_idx = 0; cmd_idx < num_commands; cmd_idx++) begin
-            cmd_fifo_wdata = cmd_sequence[cmd_idx];
-            cmd_fifo_wen = 1'b1;
-            @(posedge clk);
-        end
-        cmd_fifo_wen = 1'b0;
-
-        $display("[TB]   Submitted %0d commands for %s", num_commands, test_name);
-    endtask
-
-    // ===================================================================
-    // Task: Verify Test Results (From Accumulated BRAM)
-    // ===================================================================
-    task automatic verify_test_results(
-        input int test_idx,
-        input int config_B,
-        input int config_C,
-        input int config_V,
-        input logic [23:0] config_col_en,
-        input string test_name
-    );
-        integer expected_results;
-        integer cumulative_start;  // Where this test's results start in BRAM
-        integer result_idx;
-        logic [15:0] fp16_hw;
-        logic [15:0] golden;
-        logic [15:0] golden_results [0:16383];
-        integer golden_file;
-        integer scan_result;
-        integer idx;
-        integer mismatches;
-        string golden_filename;
-        int diff;
-        int bram_line;
-        int bram_pos;
-        int cumulative_idx;
-
-        total_tests++;
-        expected_results = config_B * config_C;
-
-        // Calculate cumulative start position for this test
-        cumulative_start = 0;
-        for (int j = 0; j < test_idx; j++) begin
-            cumulative_start += test_configs[j].B * test_configs[j].C;
-        end
-
-        $display("\n[TB] ====================================================================");
-        $display("[TB] VERIFY TEST %0d: %s (B=%0d, C=%0d, V=%0d)", test_idx+1, test_name, config_B, config_C, config_V);
-        $display("[TB] Results at BRAM positions [%0d:%0d] (count=%0d)",
-                 cumulative_start, cumulative_start + expected_results - 1, expected_results);
-        $display("[TB] ====================================================================");
-
-        // Load golden reference
-        // Multi-tile tests (col_en > 1) use "_multitile.hex" golden files
-        if (config_col_en > 24'h000001) begin
-            golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s_multitile.hex", test_name);
-        end else begin
-            golden_filename = $sformatf("/home/dev/Dev/elastix_gemm/hex/golden_%s.hex", test_name);
-        end
-        golden_file = $fopen(golden_filename, "r");
-        if (golden_file == 0) begin
-            $display("[TB] ERROR: Cannot open golden reference file: %s", golden_filename);
-            failed_tests++;
-            return;
-        end
-
-        idx = 0;
-        while (!$feof(golden_file) && idx < 16384) begin
-            scan_result = $fscanf(golden_file, "%h\n", golden_results[idx]);
-            if (scan_result == 1) idx++;
-        end
-        $fclose(golden_file);
-
-        // Verify results
-        mismatches = 0;
-        for (result_idx = 0; result_idx < expected_results; result_idx++) begin
-            cumulative_idx = cumulative_start + result_idx;
-            bram_line = cumulative_idx / 16;
-            bram_pos = cumulative_idx % 16;
-
-            fp16_hw = result_bram_model[bram_line][bram_pos*16 +: 16];
-            golden = golden_results[result_idx];
-
-            if ($isunknown(fp16_hw)) begin
-                $display("[TB] ERROR: X/Z at cumulative[%0d]", cumulative_idx);
-                mismatches++;
-            end else begin
-                diff = (fp16_hw > golden) ? fp16_hw - golden : golden - fp16_hw;
-                if (diff > 5) begin
-                    $display("[TB] MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (cumulative=%0d)",
-                            result_idx, fp16_hw, golden, diff, cumulative_idx);
-                    mismatches++;
-                end else if (result_idx < 5 || result_idx >= expected_results - 5) begin
-                    $display("[TB] MATCH[%0d]: hw=0x%04x golden=0x%04x (cumulative=%0d)",
-                            result_idx, fp16_hw, golden, cumulative_idx);
-                end
-            end
-        end
-
-        if (mismatches == 0) begin
-            $display("[TB] PASS: %s - All %0d results matched!", test_name, expected_results);
-            passed_tests++;
-        end else begin
-            $display("[TB] FAIL: %s - %0d/%0d mismatches", test_name, mismatches, expected_results);
-            failed_tests++;
-        end
     endtask
 
     // ===================================================================

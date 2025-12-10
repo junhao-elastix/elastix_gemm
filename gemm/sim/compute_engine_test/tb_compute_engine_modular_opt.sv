@@ -32,7 +32,8 @@ module tb_compute_engine_modular_opt;
     logic reset_n;
 
     // TILE command interface (per SINGLE_ROW_REFERENCE.md)
-    logic        tile_en;
+    logic        tile_en;           // Static enable (configuration)
+    logic        tile_start;        // Dynamic pulse (start computing!)
     logic [15:0] left_addr;         // 16 bits: Left matrix start address
     logic [15:0] right_addr;        // 16 bits: Right matrix start address
     logic [7:0]  left_ugd_len;      // 8 bits: Left UGD vectors (Batch dimension)
@@ -41,6 +42,7 @@ module tb_compute_engine_modular_opt;
     logic        left_man_4b;       // 1 bit: Left mantissa width (0=8b, 1=4b)
     logic        right_man_4b;      // 1 bit: Right mantissa width (0=8b, 1=4b)
     logic        main_loop_over_left; // 1 bit: Main loop dimension selector
+    logic [23:0] mc_tile_en;        // Per-tile enable mask
     logic        tile_done;
 
     // Tile BRAM Write Interface (simulating DISPATCH operation)
@@ -96,15 +98,17 @@ module tb_compute_engine_modular_opt;
         .i_reset_n              (reset_n),
 
         // TILE command (spec-compliant per SINGLE_ROW_REFERENCE.md)
-        .i_tile_en              (tile_en),
-        .i_tile_left_addr            (left_addr),       // 16 bits
-        .i_tile_right_addr           (right_addr),      // 16 bits
-        .i_tile_left_ugd_len         (left_ugd_len),    // 8 bits: dim_b (Batch)
-        .i_tile_right_ugd_len        (right_ugd_len),   // 8 bits: dim_c (Column)
-        .i_tile_vec_len              (vec_len),         // 8 bits: dim_v (Vector size)
-        .i_tile_left_man_4b          (left_man_4b),
-        .i_tile_right_man_4b         (right_man_4b),
+        .i_tile_en              (tile_en),            // Static enable
+        .i_tile_start           (tile_start),         // Dynamic START pulse
+        .i_tile_left_addr       (left_addr),          // 16 bits
+        .i_tile_right_addr      (right_addr),         // 16 bits
+        .i_tile_left_ugd_len    (left_ugd_len),       // 8 bits: dim_b (Batch)
+        .i_tile_right_ugd_len   (right_ugd_len),      // 8 bits: dim_c (Column)
+        .i_tile_vec_len         (vec_len),            // 8 bits: dim_v (Vector size)
+        .i_tile_left_man_4b     (left_man_4b),
+        .i_tile_right_man_4b    (right_man_4b),
         .i_tile_main_loop_over_left  (main_loop_over_left),
+        .i_mc_tile_en           (mc_tile_en),         // Tile enable mask
         .o_tile_done            (tile_done),
 
         // Tile BRAM Write Interface (simulating DISPATCH operation)
@@ -371,17 +375,22 @@ module tb_compute_engine_modular_opt;
     );
         $display("  Sending TILE command: B=%0d, C=%0d, V=%0d", b, c, v);
         @(posedge clk);
-        tile_en <= 1'b1;
+        // Setup command parameters (tile_en stays HIGH as static enable)
+        tile_en <= 1'b1;          // Static enable - keep HIGH
         left_addr <= 16'd0;
         right_addr <= 16'd0;
-        left_ugd_len <= b;     // dim_b (Batch dimension)
-        right_ugd_len <= c;    // dim_c (Column dimension)
-        vec_len <= v;          // dim_v (Vector size)
+        left_ugd_len <= b;        // dim_b (Batch dimension)
+        right_ugd_len <= c;       // dim_c (Column dimension)
+        vec_len <= v;             // dim_v (Vector size)
         left_man_4b <= 1'b0;
         right_man_4b <= 1'b0;
         main_loop_over_left <= 1'b0;
+        mc_tile_en <= 24'h000001; // Single tile enabled (tile 0)
         @(posedge clk);
-        tile_en <= 1'b0;
+        // Pulse tile_start to trigger computation
+        tile_start <= 1'b1;
+        @(posedge clk);
+        tile_start <= 1'b0;
     endtask
 
     // ===================================================================
@@ -456,6 +465,7 @@ module tb_compute_engine_modular_opt;
         // Initialize
         reset_n = 0;
         tile_en = 0;
+        tile_start = 0;
         left_addr = 16'd0;
         right_addr = 16'd0;
         left_ugd_len = 8'd0;
@@ -464,6 +474,7 @@ module tb_compute_engine_modular_opt;
         left_man_4b = 1'b0;
         right_man_4b = 1'b0;
         main_loop_over_left = 1'b0;
+        mc_tile_en = 24'h000001;  // Single tile enabled
         test_num = 0;
         test_passed = 1;
         results_collected = 0;

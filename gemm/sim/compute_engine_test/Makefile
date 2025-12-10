@@ -37,6 +37,7 @@ GEMM_TB := .
 VLOG_OPTIONS := +define+SIMULATION
 VLOG_OPTIONS += -sv
 VLOG_OPTIONS += -timescale "1ps/1ps"
+VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal (valid for sim init)
 VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/
 VLOG_OPTIONS += +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim
 VLOG_OPTIONS += +incdir+$(ACX_LIB_S7T)/common

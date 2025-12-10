@@ -116,10 +116,6 @@ module flex_fifo #(
             if (i_rd_en && !empty_reg) begin
                 rd_data_reg <= mem[rd_ptr];
                 rd_ptr <= rd_ptr + 1;
-            // CRITICAL FIX: Clear rd_data_reg when FIFO is empty and no read is happening
-            // This prevents stale data from persisting across test boundaries
-            end else if (count_reg == 0) begin
-                rd_data_reg <= '0;
             end
 
             // Update count

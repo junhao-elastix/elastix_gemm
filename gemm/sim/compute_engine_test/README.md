@@ -1,8 +1,8 @@
 # Compute Engine Modular Testbench
 
-**Purpose**: Unit test for `compute_engine_modular_opt.sv` module  
-**Status**: ✅ **Functional** - Compiles successfully  
-**DUT**: `compute_engine_modular_opt.sv` (optimized compute engine)
+**Purpose**: Unit test for `compute_engine_modular.sv` module  
+**Status**: ✅ **Functional** - All 10 tests passing  
+**DUT**: `compute_engine_modular.sv` (modular compute engine with tile BRAM)
 
 ## Quick Start
 
@@ -16,23 +16,22 @@ make debug                 # Run with GUI for waveform analysis
 
 ## Overview
 
-This testbench validates the **compute engine module** (`compute_engine_modular_opt.sv`) in isolation. The compute engine performs GFP8 matrix multiplication with BCV loop orchestration and outputs FP16 results.
+This testbench validates the **compute engine module** (`compute_engine_modular.sv`) in isolation. The compute engine performs GFP8 matrix multiplication with BCV loop orchestration and outputs FP16 results.
 
 ### Key Features
 
-- **Optimized Architecture**: Uses `compute_engine_modular_opt.sv` with direct path design
-- **Dual BRAM Interface**: Parallel left/right matrix reads
-- **BCV Controller**: Optimized 4-state controller (`gfp8_bcv_controller_opt.sv`)
-- **Ultra-Optimized NV Dot**: Uses `gfp8_nv_dot_ultra_opt.sv` (2-cycle dot product)
+- **Modular Architecture**: Uses `compute_engine_modular.sv` with integrated tile_bram
+- **Dual BRAM Interface**: Parallel left/right matrix reads via tile_bram
+- **BCV Controller**: `gfp8_bcv_controller.sv` for Batch-Column-Vector loop orchestration
+- **NV Dot Product**: `gfp8_nv_dot.sv` for Native Vector dot product computation
 - **FP16 Output**: GFP8 to FP16 conversion with golden reference validation
 
 ## Architecture
 
 ### Design Under Test (DUT)
-- **Module**: `gemm/src/rtl/compute_engine_modular_opt.sv`
-- **BCV Controller**: `gfp8_bcv_controller_opt.sv`
-- **NV Dot**: `gfp8_nv_dot_ultra_opt.sv`
-- **Group Dot**: `gfp8_group_dot_mlp.sv`
+- **Module**: `gemm/src/rtl/compute_engine_modular.sv`
+- **BCV Controller**: `gfp8_bcv_controller.sv`
+- **NV Dot**: `gfp8_nv_dot.sv`
 - **Format Conversion**: `gfp8_to_fp16.sv`
 - **BRAM**: `tile_bram.sv` (dual-port for left/right matrices)
 
@@ -63,10 +62,9 @@ This testbench validates the **compute engine module** (`compute_engine_modular_
 - **library.cfg** - Riviera-PRO library configuration
 
 ### Source Dependencies
-- **DUT**: `../../src/rtl/compute_engine_modular_opt.sv`
-- **BCV Controller**: `../../src/rtl/gfp8_bcv_controller_opt.sv`
-- **NV Dot**: `../../src/rtl/gfp8_nv_dot_ultra_opt.sv`
-- **Group Dot**: `../../src/rtl/gfp8_group_dot_mlp.sv`
+- **DUT**: `../../src/rtl/compute_engine_modular.sv`
+- **BCV Controller**: `../../src/rtl/gfp8_bcv_controller.sv`
+- **NV Dot**: `../../src/rtl/gfp8_nv_dot.sv`
 - **Format Conversion**: `../../src/rtl/gfp8_to_fp16.sv`
 - **BRAM**: `../../src/rtl/tile_bram.sv`
 - **Package**: `../../src/include/gemm_pkg.sv`
@@ -76,35 +74,26 @@ This testbench validates the **compute engine module** (`compute_engine_modular_
 
 ## Test Configurations
 
-The testbench validates multiple B×C×V configurations:
+The testbench validates 10 B×C×V configurations (matching test_gemm.cpp):
 - B1_C1_V1, B2_C2_V2, B4_C4_V4
-- B2_C2_V64, B4_C4_V32, B8_C8_V16
+- B2_C2_V64, B4_C4_V32, B8_C8_V16, B16_C16_V8
 - B1_C128_V1, B128_C1_V1, B1_C1_V128
 
 ## Success Criteria
 
 ✅ **PASS Conditions**:
-1. All test configurations complete without errors
-2. FP16 results match golden references (within tolerance)
+1. All 10 test configurations complete without errors
+2. FP16 results match golden references (within ±5 LSB tolerance)
 3. No timeout errors
 4. Proper BCV loop execution
 
-## Performance
-
-The optimized compute engine (`compute_engine_modular_opt.sv`) features:
-- **Direct path architecture** (no intermediate buffers)
-- **2-cycle NV dot product** (reduced from 3 cycles)
-- **33% latency reduction** over baseline
-- **Optimized BCV controller** (4-state FSM)
-
 ## References
 
-- **Compute Engine RTL**: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/compute_engine_modular_opt.sv`
+- **Compute Engine RTL**: `/home/dev/Dev/elastix_gemm/gemm/src/rtl/compute_engine_modular.sv`
 - **System Test**: `/home/dev/Dev/elastix_gemm/gemm/sim/vector_system_test/`
 - **Historical Files**: `archive_nov06_obsolete/` (archived Nov 6, 2025)
 
 ---
 
-**Last Updated**: Thu Nov 6 2025  
-**Status**: ✅ Functional - Compiles successfully
-
+**Last Updated**: Tue Dec 2 2025  
+**Status**: ✅ Functional - All 10 tests passing
