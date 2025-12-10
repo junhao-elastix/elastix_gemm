@@ -49,6 +49,7 @@ module mlp_bram_col_ctrl #(
     input  wire [255:0]  i_nv_left_man [0:3], // 128 activation mantissas as 4 groups of 256 bits
     input  wire [31:0]   i_nv_left_exp,       // 4 exponents (8-bit each)
     input  wire        i_new_dot,            // Start new dot product (reset accumulator)
+    input  wire        i_last_nv,            // This is the last NV of the batch (output after drain)
 
     // =========================================================================
     // Result Interface (downstream)
@@ -104,6 +105,7 @@ module mlp_bram_col_ctrl #(
     logic [255:0]  act_man_reg [0:3];  // 4 groups of 256 bits
     logic [31:0]   act_exp_reg;
     logic          new_dot_reg;
+    logic          last_nv_reg;        // Last NV of batch flag
 
     // =========================================================================
     // Per-Stack Data Extraction
@@ -338,6 +340,7 @@ module mlp_bram_col_ctrl #(
             act_man_reg[3]  <= 256'b0;
             act_exp_reg     <= 32'b0;
             new_dot_reg     <= 1'b0;
+            last_nv_reg     <= 1'b0;
             nv_index        <= 7'd0;
         end else begin
             comp_state_reg <= comp_state_next;
@@ -353,6 +356,7 @@ module mlp_bram_col_ctrl #(
                         act_man_reg[3] <= i_nv_left_man[3];
                         act_exp_reg <= i_nv_left_exp;
                         new_dot_reg <= i_new_dot;
+                        last_nv_reg <= i_last_nv;  // Capture last NV flag
                         if (i_new_dot) begin
                             nv_index <= 7'd0;
                         end else begin
@@ -383,7 +387,25 @@ module mlp_bram_col_ctrl #(
     // =========================================================================
     assign o_wt_ready = (wt_state_reg == WT_IDLE);
     assign o_act_ready = (comp_state_reg == COMP_IDLE) && !is_loading;
-    assign o_dout_valid = (comp_state_reg == COMP_IDLE) && !is_loading;
+
+    // Pulse o_dout_valid for exactly 1 cycle when result is ready
+    // Result is ready when transitioning from DRAIN to IDLE AND this was the last NV of batch
+    logic was_draining;
+    logic was_last_nv;
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            was_draining <= 1'b0;
+            was_last_nv  <= 1'b0;
+        end else begin
+            was_draining <= (comp_state_reg == COMP_DRAIN);
+            // Capture last_nv_reg at end of DRAIN so it's valid when we check in IDLE
+            if (comp_state_reg == COMP_DRAIN) begin
+                was_last_nv <= last_nv_reg;
+            end
+        end
+    end
+    // Pulse when entering IDLE from DRAIN AND this was the last NV of the batch
+    assign o_dout_valid = (comp_state_reg == COMP_IDLE) && was_draining && was_last_nv && !is_loading;
 
     // =========================================================================
     // 4 × MLP BRAM Column Instances

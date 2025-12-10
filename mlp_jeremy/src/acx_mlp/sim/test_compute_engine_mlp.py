@@ -42,6 +42,8 @@ def test_compute_engine_mlp_runner():
         "mlp_bram_col_ctrl.sv",
         # row_bram (L1 memory)
         "row_bram.sv",
+        # FP24 to FP16 converter
+        "fp24_to_fp16.sv",
         # Top-level wrapper
         "compute_engine_mlp.sv",
     ]

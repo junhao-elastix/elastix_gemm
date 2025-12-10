@@ -1,11 +1,14 @@
 // ------------------------------------------------------------------
-// Compute Engine MLP
+// Compute Engine MLP (GEMM-Compatible Interface)
 //
 // Top-level wrapper integrating:
 //   - row_bram: L1 memory for activations (left) and weights (right)
 //   - mlp_bram_col_ctrl: MLP compute array with 16 columns
+//   - fp24_to_fp16: Output format conversion
 //
-// Three-Phase Operation:
+// Interface designed to match compute_engine_modular.sv from gemm project
+//
+// Operation (triggered by i_tile_start):
 //   1. WEIGHT FILL: Load weights from row_bram right → MLP BRAMs
 //      - Column-major order: vec_len NVs per column
 //      - 16 columns × vec_len NVs = 16*vec_len total NVs
@@ -13,26 +16,14 @@
 //   2. COMPUTE: Stream activations from row_bram left → all columns
 //      - BCV Loop: B batches × C columns (C=16 fixed) × V vectors
 //      - For each batch: broadcast V activation NVs to all 16 columns
-//      - Each batch produces 16 results (one per column)
+//      - Each batch produces 16 FP16 results (one per column)
 //
-//   3. OUTPUT: B × 16 FP24 results (16 results per batch)
+//   3. OUTPUT: B × 256-bit vectors (16 FP16 results per batch)
 //
 // BCV Dimensions:
-//   - B (left_ugd_len): Number of activation batches
-//   - C (right_ugd_len): Number of columns (fixed to 16)
-//   - V (vec_len): Number of NVs to accumulate per output
-//
-// Memory Layout:
-//   - Left (activations): B batches × V NVs = B*V total NVs
-//     - Batch 0: NVs [0, V-1]
-//     - Batch 1: NVs [V, 2V-1]
-//     - Batch b: NVs [b*V, (b+1)*V-1]
-//   - Right (weights): C columns × V NVs = 16*V total NVs
-//
-// Ready-Valid Interfaces:
-//   - Upstream: row_bram write ports (4 parallel ports)
-//   - Control: start_fill, start_compute pulses
-//   - Downstream: 16 × 24-bit FP24 results with valid (pulses B times)
+//   - B (i_tile_left_ugd_len): Number of activation batches
+//   - C (i_tile_right_ugd_len): Number of columns (fixed to 16)
+//   - V (i_tile_vec_len): Number of NVs to accumulate per output
 //
 // Author: Generated for MLP project
 // Date: 2024
@@ -42,23 +33,32 @@
 `default_nettype none
 
 module compute_engine_mlp #(
-    parameter MAN_WIDTH = 256,           // Mantissa line width (256 bits = 32 × 8-bit)
-    parameter EXP_WIDTH = 8,             // Exponent width
-    parameter BRAM_DEPTH = 512,          // row_bram depth
-    parameter ADDR_WIDTH = $clog2(BRAM_DEPTH),
-    parameter NUM_COLUMNS = 16,          // Number of MLP columns
-    parameter NUM_MLPS = 8,              // Number of MLP primitives (2 columns each)
-    parameter VEC_LEN_WIDTH = 8          // Width of vec_len parameter
+    parameter int TILE_ID = 0,                // Tile ID for debugging
+    parameter int MAN_WIDTH = 256,            // Mantissa line width (256 bits = 32 × 8-bit)
+    parameter int EXP_WIDTH = 8,              // Exponent width
+    parameter int BRAM_DEPTH = 512,           // row_bram depth
+    parameter int ADDR_WIDTH = $clog2(BRAM_DEPTH),
+    parameter int NUM_COLUMNS = 16,           // Number of MLP columns (fixed)
+    parameter int NUM_MLPS = 8                // Number of MLP primitives (2 columns each)
 ) (
     input  logic                     i_clk,
     input  logic                     i_reset_n,
 
     // =========================================================================
-    // Configuration (BCV dimensions)
+    // Master Control Interface (TILE command) - gemm-compatible
     // =========================================================================
-    input  logic [VEC_LEN_WIDTH-1:0] i_left_ugd_len,   // B: Number of activation batches (1-128)
-    input  logic [VEC_LEN_WIDTH-1:0] i_right_ugd_len,  // C: Number of columns (fixed to 16 for now)
-    input  logic [VEC_LEN_WIDTH-1:0] i_vec_len,        // V: Number of NVs to accumulate per output (1-128)
+    input  logic                     i_tile_en,              // Static enable (configuration)
+    input  logic                     i_tile_start,           // Dynamic pulse (start computing!)
+    input  logic [15:0]              i_tile_left_addr,       // Left matrix start address (unused)
+    input  logic [15:0]              i_tile_right_addr,      // Right matrix start address (unused)
+    input  logic [7:0]               i_tile_left_ugd_len,    // B: Number of activation batches
+    input  logic [7:0]               i_tile_right_ugd_len,   // C: Number of columns (ignored, fixed 16)
+    input  logic [7:0]               i_tile_vec_len,         // V: Number of NVs to accumulate
+    input  logic                     i_tile_left_man_4b,     // 4-bit mantissa left (unused)
+    input  logic                     i_tile_right_man_4b,    // 4-bit mantissa right (unused)
+    input  logic                     i_tile_main_loop_over_left, // Loop order (unused)
+    input  logic [23:0]              i_mc_tile_en,           // Per-tile enable mask (unused)
+    output logic                     o_tile_done,
 
     // =========================================================================
     // row_bram Write Interface (4 parallel ports)
@@ -85,21 +85,18 @@ module compute_engine_mlp #(
     input  logic [EXP_WIDTH-1:0]     i_exp_right_wr_data,
 
     // =========================================================================
-    // Control Interface
+    // Result Interface (downstream) - 16 × FP16 per batch
     // =========================================================================
-    input  logic                     i_start_fill,     // Start weight fill phase
-    input  logic                     i_start_compute,  // Start compute phase
-
-    output logic                     o_fill_busy,      // Weight fill in progress
-    output logic                     o_fill_done,      // Weight fill complete
-    output logic                     o_compute_busy,   // Compute in progress
-    output logic                     o_compute_done,   // Compute complete
+    output logic [255:0]             o_result_data,          // 16 × FP16 results
+    output logic                     o_result_valid,
+    input  logic                     i_result_full,          // Backpressure (unused for now)
+    input  logic                     i_result_afull,         // Almost full (unused for now)
 
     // =========================================================================
-    // Result Interface (downstream)
+    // Debug Interface
     // =========================================================================
-    output logic [23:0]              o_result [NUM_COLUMNS-1:0], // FP24 results
-    output logic                     o_result_valid               // Results valid
+    output logic [3:0]               o_ce_state,
+    output logic [15:0]              o_result_count
 );
 
     // =========================================================================
@@ -117,56 +114,152 @@ module compute_engine_mlp #(
     logic [6:0] nv_right_rd_idx;
 
     // mlp_bram_col_ctrl interface signals
-    // Note: nv_left_man and nv_right_man are already in 256*4 array format,
-    // which matches mlp_bram_col_ctrl's expected interface
     logic        wt_valid;
     logic        wt_ready;
     logic [3:0]  col_sel;
-    logic [6:0]  wt_nv_idx;  // NV index within column for V>1
+    logic [6:0]  wt_nv_idx;
 
     logic        act_valid;
     logic        act_ready;
     logic        new_dot;
+    logic        last_nv;
 
     logic [71:0] mlp_dout [NUM_MLPS-1:0];
     logic        dout_valid;
+
+    // FP24 results (extracted from MLP outputs)
+    logic [23:0] fp24_results [NUM_COLUMNS-1:0];
+
+    // FP16 results (after conversion)
+    logic [15:0] fp16_results [NUM_COLUMNS-1:0];
+    logic        fp16_valid;
+
+    // =========================================================================
+    // Top-Level State Machine
+    // =========================================================================
+    typedef enum logic [3:0] {
+        ST_IDLE      = 4'd0,
+        ST_FILL      = 4'd1,   // Weight fill phase
+        ST_COMPUTE   = 4'd2,   // Compute phase
+        ST_DONE      = 4'd3
+    } top_state_t;
+
+    top_state_t top_state_reg;
 
     // =========================================================================
     // Weight Fill Controller FSM
     // =========================================================================
     typedef enum logic [2:0] {
         FILL_IDLE     = 3'b000,
-        FILL_READ     = 3'b001,  // Read NV from row_bram
-        FILL_WAIT     = 3'b010,  // Wait for mlp_bram_col_ctrl ready
-        FILL_SEND     = 3'b011,  // Send NV to mlp_bram_col_ctrl
-        FILL_NEXT     = 3'b100,  // Move to next NV/column
+        FILL_READ     = 3'b001,
+        FILL_WAIT     = 3'b010,
+        FILL_SEND     = 3'b011,
+        FILL_NEXT     = 3'b100,
         FILL_DONE     = 3'b101
     } fill_state_t;
 
     fill_state_t fill_state_reg, fill_state_next;
 
     // Fill counters
-    logic [VEC_LEN_WIDTH-1:0] fill_nv_cnt;    // NV counter within column (0 to vec_len-1)
-    logic [3:0]               fill_col_cnt;   // Column counter (0 to 15)
+    logic [7:0] fill_nv_cnt;
+    logic [3:0] fill_col_cnt;
+
+    // Fill control
+    logic fill_start;
+    logic fill_done;
 
     // =========================================================================
     // Compute Controller FSM
     // =========================================================================
     typedef enum logic [2:0] {
         COMP_IDLE        = 3'b000,
-        COMP_READ        = 3'b001,  // Read activation NV from row_bram
-        COMP_WAIT        = 3'b010,  // Wait for mlp_bram_col_ctrl ready
-        COMP_SEND        = 3'b011,  // Send activation NV to mlp_bram_col_ctrl
-        COMP_NEXT        = 3'b100,  // Move to next NV
-        COMP_WAIT_FINISH = 3'b101,  // Wait for mlp_bram_col_ctrl to finish
+        COMP_READ        = 3'b001,
+        COMP_WAIT        = 3'b010,
+        COMP_SEND        = 3'b011,
+        COMP_NEXT        = 3'b100,
+        COMP_WAIT_FINISH = 3'b101,
         COMP_DONE        = 3'b110
     } comp_ctrl_state_t;
 
     comp_ctrl_state_t comp_ctrl_state_reg, comp_ctrl_state_next;
 
     // Compute counters
-    logic [VEC_LEN_WIDTH-1:0] comp_nv_cnt;      // NV counter within batch (0 to vec_len-1)
-    logic [VEC_LEN_WIDTH-1:0] comp_batch_cnt;   // Batch counter (0 to left_ugd_len-1)
+    logic [7:0] comp_nv_cnt;
+    logic [7:0] comp_batch_cnt;
+
+    // Compute control
+    logic compute_start;
+    logic compute_done;
+
+    // =========================================================================
+    // Result Counter
+    // =========================================================================
+    logic [15:0] result_count;
+
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            result_count <= 16'd0;
+        end else if (i_tile_start && top_state_reg == ST_IDLE) begin
+            result_count <= 16'd0;
+        end else if (o_result_valid) begin
+            result_count <= result_count + 1;
+        end
+    end
+
+    assign o_result_count = result_count;
+    assign o_ce_state = top_state_reg;
+
+    // =========================================================================
+    // Top-Level State Machine Logic
+    // =========================================================================
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            top_state_reg <= ST_IDLE;
+            fill_start <= 1'b0;
+            compute_start <= 1'b0;
+        end else begin
+            fill_start <= 1'b0;
+            compute_start <= 1'b0;
+
+            case (top_state_reg)
+                ST_IDLE: begin
+                    if (i_tile_en && i_tile_start) begin
+                        top_state_reg <= ST_FILL;
+                        fill_start <= 1'b1;
+                        `ifdef SIMULATION
+                        $display("[CE_MLP%0d] @%0t ST_IDLE: tile_start received, B=%0d, V=%0d",
+                                 TILE_ID, $time, i_tile_left_ugd_len, i_tile_vec_len);
+                        `endif
+                    end
+                end
+
+                ST_FILL: begin
+                    if (fill_done) begin
+                        top_state_reg <= ST_COMPUTE;
+                        compute_start <= 1'b1;
+                        `ifdef SIMULATION
+                        $display("[CE_MLP%0d] @%0t ST_FILL: fill_done, starting compute", TILE_ID, $time);
+                        `endif
+                    end
+                end
+
+                ST_COMPUTE: begin
+                    if (compute_done) begin
+                        top_state_reg <= ST_DONE;
+                        `ifdef SIMULATION
+                        $display("[CE_MLP%0d] @%0t ST_COMPUTE: compute_done", TILE_ID, $time);
+                        `endif
+                    end
+                end
+
+                ST_DONE: begin
+                    top_state_reg <= ST_IDLE;
+                end
+            endcase
+        end
+    end
+
+    assign o_tile_done = (top_state_reg == ST_DONE);
 
     // =========================================================================
     // row_bram Instance
@@ -180,7 +273,7 @@ module compute_engine_mlp #(
         .i_clk(i_clk),
         .i_reset_n(i_reset_n),
 
-        // Write ports - directly connected to external interface
+        // Write ports
         .i_man_left_wr_addr(i_man_left_wr_addr),
         .i_man_left_wr_en(i_man_left_wr_en),
         .i_man_left_wr_data(i_man_left_wr_data),
@@ -230,11 +323,12 @@ module compute_engine_mlp #(
         .i_nv_left_man(nv_left_man),
         .i_nv_left_exp(nv_left_exp),
         .i_new_dot(new_dot),
+        .i_last_nv(last_nv),
 
         // Result interface
         .o_dout(mlp_dout),
         .o_dout_valid(dout_valid),
-        .i_dout_ready(1'b1)  // Always ready to accept results
+        .i_dout_ready(1'b1)
     );
 
     // =========================================================================
@@ -245,13 +339,12 @@ module compute_engine_mlp #(
 
         case (fill_state_reg)
             FILL_IDLE: begin
-                if (i_start_fill) begin
+                if (fill_start) begin
                     fill_state_next = FILL_READ;
                 end
             end
 
             FILL_READ: begin
-                // Combinational read from row_bram, proceed immediately
                 fill_state_next = FILL_WAIT;
             end
 
@@ -262,14 +355,12 @@ module compute_engine_mlp #(
             end
 
             FILL_SEND: begin
-                // NV sent, move to next
                 fill_state_next = FILL_NEXT;
             end
 
             FILL_NEXT: begin
-                // Check if we've filled all NVs for all columns
                 if (fill_col_cnt == (NUM_COLUMNS - 1) &&
-                    fill_nv_cnt == (i_vec_len - 1)) begin
+                    fill_nv_cnt == (i_tile_vec_len - 1)) begin
                     fill_state_next = FILL_DONE;
                 end else begin
                     fill_state_next = FILL_READ;
@@ -302,8 +393,7 @@ module compute_engine_mlp #(
                 end
 
                 FILL_NEXT: begin
-                    // Column-major: increment NV first, then column
-                    if (fill_nv_cnt == (i_vec_len - 1)) begin
+                    if (fill_nv_cnt == (i_tile_vec_len - 1)) begin
                         fill_nv_cnt  <= '0;
                         fill_col_cnt <= fill_col_cnt + 4'd1;
                     end else begin
@@ -316,17 +406,15 @@ module compute_engine_mlp #(
         end
     end
 
+    assign fill_done = (fill_state_reg == FILL_DONE);
+
     // =========================================================================
     // Weight Fill: Control Signal Generation
     // =========================================================================
-    // Calculate row_bram right NV index
-    // Column-major layout: col_0_nv_0, col_0_nv_1, ..., col_0_nv_(vec_len-1), col_1_nv_0, ...
-    // NV index = col_cnt * vec_len + nv_cnt
     logic [6:0] fill_nv_idx;
-    assign fill_nv_idx = (fill_col_cnt * i_vec_len) + fill_nv_cnt[6:0];
+    assign fill_nv_idx = (fill_col_cnt * i_tile_vec_len) + fill_nv_cnt[6:0];
 
     always_comb begin
-        // Default values
         nv_right_rd_idx = 7'd0;
         wt_valid = 1'b0;
         col_sel = 4'd0;
@@ -336,13 +424,11 @@ module compute_engine_mlp #(
             FILL_READ, FILL_WAIT, FILL_SEND: begin
                 nv_right_rd_idx = fill_nv_idx;
                 col_sel = fill_col_cnt;
-                wt_nv_idx = fill_nv_cnt[6:0];  // NV index within column for V>1
+                wt_nv_idx = fill_nv_cnt[6:0];
             end
-
             default: ;
         endcase
 
-        // Assert wt_valid only in FILL_SEND state
         if (fill_state_reg == FILL_SEND) begin
             wt_valid = 1'b1;
         end
@@ -351,21 +437,17 @@ module compute_engine_mlp #(
     // =========================================================================
     // Compute Controller FSM: Next State Logic
     // =========================================================================
-    // IMPORTANT: After sending the last NV, we must wait for mlp_bram_col_ctrl
-    // to finish processing (16 cycles COMP_STREAM + drain cycles).
-    // This is signaled by act_ready going high again.
     always_comb begin
         comp_ctrl_state_next = comp_ctrl_state_reg;
 
         case (comp_ctrl_state_reg)
             COMP_IDLE: begin
-                if (i_start_compute) begin
+                if (compute_start) begin
                     comp_ctrl_state_next = COMP_READ;
                 end
             end
 
             COMP_READ: begin
-                // Combinational read from row_bram, proceed immediately
                 comp_ctrl_state_next = COMP_WAIT;
             end
 
@@ -376,14 +458,11 @@ module compute_engine_mlp #(
             end
 
             COMP_SEND: begin
-                // Activation NV sent, move to next
                 comp_ctrl_state_next = COMP_NEXT;
             end
 
             COMP_NEXT: begin
-                // Check if we've processed all NVs
-                if (comp_nv_cnt == (i_vec_len - 1)) begin
-                    // Last NV sent - wait for mlp_bram_col_ctrl to finish
+                if (comp_nv_cnt == (i_tile_vec_len - 1)) begin
                     comp_ctrl_state_next = COMP_WAIT_FINISH;
                 end else begin
                     comp_ctrl_state_next = COMP_READ;
@@ -391,15 +470,10 @@ module compute_engine_mlp #(
             end
 
             COMP_WAIT_FINISH: begin
-                // Wait for mlp_bram_col_ctrl to finish processing
-                // (act_ready goes high when comp_state == COMP_IDLE)
                 if (act_ready) begin
-                    // Check if we have more batches to process
-                    if (comp_batch_cnt == (i_left_ugd_len - 1)) begin
-                        // All batches complete
+                    if (comp_batch_cnt == (i_tile_left_ugd_len - 1)) begin
                         comp_ctrl_state_next = COMP_DONE;
                     end else begin
-                        // More batches - go to next batch
                         comp_ctrl_state_next = COMP_READ;
                     end
                 end
@@ -435,10 +509,9 @@ module compute_engine_mlp #(
                 end
 
                 COMP_WAIT_FINISH: begin
-                    // When transitioning to next batch (not to COMP_DONE)
-                    if (act_ready && (comp_batch_cnt != (i_left_ugd_len - 1))) begin
+                    if (act_ready && (comp_batch_cnt != (i_tile_left_ugd_len - 1))) begin
                         comp_batch_cnt <= comp_batch_cnt + 1;
-                        comp_nv_cnt    <= '0;  // Reset NV counter for new batch
+                        comp_nv_cnt    <= '0;
                     end
                 end
 
@@ -447,89 +520,103 @@ module compute_engine_mlp #(
         end
     end
 
+    assign compute_done = (comp_ctrl_state_reg == COMP_DONE);
+
     // =========================================================================
     // Compute Controller: Control Signal Generation
     // =========================================================================
-    // Activation NV index = batch_cnt * vec_len + nv_cnt
-    // This addresses into the left (activation) section of row_bram
     logic [13:0] comp_nv_idx_full;
     logic [6:0]  comp_nv_idx;
-    assign comp_nv_idx_full = (comp_batch_cnt * i_vec_len) + comp_nv_cnt;
-    assign comp_nv_idx = comp_nv_idx_full[6:0];  // Truncate to 7 bits for row_bram
+    assign comp_nv_idx_full = (comp_batch_cnt * i_tile_vec_len) + comp_nv_cnt;
+    assign comp_nv_idx = comp_nv_idx_full[6:0];
 
     always_comb begin
-        // Default values
         nv_left_rd_idx = 7'd0;
         act_valid = 1'b0;
         new_dot = 1'b0;
+        last_nv = 1'b0;
 
         case (comp_ctrl_state_reg)
             COMP_READ, COMP_WAIT, COMP_SEND: begin
                 nv_left_rd_idx = comp_nv_idx;
             end
-
             default: ;
         endcase
 
-        // Assert act_valid only in COMP_SEND state
         if (comp_ctrl_state_reg == COMP_SEND) begin
             act_valid = 1'b1;
-            // new_dot on first NV of each batch (reset accumulator for new batch)
             new_dot = (comp_nv_cnt == '0);
+            last_nv = (comp_nv_cnt == (i_tile_vec_len - 1));  // Last NV of this batch
         end
     end
 
     // =========================================================================
-    // Output Status Signals
-    // =========================================================================
-    assign o_fill_busy    = (fill_state_reg != FILL_IDLE) && (fill_state_reg != FILL_DONE);
-    assign o_fill_done    = (fill_state_reg == FILL_DONE);
-    assign o_compute_busy = (comp_ctrl_state_reg != COMP_IDLE) && (comp_ctrl_state_reg != COMP_DONE);
-    assign o_compute_done = (comp_ctrl_state_reg == COMP_DONE);
-
-    // =========================================================================
-    // Result Extraction
-    // Extract FP24 from 72-bit MLP outputs
-    // Each MLP produces 72 bits = 2 columns × 24-bit FP24 + some padding
-    // From mlp_bram_col.sv: dout format is {fp24_odd, fp24_even} per MLP
+    // Result Extraction: FP24 from MLP outputs
+    // Each MLP produces 72 bits = 2 columns × 24-bit FP24 + padding
     // mlp_dout[i][23:0] = even column (col 2*i)
     // mlp_dout[i][47:24] = odd column (col 2*i+1)
     // =========================================================================
     genvar col;
     generate
-        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_result
+        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_fp24_extract
             localparam MLP_IDX = col / 2;
             localparam IS_ODD = col % 2;
 
             if (IS_ODD == 0) begin : even_col
-                // Even column: bits [23:0]
-                assign o_result[col] = mlp_dout[MLP_IDX][23:0];
+                assign fp24_results[col] = mlp_dout[MLP_IDX][23:0];
             end else begin : odd_col
-                // Odd column: bits [47:24]
-                assign o_result[col] = mlp_dout[MLP_IDX][47:24];
+                assign fp24_results[col] = mlp_dout[MLP_IDX][47:24];
             end
         end
     endgenerate
 
     // =========================================================================
-    // Result Valid Logic
-    // For multiple batches, pulse o_result_valid once per batch when results ready
-    // Results are ready when:
-    //   - We're in COMP_WAIT_FINISH and act_ready goes high (batch complete)
-    // This pulses B times total (once per batch)
+    // FP24 to FP16 Conversion (16 parallel converters)
     // =========================================================================
-    logic result_valid_reg;
+    logic [15:0] fp16_conv_valid;
+
+    generate
+        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_fp16_conv
+            fp24_to_fp16 u_fp24_to_fp16 (
+                .i_clk(i_clk),
+                .i_reset_n(i_reset_n),
+                .i_fp24(fp24_results[col]),
+                .i_valid(dout_valid),
+                .o_fp16(fp16_results[col]),
+                .o_valid(fp16_conv_valid[col])
+            );
+        end
+    endgenerate
+
+    // All converters have same latency, use any valid signal
+    assign fp16_valid = fp16_conv_valid[0];
+
+    // =========================================================================
+    // Output Assembly: Pack 16 FP16 into 256-bit vector
+    // Gate result_valid to only be active during compute phase
+    // =========================================================================
+    logic in_compute_phase;
+    assign in_compute_phase = (top_state_reg == ST_COMPUTE);
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
-            result_valid_reg <= 1'b0;
+            o_result_data <= 256'd0;
+            o_result_valid <= 1'b0;
         end else begin
-            // Pulse valid when a batch completes (COMP_WAIT_FINISH and act_ready)
-            result_valid_reg <= (comp_ctrl_state_reg == COMP_WAIT_FINISH) && act_ready;
+            // Only output results during compute phase
+            if (fp16_valid && in_compute_phase) begin
+                o_result_data <= {
+                    fp16_results[15], fp16_results[14], fp16_results[13], fp16_results[12],
+                    fp16_results[11], fp16_results[10], fp16_results[9],  fp16_results[8],
+                    fp16_results[7],  fp16_results[6],  fp16_results[5],  fp16_results[4],
+                    fp16_results[3],  fp16_results[2],  fp16_results[1],  fp16_results[0]
+                };
+                o_result_valid <= 1'b1;
+            end else begin
+                o_result_valid <= 1'b0;
+            end
         end
     end
-
-    assign o_result_valid = result_valid_reg;
 
 endmodule
 
