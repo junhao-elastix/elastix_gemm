@@ -1,5 +1,6 @@
 // ------------------------------------------------------------------
 // Testbench for compute_engine_modular_opt.sv (optimized version)
+// Also supports compute_engine_mlp.sv via USE_MLP define
 //
 // Purpose: Verify optimized compute engine with direct path architecture
 // Tests:
@@ -14,6 +15,12 @@
 //  - FP16 result validation against golden references
 //  - Golden reference loading from hex files
 //
+// MLP Mode (define USE_MLP):
+//  - Uses compute_engine_mlp instead of compute_engine_modular
+//  - Only runs tests with C=16 (MLP has fixed 16 columns)
+//  - 256-bit result output (16 × FP16) serialized to single FP16
+//  - Exponent conversion: +118 offset (5-bit bias=15 → 8-bit bias=133)
+//
 // Architecture:
 //  testbench BRAM models → [DISPATCH] → DUT tile_bram → [TILE] → results
 //
@@ -25,7 +32,13 @@
 
 module tb_compute_engine_modular_opt;
 
+`ifndef USE_MLP
     import gemm_pkg::*;
+`endif
+
+    // MLP exponent conversion: 5-bit (bias=15) → 8-bit (bias=133)
+    // exp_8bit = exp_5bit + 118
+    localparam int EXP_CONVERT_OFFSET = 118;
 
     // Clock and reset
     logic clk;
@@ -63,9 +76,17 @@ module tb_compute_engine_modular_opt;
     logic [7:0]    right_exp_wr_data;
     logic          right_exp_wr_en;
 
-    // Result interface (FP16)
+    // Result interface (FP16 for modular, 256-bit for MLP)
+`ifdef USE_MLP
+    logic [255:0] result_data_wide;  // MLP outputs 16 × FP16
+    logic [15:0]  result_data;       // Serialized single FP16
+    logic         result_valid_wide; // MLP result valid
+    logic         result_valid;      // Serialized result valid
+    integer       mlp_serialize_idx; // Index for serializing 256-bit → 16-bit
+`else
     logic [15:0] result_data;
     logic        result_valid;
+`endif
     logic        result_full;
     logic        result_afull;
 
@@ -77,6 +98,8 @@ module tb_compute_engine_modular_opt;
     integer test_num;
     logic test_passed;
     integer results_collected;
+    integer tests_run;
+    integer tests_skipped;
 
     // BRAM models (mantissa storage)
     logic [255:0] bram_left_mantissa [0:2047];
@@ -91,8 +114,64 @@ module tb_compute_engine_modular_opt;
     logic [15:0] golden_fp16 [0:16383];   // Golden reference
 
     // ===================================================================
-    // DUT Instantiation (optimized version with direct path)
+    // DUT Instantiation
     // ===================================================================
+`ifdef USE_MLP
+    // MLP-based compute engine (fixed 16 columns, 256-bit output)
+    compute_engine_mlp #(
+        .TILE_ID(0),
+        .MAN_WIDTH(256),
+        .EXP_WIDTH(8),
+        .BRAM_DEPTH(512),
+        .NUM_COLUMNS(16),
+        .NUM_MLPS(8)
+    ) dut (
+        .i_clk                  (clk),
+        .i_reset_n              (reset_n),
+
+        // TILE command
+        .i_tile_en              (tile_en),
+        .i_tile_start           (tile_start),
+        .i_tile_left_addr       (left_addr),
+        .i_tile_right_addr      (right_addr),
+        .i_tile_left_ugd_len    (left_ugd_len),
+        .i_tile_right_ugd_len   (right_ugd_len),
+        .i_tile_vec_len         (vec_len),
+        .i_tile_left_man_4b     (left_man_4b),
+        .i_tile_right_man_4b    (right_man_4b),
+        .i_tile_main_loop_over_left (main_loop_over_left),
+        .i_mc_tile_en           (mc_tile_en),
+        .o_tile_done            (tile_done),
+
+        // Write Interface (MLP uses different port naming for exponents)
+        .i_man_left_wr_addr     (man_left_wr_addr),
+        .i_man_left_wr_data     (man_left_wr_data),
+        .i_man_left_wr_en       (man_left_wr_en),
+
+        .i_man_right_wr_addr    (man_right_wr_addr),
+        .i_man_right_wr_data    (man_right_wr_data),
+        .i_man_right_wr_en      (man_right_wr_en),
+
+        .i_exp_left_wr_addr     (left_exp_wr_addr),
+        .i_exp_left_wr_data     (left_exp_wr_data),
+        .i_exp_left_wr_en       (left_exp_wr_en),
+
+        .i_exp_right_wr_addr    (right_exp_wr_addr),
+        .i_exp_right_wr_data    (right_exp_wr_data),
+        .i_exp_right_wr_en      (right_exp_wr_en),
+
+        // Result interface (256-bit = 16 × FP16)
+        .o_result_data          (result_data_wide),
+        .o_result_valid         (result_valid_wide),
+        .i_result_full          (result_full),
+        .i_result_afull         (result_afull),
+
+        // Debug
+        .o_ce_state             (ce_state),
+        .o_result_count         (result_count)
+    );
+`else
+    // Original modular compute engine (optimized version with direct path)
     compute_engine_modular dut (
         .i_clk                  (clk),
         .i_reset_n              (reset_n),
@@ -138,6 +217,7 @@ module tb_compute_engine_modular_opt;
         .o_ce_state             (ce_state),
         .o_result_count         (result_count)
     );
+`endif
 
     // ===================================================================
     // Clock Generation
@@ -163,8 +243,29 @@ module tb_compute_engine_modular_opt;
     assign result_full = 1'b0;
     assign result_afull = 1'b0;
 
+`ifdef USE_MLP
     // ===================================================================
-    // Result Collection Monitor
+    // MLP Result Serialization (256-bit → 16 × 16-bit)
+    // When result_valid_wide pulses, extract all 16 FP16 values
+    // ===================================================================
+    always @(posedge clk) begin
+        if (result_valid_wide && !result_full) begin
+            // Extract all 16 FP16 values from the 256-bit result
+            for (int i = 0; i < 16; i++) begin
+                results_fp16[results_collected + i] = result_data_wide[i*16 +: 16];
+            end
+            $display("  [%0t] Result pulse: 16 FP16 values starting at index %0d, first=0x%04x",
+                     $time, results_collected, result_data_wide[15:0]);
+            results_collected = results_collected + 16;
+        end
+    end
+
+    // For compatibility with existing code, derive single-value signals
+    assign result_data = result_data_wide[15:0];
+    assign result_valid = result_valid_wide;
+`else
+    // ===================================================================
+    // Result Collection Monitor (original single FP16)
     // ===================================================================
     always @(posedge clk) begin
         if (result_valid && !result_full) begin
@@ -174,6 +275,7 @@ module tb_compute_engine_modular_opt;
             results_collected = results_collected + 1;
         end
     end
+`endif
 
     // ===================================================================
     // Helper Task: Initialize BRAM with Simple Pattern
@@ -277,7 +379,12 @@ module tb_compute_engine_modular_opt;
                     if (line_idx < 16) begin
                         for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
                             exp_idx = line_idx * 32 + byte_idx;
+`ifdef USE_MLP
+                            // MLP: Convert 5-bit (bias=15) to 8-bit (bias=133)
+                            bram_left_exponent[exp_idx] = hex_bytes[byte_idx] + EXP_CONVERT_OFFSET;
+`else
                             bram_left_exponent[exp_idx] = hex_bytes[byte_idx];
+`endif
                         end
                     end
                     // Lines 16-527: Mantissas (stored at BRAM addresses 0-511)
@@ -318,7 +425,12 @@ module tb_compute_engine_modular_opt;
                     if (line_idx < 16) begin
                         for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
                             exp_idx = line_idx * 32 + byte_idx;
+`ifdef USE_MLP
+                            // MLP: Convert 5-bit (bias=15) to 8-bit (bias=133)
+                            bram_right_exponent[exp_idx] = hex_bytes[byte_idx] + EXP_CONVERT_OFFSET;
+`else
                             bram_right_exponent[exp_idx] = hex_bytes[byte_idx];
+`endif
                         end
                     end
                     else begin
@@ -424,6 +536,16 @@ module tb_compute_engine_modular_opt;
         integer mismatches;
         integer diff;
         real rel_err;
+        integer max_val;
+`ifdef USE_MLP
+        // MLP uses FP24 intermediate, allowing 5% relative tolerance
+        localparam int ABS_TOL = 50;   // Larger absolute tolerance for MLP
+        localparam real REL_TOL = 0.05; // 5% relative tolerance (same as cocotb)
+`else
+        // Original modular uses direct GFP8→FP16, strict tolerance
+        localparam int ABS_TOL = 5;    // ±5 LSB absolute tolerance
+        localparam real REL_TOL = 0.0; // No relative tolerance
+`endif
 
         $display("  Validating %0d FP16 results...", expected_count);
 
@@ -439,10 +561,16 @@ module tb_compute_engine_modular_opt;
                    (results_fp16[i] - golden_fp16[i]) :
                    (golden_fp16[i] - results_fp16[i]);
 
-            // FP16 tolerance: ±2 LSB (same as hardware test)
-            if (diff > 5) begin
-                $display("    MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d",
-                         i, results_fp16[i], golden_fp16[i], diff);
+            // Get max value for relative comparison
+            max_val = (results_fp16[i] > golden_fp16[i]) ? results_fp16[i] : golden_fp16[i];
+
+            // Check both absolute and relative tolerance
+            // MLP: relative tolerance dominates (5%)
+            // Modular: absolute tolerance (5 LSB)
+            if (diff > ABS_TOL && (max_val == 0 || (real'(diff) / real'(max_val)) > REL_TOL)) begin
+                rel_err = (max_val > 0) ? (100.0 * real'(diff) / real'(max_val)) : 0.0;
+                $display("    MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (%.2f%%)",
+                         i, results_fp16[i], golden_fp16[i], diff, rel_err);
                 mismatches++;
             end
         end
@@ -478,6 +606,8 @@ module tb_compute_engine_modular_opt;
         test_num = 0;
         test_passed = 1;
         results_collected = 0;
+        tests_run = 0;
+        tests_skipped = 0;
 
         // Initialize BRAM
         for (int i = 0; i < 2048; i++) begin
@@ -494,13 +624,21 @@ module tb_compute_engine_modular_opt;
         reset_n = 1;
         repeat(2) @(posedge clk);
 
+`ifdef USE_MLP
+        $display("\n========================================");
+        $display("Compute Engine MLP Testbench");
+        $display("Running C=16 tests only (MLP has fixed 16 columns)");
+        $display("========================================\n");
+`else
         $display("\n========================================");
         $display("Compute Engine Modular Testbench");
         $display("Running 10 Test Configurations (matching test_gemm.cpp)");
         $display("========================================\n");
+`endif
 
+`ifndef USE_MLP
         // ===============================================================
-        // Test 1/10: B1_C1_V1
+        // Test 1/10: B1_C1_V1 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 1;
         $display("[TEST %0d/10] B1_C1_V1", test_num);
@@ -514,9 +652,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(10000);
 
         validate_fp16_results(1);
+        tests_run++;
 
         // ===============================================================
-        // Test 2/10: B2_C2_V2
+        // Test 2/10: B2_C2_V2 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 2;
         $display("[TEST %0d/10] B2_C2_V2", test_num);
@@ -530,9 +669,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(30000);
 
         validate_fp16_results(4);
+        tests_run++;
 
         // ===============================================================
-        // Test 3/10: B4_C4_V4
+        // Test 3/10: B4_C4_V4 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 3;
         $display("[TEST %0d/10] B4_C4_V4", test_num);
@@ -546,9 +686,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(50000);
 
         validate_fp16_results(16);
+        tests_run++;
 
         // ===============================================================
-        // Test 4/10: B2_C2_V64
+        // Test 4/10: B2_C2_V64 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 4;
         $display("[TEST %0d/10] B2_C2_V64", test_num);
@@ -562,9 +703,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(150000);
 
         validate_fp16_results(4);
+        tests_run++;
 
         // ===============================================================
-        // Test 5/10: B4_C4_V32
+        // Test 5/10: B4_C4_V32 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 5;
         $display("[TEST %0d/10] B4_C4_V32", test_num);
@@ -578,9 +720,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(200000);
 
         validate_fp16_results(16);
+        tests_run++;
 
         // ===============================================================
-        // Test 6/10: B8_C8_V16
+        // Test 6/10: B8_C8_V16 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 6;
         $display("[TEST %0d/10] B8_C8_V16", test_num);
@@ -594,9 +737,20 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(300000);
 
         validate_fp16_results(64);
+        tests_run++;
+`else
+        // MLP mode: Skip tests 1-6 (C != 16)
+        $display("[SKIP] Test 1: B1_C1_V1 (C=1 != 16)");
+        $display("[SKIP] Test 2: B2_C2_V2 (C=2 != 16)");
+        $display("[SKIP] Test 3: B4_C4_V4 (C=4 != 16)");
+        $display("[SKIP] Test 4: B2_C2_V64 (C=2 != 16)");
+        $display("[SKIP] Test 5: B4_C4_V32 (C=4 != 16)");
+        $display("[SKIP] Test 6: B8_C8_V16 (C=8 != 16)");
+        tests_skipped += 6;
+`endif
 
         // ===============================================================
-        // Test 7/10: B16_C16_V8
+        // Test 7/10: B16_C16_V8 (C=16, runs for both modular and MLP)
         // ===============================================================
         test_num = 7;
         $display("[TEST %0d/10] B16_C16_V8", test_num);
@@ -610,9 +764,11 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(500000);
 
         validate_fp16_results(256);
+        tests_run++;
 
+`ifndef USE_MLP
         // ===============================================================
-        // Test 8/10: B1_C128_V1
+        // Test 8/10: B1_C128_V1 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 8;
         $display("[TEST %0d/10] B1_C128_V1", test_num);
@@ -626,9 +782,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(200000);
 
         validate_fp16_results(128);
+        tests_run++;
 
         // ===============================================================
-        // Test 9/10: B128_C1_V1
+        // Test 9/10: B128_C1_V1 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 9;
         $display("[TEST %0d/10] B128_C1_V1", test_num);
@@ -642,9 +799,10 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(200000);
 
         validate_fp16_results(128);
+        tests_run++;
 
         // ===============================================================
-        // Test 10/10: B1_C1_V128
+        // Test 10/10: B1_C1_V128 (C != 16, skip for MLP)
         // ===============================================================
         test_num = 10;
         $display("[TEST %0d/10] B1_C1_V128", test_num);
@@ -658,6 +816,14 @@ module tb_compute_engine_modular_opt;
         wait_tile_done(100000);
 
         validate_fp16_results(1);
+        tests_run++;
+`else
+        // MLP mode: Skip tests 8-10 (C != 16)
+        $display("[SKIP] Test 8: B1_C128_V1 (C=128 != 16)");
+        $display("[SKIP] Test 9: B128_C1_V1 (C=1 != 16)");
+        $display("[SKIP] Test 10: B1_C1_V128 (C=1 != 16)");
+        tests_skipped += 3;
+`endif
 
         // ===============================================================
         // Test Summary
@@ -665,7 +831,12 @@ module tb_compute_engine_modular_opt;
         $display("========================================");
         $display("TEST SUMMARY");
         $display("========================================");
+`ifdef USE_MLP
+        $display("Tests run: %0d (C=16 only)", tests_run);
+        $display("Tests skipped: %0d (C != 16)", tests_skipped);
+`else
         $display("Total tests: 10/10 (matching test_gemm.cpp)");
+`endif
         if (test_passed) begin
             $display("STATUS: ALL TESTS PASSED");
         end else begin

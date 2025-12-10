@@ -15,9 +15,11 @@
 
 # Simulation settings
 SIM_TOP := tb_compute_engine_modular_opt
+SIM_TOP_MLP := tb_compute_engine_mlp
 DEVICE := AC7t1500
 BASE_NAME := ac7t1500
 LOG_FILE := sim_opt.log
+LOG_FILE_MLP := sim_mlp.log
 
 # Achronix environment setup
 export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
@@ -32,6 +34,9 @@ ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
 GEMM_RTL := ../../src/rtl
 GEMM_INC := ../../src/include
 GEMM_TB := .
+
+# MLP RTL is now in main RTL directory (gemm/src/rtl/)
+MLP_RTL := $(GEMM_RTL)
 
 # Compilation flags
 VLOG_OPTIONS := +define+SIMULATION
@@ -106,6 +111,73 @@ run_vsim: compile
 # Complete run (compile + simulate)
 run: run_vsim
 
+# =====================================================================
+# MLP Testbench Targets (compute_engine_mlp)
+# =====================================================================
+
+# Compile MLP design (uses same testbench with USE_MLP define)
+compile_mlp: create_library
+	@echo "======================================================================" | tee $(LOG_FILE_MLP)
+	@echo "  MLP Compilation Started: $$(date)" | tee -a $(LOG_FILE_MLP)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
+	@echo "Compiling Achronix primitives..." | tee -a $(LOG_FILE_MLP)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(DSM_COMPILE_FILE) \
+		$(DEVICE_MODELS) \
+		$(ACX_LIB_S7T)/common/acx_integer.sv \
+		$(ACX_LIB_S7T)/common/acx_floating_point.sv >> $(LOG_FILE_MLP) 2>&1 || \
+		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE_MLP)" && exit 1)
+	@echo "Compiling MLP RTL modules..." | tee -a $(LOG_FILE_MLP)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(MLP_RTL)/mlp_dot16_int8.sv \
+		$(MLP_RTL)/mlp_dot16_bfp8.sv \
+		$(MLP_RTL)/weight_bram.sv \
+		$(MLP_RTL)/mlp_bram.sv \
+		$(MLP_RTL)/mlp_bram_col.sv \
+		$(MLP_RTL)/fp24_add.sv \
+		$(MLP_RTL)/mlp_bram_col_ctrl.sv \
+		$(MLP_RTL)/row_bram.sv \
+		$(MLP_RTL)/fp24_to_fp16.sv \
+		$(MLP_RTL)/compute_engine_mlp.sv >> $(LOG_FILE_MLP) 2>&1 || \
+		(echo "ERROR: MLP RTL compilation failed. See $(LOG_FILE_MLP)" && exit 1)
+	@echo "Compiling testbench with USE_MLP define..." | tee -a $(LOG_FILE_MLP)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) +define+USE_MLP \
+		tb_compute_engine_modular_opt.sv >> $(LOG_FILE_MLP) 2>&1 || \
+		(echo "ERROR: MLP testbench compilation failed. See $(LOG_FILE_MLP)" && exit 1)
+	@echo "MLP compilation completed successfully" | tee -a $(LOG_FILE_MLP)
+	@echo ""
+
+# Run MLP simulation (uses same testbench with USE_MLP define)
+run_vsim_mlp: compile_mlp
+	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
+	@echo "  MLP Simulation Started: $$(date)" | tee -a $(LOG_FILE_MLP)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
+	@echo "Running Compute Engine MLP simulation..." | tee -a $(LOG_FILE_MLP)
+	@export LD_LIBRARY_PATH="" && \
+	vsim -c -do "run -all; quit -force" work.$(SIM_TOP) >> $(LOG_FILE_MLP) 2>&1 || \
+		(echo "ERROR: MLP simulation failed. See $(LOG_FILE_MLP)" && exit 1)
+	@echo "" | tee -a $(LOG_FILE_MLP)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
+	@echo "  MLP Simulation Completed: $$(date)" | tee -a $(LOG_FILE_MLP)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
+	@echo "" | tee -a $(LOG_FILE_MLP)
+	@echo "Extracting test summary..." | tee -a $(LOG_FILE_MLP)
+	@grep -E "PASS|FAIL|ALL TESTS" $(LOG_FILE_MLP) | tail -10 || echo "Warning: Could not find test summary"
+	@echo ""
+	@echo "Full log available in: $(LOG_FILE_MLP)"
+
+# Run MLP tests
+run_mlp: run_vsim_mlp
+
+# Debug MLP with GUI (uses same testbench with USE_MLP define)
+debug_mlp: compile_mlp
+	@echo "=== Running Compute Engine MLP Debug Simulation ==="
+	@export LD_LIBRARY_PATH="" && \
+	vsim -gui work.$(SIM_TOP) &
+
 # Run with GUI for debugging
 debug: compile
 	@echo "=== Running Compute Engine Modular Debug Simulation ==="
@@ -177,4 +249,5 @@ help:
 	@echo ""
 	@echo "========================================================================"
 
-.PHONY: all create_library compile run_vsim run debug view-log summary clean help
+.PHONY: all create_library compile run_vsim run debug view-log summary clean help \
+        compile_mlp run_vsim_mlp run_mlp debug_mlp

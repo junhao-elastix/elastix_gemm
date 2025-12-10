@@ -1,0 +1,17 @@
+[project]
+name = "compute-engine-mlp-tests"
+version = "0.1.0"
+description = "Cocotb tests for compute_engine_mlp in GEMM project"
+requires-python = ">=3.11"
+dependencies = [
+    "cocotb>=2.0.0",
+    "pytest>=8.0.0",
+    "numpy>=1.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

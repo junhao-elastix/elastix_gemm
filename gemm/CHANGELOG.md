@@ -1,3 +1,120 @@
+## [2025-12-10] - MLP Column Group Support (C > 16)
+
+**Timestamp**: Tue Dec 10 00:30:00 PST 2025
+**Status**: ✅ **COMPLETED** - MLP now supports C > 16 via sequential column group processing
+
+### Summary
+
+Extended `compute_engine_mlp.sv` to support C > 16 (where C is divisible by 16) by iterating through column groups. Each group of 16 columns is processed sequentially: fill weights → compute → output, then repeat for next group.
+
+### Changes
+
+**RTL (gemm/src/rtl/compute_engine_mlp.sv)**:
+- Added `num_col_groups` calculation: `C / 16` (max 8 groups for C=128)
+- Added `col_group_cnt` counter for tracking current group
+- Modified top-level FSM to loop FILL→COMPUTE for each column group
+- Modified weight fill index calculation to include group offset:
+  ```
+  fill_nv_idx = (col_group_cnt * 16 + fill_col_cnt) * vec_len + fill_nv_cnt
+  ```
+
+**Golden Reference Files Added (hex/)**:
+- `golden_B4_C16_V8.hex`, `golden_B8_C16_V4.hex` (baseline)
+- `golden_B4_C32_V4.hex`, `golden_B8_C32_V2.hex` (2 column groups)
+- `golden_B8_C64_V2.hex` (4 column groups)
+- `golden_B2_C128_V1.hex` (8 column groups)
+
+**Cocotb Tests Added (gemm/sim/compute_engine_test/cocotb/)**:
+- `run_multi_column_group_test()` - Generic test helper for C > 16
+- `test_c16_b4_v8`, `test_c16_b8_v4` - Baseline C=16 tests
+- `test_c32_b4_v4`, `test_c32_b8_v2` - 2 column group tests
+- `test_c64_b8_v2` - 4 column group test
+- `test_c128_b2_v1` - 8 column group test
+
+### Test Results
+
+**All 18 Cocotb Tests Pass**:
+```
+cd cocotb && uv run python test_compute_engine_mlp.py
+TESTS=18 PASS=18 FAIL=0 SKIP=0
+```
+
+**New Test Coverage**:
+| Test | B | C | V | Groups | Result |
+|------|---|---|---|--------|--------|
+| test_c16_b4_v8 | 4 | 16 | 8 | 1 | PASS |
+| test_c16_b8_v4 | 8 | 16 | 4 | 1 | PASS |
+| test_c32_b4_v4 | 4 | 32 | 4 | 2 | PASS |
+| test_c32_b8_v2 | 8 | 32 | 2 | 2 | PASS |
+| test_c64_b8_v2 | 8 | 64 | 2 | 4 | PASS |
+| test_c128_b2_v1 | 2 | 128 | 1 | 8 | PASS |
+
+### Architecture Notes
+
+- Column group iteration: For C=32, process cols 0-15 then cols 16-31
+- Each group produces B × 16 FP16 results before next group
+- Total output: B × C results (B × 16 per group × num_groups)
+- No accumulation across column groups (each column independent)
+- Memory layout: Column-major (col c uses NVs [c*V, c*V+V-1])
+
+---
+
+## [2025-12-09] - MLP Compute Engine Integration
+
+**Timestamp**: Tue Dec  9 23:42:41 PST 2025
+**Status**: ✅ **COMPLETED** - MLP compute engine integrated with full test coverage
+
+### Summary
+
+Integrated `compute_engine_mlp.sv` from mlp_jeremy project into gemm/src/rtl/ as an alternative compute engine. Added dual testbench support (SystemVerilog and cocotb) with shared RTL source.
+
+### Changes
+
+**RTL Added to gemm/src/rtl/**:
+- `compute_engine_mlp.sv` - MLP-based compute engine (16 fixed columns)
+- `mlp_dot16_int8.sv`, `mlp_dot16_bfp8.sv` - MLP dot product primitives
+- `mlp_bram.sv`, `mlp_bram_col.sv`, `mlp_bram_col_ctrl.sv` - MLP BRAM controllers
+- `fp24_add.sv`, `fp24_to_fp16.sv` - FP24 arithmetic and conversion
+- `row_bram.sv`, `weight_bram.sv` - Row and weight storage
+
+**Testbench Updates (gemm/sim/compute_engine_test/)**:
+- `tb_compute_engine_modular_opt.sv`: Added `ifdef USE_MLP` for dual DUT support
+  - Conditional DUT instantiation (modular vs MLP)
+  - Exponent conversion (+118 offset for MLP: 5-bit bias=15 → 8-bit bias=133)
+  - 256-bit → 16-bit result serialization for MLP
+  - Test skipping for C != 16 (MLP has fixed 16 columns)
+  - Separate tolerance levels (MLP: 5% relative, modular: 5 LSB absolute)
+- `Makefile`: Added `run_mlp`, `compile_mlp`, `debug_mlp` targets
+
+**Cocotb Tests Added (gemm/sim/compute_engine_test/cocotb/)**:
+- `compute_engine_mlp_tests.py` - 12 comprehensive test functions
+- `test_compute_engine_mlp.py` - Cocotb test runner
+- `sim_utils/build_misc.py` - ACX build flags helper
+- `pyproject.toml` - Python dependencies (cocotb, pytest, numpy)
+
+### Test Results
+
+**SystemVerilog Testbench**:
+```
+make run      → 10/10 tests PASS (compute_engine_modular)
+make run_mlp  → 1/1 test PASS (compute_engine_mlp, B16_C16_V8)
+```
+
+**Cocotb Tests**:
+```
+cd cocotb && uv run python test_compute_engine_mlp.py
+TESTS=12 PASS=12 FAIL=0 SKIP=0
+```
+
+### Architecture Notes
+
+- MLP uses FP24 intermediate format (vs GFP8 in modular)
+- Fixed 16 columns (C=16 only) due to MLP primitive architecture
+- 256-bit result output (16 × FP16 per pulse)
+- ~1.3% max relative error vs golden reference (within 5% tolerance)
+
+---
+
 ## [2025-11-13] - Tile BRAM Zero-Initialization for Unbalanced Distributions
 
 **Timestamp**: Thu Nov 13 02:29:14 PST 2025
