@@ -37,6 +37,8 @@ def test_compute_engine_mlp_runner():
         "weight_bram.sv",
         "mlp_bram.sv",
         "mlp_bram_col.sv",
+        # FP24 adder for 4-stack accumulation
+        "fp24_add.sv",
         "mlp_bram_col_ctrl.sv",
         # row_bram (L1 memory)
         "row_bram.sv",

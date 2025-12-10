@@ -19,6 +19,7 @@ from cocotb.triggers import RisingEdge, ClockCycles, Timer
 import random
 import sys
 from pathlib import Path
+import numpy as np
 
 # Add emulator path for GFP imports
 # Path: tests -> acx_mlp -> src -> mlp_jeremy -> elastix_gemm (4 parents up)
@@ -58,7 +59,10 @@ class ComputeEngineMlpTB:
         self.dut.i_reset_n.value = 0
         self.dut.i_start_fill.value = 0
         self.dut.i_start_compute.value = 0
-        self.dut.i_vec_len.value = 1
+        # BCV configuration defaults
+        self.dut.i_left_ugd_len.value = 1   # B = 1 batch (backward compatible)
+        self.dut.i_right_ugd_len.value = 16  # C = 16 columns (fixed for MLP)
+        self.dut.i_vec_len.value = 1         # V = 1 NV per output
 
         # Clear write enables
         self.dut.i_man_left_wr_en.value = 0
@@ -267,16 +271,20 @@ async def test_first_8_elements(dut):
 
     results = tb.get_results()
 
-    # Expected: 1×1×8 = 8 for all columns
-    expected = [8.0] * 16
+    # Compute golden reference using numpy
+    # Activation and weights are both [1,1,1,1,1,1,1,1,0,0,...,0]
+    act_vec = np.array([1.0] * 8 + [0.0] * 120)
+    wt_vec = np.array([1.0] * 8 + [0.0] * 120)
+    golden_dot = float(np.dot(act_vec, wt_vec))
+    expected = [golden_dot] * 16
 
     cocotb.log.info(f"Results (first 8 only):   {results}")
-    cocotb.log.info(f"Expected:                 {expected}")
+    cocotb.log.info(f"Expected (numpy golden):  {expected}")
 
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: First 8 elements test")
+    cocotb.log.info("TEST PASSED: First 8 elements test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -320,16 +328,19 @@ async def test_first_32_elements(dut):
 
     results = tb.get_results()
 
-    # Expected: 1×1×32 = 32 for all columns
-    expected = [32.0] * 16
+    # Compute golden reference using numpy
+    act_vec = np.array([1.0] * 32 + [0.0] * 96)
+    wt_vec = np.array([1.0] * 32 + [0.0] * 96)
+    golden_dot = float(np.dot(act_vec, wt_vec))
+    expected = [golden_dot] * 16
 
     cocotb.log.info(f"Results (first 32 only):   {results}")
-    cocotb.log.info(f"Expected:                  {expected}")
+    cocotb.log.info(f"Expected (numpy golden):   {expected}")
 
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: First 32 elements test")
+    cocotb.log.info("TEST PASSED: First 32 elements test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -414,18 +425,28 @@ async def test_identity_matrix(dut):
     results = tb.get_results()
     raw_results = tb.get_raw_results()
 
-    # Expected: result[i] = act[i] (since weight is one-hot at position i)
-    expected = [float(i + 1) for i in range(16)]
+    # Compute golden reference using numpy
+    # Activation: [1, 2, 3, ..., 16, 0, 0, ..., 0]
+    # Weights: Column i has weight[i] = 1, all others = 0
+    act_vec = np.zeros(128)
+    for i in range(16):
+        act_vec[i] = i + 1
+
+    expected = []
+    for col in range(16):
+        wt_vec = np.zeros(128)
+        wt_vec[col] = 1.0  # One-hot at position col
+        expected.append(float(np.dot(act_vec, wt_vec)))
 
     cocotb.log.info(f"Raw results (hex): {[hex(r) for r in raw_results]}")
     cocotb.log.info(f"Results:   {results}")
-    cocotb.log.info(f"Expected:  {expected}")
+    cocotb.log.info(f"Expected (numpy golden):  {expected}")
 
     # Verify
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: Identity matrix test")
+    cocotb.log.info("TEST PASSED: Identity matrix test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -478,16 +499,19 @@ async def test_all_ones(dut):
 
     results = tb.get_results()
 
-    # Expected: 128 for all columns
-    expected = [128.0] * 16
+    # Compute golden reference using numpy
+    act_vec = np.ones(128)
+    wt_vec = np.ones(128)
+    golden_dot = float(np.dot(act_vec, wt_vec))
+    expected = [golden_dot] * 16
 
     cocotb.log.info(f"Results:   {results}")
-    cocotb.log.info(f"Expected:  {expected}")
+    cocotb.log.info(f"Expected (numpy golden):  {expected}")
 
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: All-ones test")
+    cocotb.log.info("TEST PASSED: All-ones test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -553,16 +577,21 @@ async def test_multi_nv(dut):
 
     results = tb.get_results()
 
-    # Expected: (1*1)*128 + (2*1)*128 = 128 + 256 = 384
-    expected = [384.0] * 16
+    # Compute golden reference using numpy
+    # Concatenate NVs: act = [1,1,...,1, 2,2,...,2] (256 elements)
+    # Weights: [1,1,...,1, 1,1,...,1] (256 elements)
+    act_vec = np.concatenate([np.ones(128), np.full(128, 2.0)])
+    wt_vec = np.ones(256)
+    golden_dot = float(np.dot(act_vec, wt_vec))
+    expected = [golden_dot] * 16
 
     cocotb.log.info(f"Results:   {results}")
-    cocotb.log.info(f"Expected:  {expected}")
+    cocotb.log.info(f"Expected (numpy golden):  {expected}")
 
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: Multi-NV test")
+    cocotb.log.info("TEST PASSED: Multi-NV test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -618,16 +647,21 @@ async def test_different_columns(dut):
 
     results = tb.get_results()
 
-    # Expected: 128 * weight_value for each column
-    expected = [128.0 * ((col % 7) + 1) for col in range(16)]
+    # Compute golden reference using numpy
+    act_vec = np.ones(128)
+    expected = []
+    for col in range(16):
+        val = (col % 7) + 1
+        wt_vec = np.full(128, float(val))
+        expected.append(float(np.dot(act_vec, wt_vec)))
 
     cocotb.log.info(f"Results:   {results}")
-    cocotb.log.info(f"Expected:  {expected}")
+    cocotb.log.info(f"Expected (numpy golden):  {expected}")
 
     for i in range(16):
         assert results[i] == expected[i], f"Column {i}: got {results[i]}, expected {expected[i]}"
 
-    cocotb.log.info("TEST PASSED: Different columns test")
+    cocotb.log.info("TEST PASSED: Different columns test (numpy golden verified)")
 
 
 @cocotb.test()
@@ -769,8 +803,8 @@ async def test_gfp_random_floats(dut):
     cocotb.log.info(f"Max relative error: {max_rel_err*100:.4f}% (col {max_rel_col})")
 
     # GFP quantization + FP24 rounding introduces some error
-    # Use 10% relative tolerance (conservative for quantization)
-    REL_TOL = 0.10
+    # Use 1% relative tolerance (observed max ~0.01%)
+    REL_TOL = 0.01
     for i in range(16):
         abs_err = abs(results[i] - expected[i])
         rel_err = abs_err / abs(expected[i]) if expected[i] != 0 else 0
@@ -904,10 +938,461 @@ async def test_gfp_large_values(dut):
     cocotb.log.info(f"Max relative error: {max_rel_err*100:.4f}% (col {max_rel_col})")
 
     # Large values have higher absolute error but should maintain relative accuracy
-    REL_TOL = 0.10
+    REL_TOL = 0.01
     for i in range(16):
         abs_err = abs(results[i] - expected[i])
         rel_err = abs_err / abs(expected[i]) if expected[i] != 0 else 0
         assert rel_err < REL_TOL, f"Column {i}: rel error {rel_err*100:.2f}% > {REL_TOL*100}% (got {results[i]:.2f}, expected {expected[i]:.2f})"
 
     cocotb.log.info("TEST PASSED: GFP large values test")
+
+
+@cocotb.test()
+async def test_batch_dimension(dut):
+    """Test with batch dimension B > 1.
+
+    Tests the BCV loop with:
+    - B = 2 batches (left_ugd_len)
+    - C = 16 columns (fixed)
+    - V = 1 NV per output
+
+    Activation: 2 NVs (one per batch)
+      - Batch 0: all 1s
+      - Batch 1: all 2s
+    Weights: 16 columns, each with all 1s
+
+    Expected:
+      - Batch 0 output: 128 * 1 * 1 = 128 for all 16 columns
+      - Batch 1 output: 128 * 2 * 1 = 256 for all 16 columns
+      - Total: 2 result pulses, 32 results total
+    """
+    tb = ComputeEngineMlpTB(dut)
+
+    # Start clock
+    clock = Clock(dut.i_clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Reset
+    await tb.reset()
+
+    # Configure for batch dimension
+    B = 2   # 2 batches
+    V = 1   # 1 NV per output
+    dut.i_left_ugd_len.value = B
+    dut.i_right_ugd_len.value = 16  # Fixed C=16
+    dut.i_vec_len.value = V
+    await RisingEdge(dut.i_clk)
+
+    cocotb.log.info(f"Testing batch dimension: B={B}, C=16, V={V}")
+
+    # Load activation NVs (B=2 batches, V=1 each)
+    # Batch 0: all 1s (NV index 0)
+    act_mantissas_0 = [1] * 128
+    act_exponents_0 = [BFP8E8_BIAS] * 4
+    await tb.load_activation_nv(0, act_mantissas_0, act_exponents_0)
+
+    # Batch 1: all 2s (NV index 1)
+    act_mantissas_1 = [2] * 128
+    act_exponents_1 = [BFP8E8_BIAS] * 4
+    await tb.load_activation_nv(1, act_mantissas_1, act_exponents_1)
+
+    # Load weights (16 columns, 1 NV each, all 1s)
+    for col in range(16):
+        wt_mantissas = [1] * 128
+        wt_exponents = [BFP8E8_BIAS] * 4
+        await tb.load_weight_nv(col, 0, wt_mantissas, wt_exponents)
+
+    cocotb.log.info("Data loaded. Starting weight fill phase...")
+    await tb.start_fill()
+
+    fill_done = await tb.wait_fill_done()
+    assert fill_done, "Weight fill timed out"
+
+    cocotb.log.info("Weight fill complete. Starting compute phase...")
+    await ClockCycles(dut.i_clk, 5)
+
+    await tb.start_compute()
+
+    # Collect results from both batches
+    all_results = []
+    result_valid_count = 0
+
+    for cycle in range(10000):
+        await RisingEdge(dut.i_clk)
+
+        # Check for result valid
+        if dut.o_result_valid.value == 1:
+            result_valid_count += 1
+            batch_results = tb.get_results()
+            all_results.append(batch_results)
+            cocotb.log.info(f"Result valid pulse {result_valid_count}: {batch_results}")
+
+        # Check for compute done
+        if dut.o_compute_done.value == 1:
+            cocotb.log.info(f"Compute done after {cycle} cycles")
+            break
+    else:
+        assert False, "Compute timed out"
+
+    # Verify we got B result pulses
+    assert result_valid_count == B, f"Expected {B} result pulses, got {result_valid_count}"
+
+    # Compute golden reference using numpy
+    # Batch 0: act = [1,1,...,1] (128 elements), weight = [1,1,...,1] (128 elements)
+    act_batch_0 = np.ones(128)
+    wt_vec = np.ones(128)
+    golden_batch_0 = float(np.dot(act_batch_0, wt_vec))
+    expected_batch_0 = [golden_batch_0] * 16
+
+    # Batch 1: act = [2,2,...,2] (128 elements), weight = [1,1,...,1] (128 elements)
+    act_batch_1 = np.full(128, 2.0)
+    golden_batch_1 = float(np.dot(act_batch_1, wt_vec))
+    expected_batch_1 = [golden_batch_1] * 16
+
+    cocotb.log.info(f"Batch 0 results:   {all_results[0]}")
+    cocotb.log.info(f"Batch 0 expected (numpy golden):  {expected_batch_0}")
+    cocotb.log.info(f"Batch 1 results:   {all_results[1]}")
+    cocotb.log.info(f"Batch 1 expected (numpy golden):  {expected_batch_1}")
+
+    for i in range(16):
+        assert all_results[0][i] == expected_batch_0[i], \
+            f"Batch 0, Column {i}: got {all_results[0][i]}, expected {expected_batch_0[i]}"
+        assert all_results[1][i] == expected_batch_1[i], \
+            f"Batch 1, Column {i}: got {all_results[1][i]}, expected {expected_batch_1[i]}"
+
+    cocotb.log.info("TEST PASSED: Batch dimension test (B=2) (numpy golden verified)")
+
+
+@cocotb.test()
+async def test_batch_with_multi_nv(dut):
+    """Test with batch dimension B > 1 AND multiple NVs per output (V > 1).
+
+    Tests the BCV loop with:
+    - B = 2 batches
+    - C = 16 columns (fixed)
+    - V = 2 NVs per output
+
+    Memory layout:
+    - Left (activations): B * V = 4 NVs total
+      - Batch 0, NV 0: all 1s (index 0)
+      - Batch 0, NV 1: all 1s (index 1)
+      - Batch 1, NV 0: all 2s (index 2)
+      - Batch 1, NV 1: all 2s (index 3)
+    - Right (weights): C * V = 32 NVs total
+
+    Expected:
+      - Batch 0 output: (1*1)*128 + (1*1)*128 = 256 per column
+      - Batch 1 output: (2*1)*128 + (2*1)*128 = 512 per column
+    """
+    tb = ComputeEngineMlpTB(dut)
+
+    # Start clock
+    clock = Clock(dut.i_clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Reset
+    await tb.reset()
+
+    # Configure for batch + multi-NV
+    B = 2   # 2 batches
+    V = 2   # 2 NVs per output
+    dut.i_left_ugd_len.value = B
+    dut.i_right_ugd_len.value = 16  # Fixed C=16
+    dut.i_vec_len.value = V
+    await RisingEdge(dut.i_clk)
+
+    cocotb.log.info(f"Testing batch + multi-NV: B={B}, C=16, V={V}")
+
+    # Load activation NVs
+    # NV index = batch * V + nv_within_batch
+    # Batch 0, NV 0 (index 0): all 1s
+    await tb.load_activation_nv(0, [1] * 128, [BFP8E8_BIAS] * 4)
+    # Batch 0, NV 1 (index 1): all 1s
+    await tb.load_activation_nv(1, [1] * 128, [BFP8E8_BIAS] * 4)
+    # Batch 1, NV 0 (index 2): all 2s
+    await tb.load_activation_nv(2, [2] * 128, [BFP8E8_BIAS] * 4)
+    # Batch 1, NV 1 (index 3): all 2s
+    await tb.load_activation_nv(3, [2] * 128, [BFP8E8_BIAS] * 4)
+
+    # Load weights (16 columns, 2 NVs each, all 1s)
+    for col in range(16):
+        for nv in range(V):
+            wt_mantissas = [1] * 128
+            wt_exponents = [BFP8E8_BIAS] * 4
+            await tb.load_weight_nv(col, nv, wt_mantissas, wt_exponents)
+
+    cocotb.log.info("Data loaded. Starting weight fill phase...")
+    await tb.start_fill()
+
+    fill_done = await tb.wait_fill_done()
+    assert fill_done, "Weight fill timed out"
+
+    cocotb.log.info("Weight fill complete. Starting compute phase...")
+    await ClockCycles(dut.i_clk, 5)
+
+    await tb.start_compute()
+
+    # Collect results from both batches
+    all_results = []
+    result_valid_count = 0
+
+    for cycle in range(20000):  # Longer timeout for more computation
+        await RisingEdge(dut.i_clk)
+
+        if dut.o_result_valid.value == 1:
+            result_valid_count += 1
+            batch_results = tb.get_results()
+            all_results.append(batch_results)
+            cocotb.log.info(f"Result valid pulse {result_valid_count}: {batch_results}")
+
+        if dut.o_compute_done.value == 1:
+            cocotb.log.info(f"Compute done after {cycle} cycles")
+            break
+    else:
+        assert False, "Compute timed out"
+
+    # Verify we got B result pulses
+    assert result_valid_count == B, f"Expected {B} result pulses, got {result_valid_count}"
+
+    # Compute golden reference using numpy
+    # Batch 0: act = [1,1,...,1, 1,1,...,1] (256 elements), weight = [1,1,...,1] (256 elements)
+    # V=2 NVs, each with 128 elements
+    act_batch_0 = np.ones(256)  # NV0 and NV1 both all 1s
+    wt_vec = np.ones(256)       # 2 NVs of weights, all 1s
+    golden_batch_0 = float(np.dot(act_batch_0, wt_vec))
+    expected_batch_0 = [golden_batch_0] * 16
+
+    # Batch 1: act = [2,2,...,2, 2,2,...,2] (256 elements), weight = [1,1,...,1] (256 elements)
+    act_batch_1 = np.full(256, 2.0)  # NV0 and NV1 both all 2s
+    golden_batch_1 = float(np.dot(act_batch_1, wt_vec))
+    expected_batch_1 = [golden_batch_1] * 16
+
+    cocotb.log.info(f"Batch 0 results:   {all_results[0]}")
+    cocotb.log.info(f"Batch 0 expected (numpy golden):  {expected_batch_0}")
+    cocotb.log.info(f"Batch 1 results:   {all_results[1]}")
+    cocotb.log.info(f"Batch 1 expected (numpy golden):  {expected_batch_1}")
+
+    for i in range(16):
+        assert all_results[0][i] == expected_batch_0[i], \
+            f"Batch 0, Column {i}: got {all_results[0][i]}, expected {expected_batch_0[i]}"
+        assert all_results[1][i] == expected_batch_1[i], \
+            f"Batch 1, Column {i}: got {all_results[1][i]}, expected {expected_batch_1[i]}"
+
+    cocotb.log.info("TEST PASSED: Batch with multi-NV test (B=2, V=2) (numpy golden verified)")
+
+
+@cocotb.test()
+async def test_full_bcv(dut):
+    """Test with full BCV dimensions: B=16, C=16, V=8 using GFP golden reference.
+
+    This is a comprehensive test with:
+    - B = 16 batches
+    - C = 16 columns (fixed)
+    - V = 8 NVs per output
+
+    Memory layout:
+    - Left (activations): B * V = 128 NVs total, shape [B, V*128] = [16, 1024]
+    - Right (weights): C * V = 128 NVs total, shape [V*128, C] = [1024, 16]
+
+    Golden reference is computed using Python matrix multiplication on
+    dequantized GFP values, matching hardware computation exactly.
+    """
+    if not HAS_GFP:
+        cocotb.log.warning("Skipping full BCV test - torch/gfp not available")
+        return
+
+    tb = ComputeEngineMlpTB(dut)
+
+    # Start clock
+    clock = Clock(dut.i_clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Reset
+    await tb.reset()
+
+    # Configure for full BCV
+    B = 16  # 16 batches
+    C = 16  # 16 columns (fixed)
+    V = 8   # 8 NVs per output
+    NV_SIZE = 128  # Elements per NV
+    dut.i_left_ugd_len.value = B
+    dut.i_right_ugd_len.value = C
+    dut.i_vec_len.value = V
+    await RisingEdge(dut.i_clk)
+
+    cocotb.log.info(f"Testing full BCV: B={B}, C={C}, V={V}")
+    cocotb.log.info(f"  Left NVs: {B * V} = {B}*{V}")
+    cocotb.log.info(f"  Right NVs: {C * V} = {C}*{V}")
+    cocotb.log.info(f"  Total outputs: {B * C} = {B}*{C}")
+
+    # Create GFP8 data type
+    gfp8 = gfp.GFPDataType(mantissa_bits=8, exp_bits=8)
+
+    # Generate random float data
+    torch.manual_seed(12345)
+    # Activations: [B, V*NV_SIZE] = [16, 1024]
+    activations_float = torch.rand(B, V * NV_SIZE) * 2.0 - 1.0  # [-1, 1]
+    # Weights: [V*NV_SIZE, C] = [1024, 16]
+    weights_float = torch.rand(V * NV_SIZE, C) * 2.0 - 1.0  # [-1, 1]
+
+    cocotb.log.info(f"Activation shape: {activations_float.shape}, range: [{activations_float.min():.4f}, {activations_float.max():.4f}]")
+    cocotb.log.info(f"Weight shape: {weights_float.shape}, range: [{weights_float.min():.4f}, {weights_float.max():.4f}]")
+
+    # Quantize activations - each batch row separately, grouped along inner dimension
+    # Shape: [B, V*NV_SIZE] -> quantize along axis=1 with group_size=32
+    act_gfp_list = []
+    for b in range(B):
+        act_row = activations_float[b]  # [V*NV_SIZE]
+        act_gfp = gfp.GFPTensor(
+            original_shape=act_row.shape,
+            group_axis=-1,
+            group_size=32,
+            dtype=gfp8,
+            original_data=act_row,
+        )
+        act_gfp_list.append(act_gfp)
+
+    # Quantize weights - each column separately, grouped along rows
+    # Shape: [V*NV_SIZE, C] -> for each column, quantize along axis=0 with group_size=32
+    wt_gfp_list = []
+    for c in range(C):
+        wt_col = weights_float[:, c]  # [V*NV_SIZE]
+        wt_gfp = gfp.GFPTensor(
+            original_shape=wt_col.shape,
+            group_axis=-1,
+            group_size=32,
+            dtype=gfp8,
+            original_data=wt_col,
+        )
+        wt_gfp_list.append(wt_gfp)
+
+    # Compute golden reference using dequantized values
+    # For each batch b and column c: result[b,c] = dot(act_dequant[b], wt_dequant[:,c])
+    golden_results = torch.zeros(B, C)
+    for b in range(B):
+        act_dequant = act_gfp_list[b].dequantize()  # [V*NV_SIZE]
+        for c in range(C):
+            wt_dequant = wt_gfp_list[c].dequantize()  # [V*NV_SIZE]
+            golden_results[b, c] = torch.dot(act_dequant, wt_dequant)
+
+    cocotb.log.info(f"Golden results shape: {golden_results.shape}")
+    cocotb.log.info(f"Golden results range: [{golden_results.min():.4f}, {golden_results.max():.4f}]")
+
+    # Load activation NVs to hardware
+    # NV index = batch * V + nv_within_batch
+    for batch in range(B):
+        act_gfp = act_gfp_list[batch]
+        # act_gfp.mantissa_data shape: [num_groups, 32] where num_groups = V*NV_SIZE/32 = V*4
+        # act_gfp.exp_data shape: [num_groups]
+        for nv in range(V):
+            nv_idx = batch * V + nv
+            mantissas = []
+            exponents = []
+            # Each NV has 4 groups (128 elements / 32 per group)
+            for g in range(4):
+                group_idx = nv * 4 + g
+                group_mantissas = act_gfp.mantissa_data[group_idx].tolist()
+                mantissas.extend(group_mantissas)
+                group_exp = int(act_gfp.exp_data[group_idx].item()) + ACX_BFP_M8E8_BIAS
+                exponents.append(group_exp)
+            await tb.load_activation_nv(nv_idx, mantissas, exponents)
+        if batch % 4 == 0:
+            cocotb.log.info(f"  Loaded activation batch {batch}")
+
+    # Load weight NVs to hardware
+    # Weight NV index for col c, nv v: col * V + v (column-major in row_bram)
+    for col in range(C):
+        wt_gfp = wt_gfp_list[col]
+        for nv in range(V):
+            mantissas = []
+            exponents = []
+            for g in range(4):
+                group_idx = nv * 4 + g
+                group_mantissas = wt_gfp.mantissa_data[group_idx].tolist()
+                mantissas.extend(group_mantissas)
+                group_exp = int(wt_gfp.exp_data[group_idx].item()) + ACX_BFP_M8E8_BIAS
+                exponents.append(group_exp)
+            await tb.load_weight_nv(col, nv, mantissas, exponents)
+        if col % 4 == 0:
+            cocotb.log.info(f"  Loaded weight column {col}")
+
+    cocotb.log.info("Data loaded. Starting weight fill phase...")
+    await tb.start_fill()
+
+    fill_done = await tb.wait_fill_done(timeout_cycles=50000)
+    assert fill_done, "Weight fill timed out"
+
+    cocotb.log.info("Weight fill complete. Starting compute phase...")
+    await ClockCycles(dut.i_clk, 5)
+
+    await tb.start_compute()
+
+    # Collect results from all batches
+    all_results = []
+    result_valid_count = 0
+
+    for cycle in range(100000):  # Long timeout for large computation
+        await RisingEdge(dut.i_clk)
+
+        if dut.o_result_valid.value == 1:
+            result_valid_count += 1
+            batch_results = tb.get_results()
+            all_results.append(batch_results)
+            if result_valid_count <= 2 or result_valid_count > B - 2:
+                cocotb.log.info(f"Result valid pulse {result_valid_count}: {[f'{r:.4f}' for r in batch_results[:4]]}...")
+
+        if dut.o_compute_done.value == 1:
+            cocotb.log.info(f"Compute done after {cycle} cycles")
+            break
+    else:
+        assert False, "Compute timed out"
+
+    # Verify we got B result pulses
+    assert result_valid_count == B, f"Expected {B} result pulses, got {result_valid_count}"
+
+    # Verify results against golden reference
+    cocotb.log.info("Verifying hardware results against Python golden reference...")
+
+    # Debug: Print first few batches comparison
+    cocotb.log.info("=== Detailed comparison (first 2 batches) ===")
+    for batch in range(min(2, B)):
+        hw_row = all_results[batch][:4]
+        golden_row = [golden_results[batch, c].item() for c in range(4)]
+        cocotb.log.info(f"Batch {batch} HW:     {[f'{x:.4f}' for x in hw_row]}")
+        cocotb.log.info(f"Batch {batch} Golden: {[f'{x:.4f}' for x in golden_row]}")
+
+    max_abs_err = 0.0
+    max_rel_err = 0.0
+    errors = 0
+
+    for batch in range(B):
+        for col in range(C):
+            hw_result = all_results[batch][col]
+            golden = golden_results[batch, col].item()
+
+            abs_err = abs(hw_result - golden)
+            rel_err = abs_err / abs(golden) if golden != 0 else 0
+
+            if abs_err > max_abs_err:
+                max_abs_err = abs_err
+            if rel_err > max_rel_err:
+                max_rel_err = rel_err
+                max_rel_batch = batch
+                max_rel_col = col
+
+            # Use 1% relative tolerance for GFP quantization + FP24 rounding
+            REL_TOL = 0.01
+            if rel_err > REL_TOL:
+                if errors < 5:
+                    cocotb.log.error(f"Batch {batch}, Col {col}: HW={hw_result:.6f}, Golden={golden:.6f}, RelErr={rel_err*100:.2f}%")
+                errors += 1
+
+    cocotb.log.info(f"Max absolute error: {max_abs_err:.6f}")
+    cocotb.log.info(f"Max relative error: {max_rel_err*100:.4f}% (batch {max_rel_batch}, col {max_rel_col})")
+
+    if errors > 0:
+        cocotb.log.error(f"Total errors: {errors} / {B * C}")
+        assert False, f"Found {errors} mismatches exceeding {REL_TOL*100}% tolerance"
+
+    cocotb.log.info(f"All {B * C} results verified against golden reference!")
+    cocotb.log.info("TEST PASSED: Full BCV test (B=16, C=16, V=8) with GFP golden verification")

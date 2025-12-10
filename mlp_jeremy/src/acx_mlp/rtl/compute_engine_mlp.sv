@@ -11,16 +11,28 @@
 //      - 16 columns × vec_len NVs = 16*vec_len total NVs
 //
 //   2. COMPUTE: Stream activations from row_bram left → all columns
-//      - Broadcast same activation NV to all 16 columns
-//      - vec_len NVs accumulated per output
-//      - B=1 for now (single batch)
+//      - BCV Loop: B batches × C columns (C=16 fixed) × V vectors
+//      - For each batch: broadcast V activation NVs to all 16 columns
+//      - Each batch produces 16 results (one per column)
 //
-//   3. OUTPUT: 16 × FP24 results available after compute
+//   3. OUTPUT: B × 16 FP24 results (16 results per batch)
+//
+// BCV Dimensions:
+//   - B (left_ugd_len): Number of activation batches
+//   - C (right_ugd_len): Number of columns (fixed to 16)
+//   - V (vec_len): Number of NVs to accumulate per output
+//
+// Memory Layout:
+//   - Left (activations): B batches × V NVs = B*V total NVs
+//     - Batch 0: NVs [0, V-1]
+//     - Batch 1: NVs [V, 2V-1]
+//     - Batch b: NVs [b*V, (b+1)*V-1]
+//   - Right (weights): C columns × V NVs = 16*V total NVs
 //
 // Ready-Valid Interfaces:
 //   - Upstream: row_bram write ports (4 parallel ports)
 //   - Control: start_fill, start_compute pulses
-//   - Downstream: 16 × 24-bit FP24 results with valid
+//   - Downstream: 16 × 24-bit FP24 results with valid (pulses B times)
 //
 // Author: Generated for MLP project
 // Date: 2024
@@ -38,54 +50,56 @@ module compute_engine_mlp #(
     parameter NUM_MLPS = 8,              // Number of MLP primitives (2 columns each)
     parameter VEC_LEN_WIDTH = 8          // Width of vec_len parameter
 ) (
-    input  wire                      i_clk,
-    input  wire                      i_reset_n,
+    input  logic                     i_clk,
+    input  logic                     i_reset_n,
 
     // =========================================================================
-    // Configuration
+    // Configuration (BCV dimensions)
     // =========================================================================
-    input  wire [VEC_LEN_WIDTH-1:0]  i_vec_len,        // Number of NVs per column (1-128)
+    input  logic [VEC_LEN_WIDTH-1:0] i_left_ugd_len,   // B: Number of activation batches (1-128)
+    input  logic [VEC_LEN_WIDTH-1:0] i_right_ugd_len,  // C: Number of columns (fixed to 16 for now)
+    input  logic [VEC_LEN_WIDTH-1:0] i_vec_len,        // V: Number of NVs to accumulate per output (1-128)
 
     // =========================================================================
     // row_bram Write Interface (4 parallel ports)
     // External controller fills row_bram before starting operations
     // =========================================================================
     // Left mantissa write port (activations)
-    input  wire [ADDR_WIDTH-1:0]     i_man_left_wr_addr,
-    input  wire                      i_man_left_wr_en,
-    input  wire [MAN_WIDTH-1:0]      i_man_left_wr_data,
+    input  logic [ADDR_WIDTH-1:0]    i_man_left_wr_addr,
+    input  logic                     i_man_left_wr_en,
+    input  logic [MAN_WIDTH-1:0]     i_man_left_wr_data,
 
     // Right mantissa write port (weights)
-    input  wire [ADDR_WIDTH-1:0]     i_man_right_wr_addr,
-    input  wire                      i_man_right_wr_en,
-    input  wire [MAN_WIDTH-1:0]      i_man_right_wr_data,
+    input  logic [ADDR_WIDTH-1:0]    i_man_right_wr_addr,
+    input  logic                     i_man_right_wr_en,
+    input  logic [MAN_WIDTH-1:0]     i_man_right_wr_data,
 
     // Left exponent write port (activations)
-    input  wire [ADDR_WIDTH-1:0]     i_exp_left_wr_addr,
-    input  wire                      i_exp_left_wr_en,
-    input  wire [EXP_WIDTH-1:0]      i_exp_left_wr_data,
+    input  logic [ADDR_WIDTH-1:0]    i_exp_left_wr_addr,
+    input  logic                     i_exp_left_wr_en,
+    input  logic [EXP_WIDTH-1:0]     i_exp_left_wr_data,
 
     // Right exponent write port (weights)
-    input  wire [ADDR_WIDTH-1:0]     i_exp_right_wr_addr,
-    input  wire                      i_exp_right_wr_en,
-    input  wire [EXP_WIDTH-1:0]      i_exp_right_wr_data,
+    input  logic [ADDR_WIDTH-1:0]    i_exp_right_wr_addr,
+    input  logic                     i_exp_right_wr_en,
+    input  logic [EXP_WIDTH-1:0]     i_exp_right_wr_data,
 
     // =========================================================================
     // Control Interface
     // =========================================================================
-    input  wire                      i_start_fill,     // Start weight fill phase
-    input  wire                      i_start_compute,  // Start compute phase
+    input  logic                     i_start_fill,     // Start weight fill phase
+    input  logic                     i_start_compute,  // Start compute phase
 
-    output wire                      o_fill_busy,      // Weight fill in progress
-    output wire                      o_fill_done,      // Weight fill complete
-    output wire                      o_compute_busy,   // Compute in progress
-    output wire                      o_compute_done,   // Compute complete
+    output logic                     o_fill_busy,      // Weight fill in progress
+    output logic                     o_fill_done,      // Weight fill complete
+    output logic                     o_compute_busy,   // Compute in progress
+    output logic                     o_compute_done,   // Compute complete
 
     // =========================================================================
     // Result Interface (downstream)
     // =========================================================================
-    output wire [23:0]               o_result [NUM_COLUMNS-1:0], // FP24 results
-    output wire                      o_result_valid               // Results valid
+    output logic [23:0]              o_result [NUM_COLUMNS-1:0], // FP24 results
+    output logic                     o_result_valid               // Results valid
 );
 
     // =========================================================================
@@ -93,32 +107,29 @@ module compute_engine_mlp #(
     // =========================================================================
 
     // row_bram NV read outputs
-    wire [31:0]          nv_left_exp;
-    wire [MAN_WIDTH-1:0] nv_left_man [0:3];
-    wire [31:0]          nv_right_exp;
-    wire [MAN_WIDTH-1:0] nv_right_man [0:3];
+    logic [31:0]          nv_left_exp;
+    logic [MAN_WIDTH-1:0] nv_left_man [0:3];
+    logic [31:0]          nv_right_exp;
+    logic [MAN_WIDTH-1:0] nv_right_man [0:3];
 
     // row_bram NV read indices
     logic [6:0] nv_left_rd_idx;
     logic [6:0] nv_right_rd_idx;
 
-    // Pack mantissas into 1024-bit vectors for mlp_bram_col_ctrl
-    wire [1023:0] nv_left_man_packed = {nv_left_man[3], nv_left_man[2],
-                                         nv_left_man[1], nv_left_man[0]};
-    wire [1023:0] nv_right_man_packed = {nv_right_man[3], nv_right_man[2],
-                                          nv_right_man[1], nv_right_man[0]};
-
     // mlp_bram_col_ctrl interface signals
+    // Note: nv_left_man and nv_right_man are already in 256*4 array format,
+    // which matches mlp_bram_col_ctrl's expected interface
     logic        wt_valid;
-    wire         wt_ready;
+    logic        wt_ready;
     logic [3:0]  col_sel;
+    logic [6:0]  wt_nv_idx;  // NV index within column for V>1
 
     logic        act_valid;
-    wire         act_ready;
+    logic        act_ready;
     logic        new_dot;
 
-    wire [71:0]  mlp_dout [NUM_MLPS-1:0];
-    wire         dout_valid;
+    logic [71:0] mlp_dout [NUM_MLPS-1:0];
+    logic        dout_valid;
 
     // =========================================================================
     // Weight Fill Controller FSM
@@ -154,7 +165,8 @@ module compute_engine_mlp #(
     comp_ctrl_state_t comp_ctrl_state_reg, comp_ctrl_state_next;
 
     // Compute counters
-    logic [VEC_LEN_WIDTH-1:0] comp_nv_cnt;    // NV counter (0 to vec_len-1)
+    logic [VEC_LEN_WIDTH-1:0] comp_nv_cnt;      // NV counter within batch (0 to vec_len-1)
+    logic [VEC_LEN_WIDTH-1:0] comp_batch_cnt;   // Batch counter (0 to left_ugd_len-1)
 
     // =========================================================================
     // row_bram Instance
@@ -207,14 +219,15 @@ module compute_engine_mlp #(
         // Weight interface
         .i_wt_valid(wt_valid),
         .o_wt_ready(wt_ready),
-        .i_nv_right_man(nv_right_man_packed),
+        .i_nv_right_man(nv_right_man),
         .i_nv_right_exp(nv_right_exp),
         .i_col_sel(col_sel),
+        .i_wt_nv_idx(wt_nv_idx),
 
         // Activation interface
         .i_act_valid(act_valid),
         .o_act_ready(act_ready),
-        .i_nv_left_man(nv_left_man_packed),
+        .i_nv_left_man(nv_left_man),
         .i_nv_left_exp(nv_left_exp),
         .i_new_dot(new_dot),
 
@@ -309,18 +322,21 @@ module compute_engine_mlp #(
     // Calculate row_bram right NV index
     // Column-major layout: col_0_nv_0, col_0_nv_1, ..., col_0_nv_(vec_len-1), col_1_nv_0, ...
     // NV index = col_cnt * vec_len + nv_cnt
-    wire [6:0] fill_nv_idx = (fill_col_cnt * i_vec_len) + fill_nv_cnt[6:0];
+    logic [6:0] fill_nv_idx;
+    assign fill_nv_idx = (fill_col_cnt * i_vec_len) + fill_nv_cnt[6:0];
 
     always_comb begin
         // Default values
         nv_right_rd_idx = 7'd0;
         wt_valid = 1'b0;
         col_sel = 4'd0;
+        wt_nv_idx = 7'd0;
 
         case (fill_state_reg)
             FILL_READ, FILL_WAIT, FILL_SEND: begin
                 nv_right_rd_idx = fill_nv_idx;
                 col_sel = fill_col_cnt;
+                wt_nv_idx = fill_nv_cnt[6:0];  // NV index within column for V>1
             end
 
             default: ;
@@ -378,7 +394,14 @@ module compute_engine_mlp #(
                 // Wait for mlp_bram_col_ctrl to finish processing
                 // (act_ready goes high when comp_state == COMP_IDLE)
                 if (act_ready) begin
-                    comp_ctrl_state_next = COMP_DONE;
+                    // Check if we have more batches to process
+                    if (comp_batch_cnt == (i_left_ugd_len - 1)) begin
+                        // All batches complete
+                        comp_ctrl_state_next = COMP_DONE;
+                    end else begin
+                        // More batches - go to next batch
+                        comp_ctrl_state_next = COMP_READ;
+                    end
                 end
             end
 
@@ -397,16 +420,26 @@ module compute_engine_mlp #(
         if (!i_reset_n) begin
             comp_ctrl_state_reg <= COMP_IDLE;
             comp_nv_cnt         <= '0;
+            comp_batch_cnt      <= '0;
         end else begin
             comp_ctrl_state_reg <= comp_ctrl_state_next;
 
             case (comp_ctrl_state_reg)
                 COMP_IDLE: begin
-                    comp_nv_cnt <= '0;
+                    comp_nv_cnt    <= '0;
+                    comp_batch_cnt <= '0;
                 end
 
                 COMP_NEXT: begin
                     comp_nv_cnt <= comp_nv_cnt + 1;
+                end
+
+                COMP_WAIT_FINISH: begin
+                    // When transitioning to next batch (not to COMP_DONE)
+                    if (act_ready && (comp_batch_cnt != (i_left_ugd_len - 1))) begin
+                        comp_batch_cnt <= comp_batch_cnt + 1;
+                        comp_nv_cnt    <= '0;  // Reset NV counter for new batch
+                    end
                 end
 
                 default: ;
@@ -417,8 +450,12 @@ module compute_engine_mlp #(
     // =========================================================================
     // Compute Controller: Control Signal Generation
     // =========================================================================
-    // Activation NV index (sequential 0 to vec_len-1)
-    wire [6:0] comp_nv_idx = comp_nv_cnt[6:0];
+    // Activation NV index = batch_cnt * vec_len + nv_cnt
+    // This addresses into the left (activation) section of row_bram
+    logic [13:0] comp_nv_idx_full;
+    logic [6:0]  comp_nv_idx;
+    assign comp_nv_idx_full = (comp_batch_cnt * i_vec_len) + comp_nv_cnt;
+    assign comp_nv_idx = comp_nv_idx_full[6:0];  // Truncate to 7 bits for row_bram
 
     always_comb begin
         // Default values
@@ -437,7 +474,7 @@ module compute_engine_mlp #(
         // Assert act_valid only in COMP_SEND state
         if (comp_ctrl_state_reg == COMP_SEND) begin
             act_valid = 1'b1;
-            // new_dot on first NV only (reset accumulator)
+            // new_dot on first NV of each batch (reset accumulator for new batch)
             new_dot = (comp_nv_cnt == '0);
         end
     end
@@ -474,7 +511,25 @@ module compute_engine_mlp #(
         end
     endgenerate
 
-    assign o_result_valid = dout_valid && (comp_ctrl_state_reg == COMP_IDLE);
+    // =========================================================================
+    // Result Valid Logic
+    // For multiple batches, pulse o_result_valid once per batch when results ready
+    // Results are ready when:
+    //   - We're in COMP_WAIT_FINISH and act_ready goes high (batch complete)
+    // This pulses B times total (once per batch)
+    // =========================================================================
+    logic result_valid_reg;
+
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            result_valid_reg <= 1'b0;
+        end else begin
+            // Pulse valid when a batch completes (COMP_WAIT_FINISH and act_ready)
+            result_valid_reg <= (comp_ctrl_state_reg == COMP_WAIT_FINISH) && act_ready;
+        end
+    end
+
+    assign o_result_valid = result_valid_reg;
 
 endmodule
 

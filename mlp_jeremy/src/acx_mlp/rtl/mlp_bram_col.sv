@@ -1,4 +1,3 @@
-
 // Combined MLP and BRAM module configured for dual 8x8 dot products
 //
 // CONFIGURATION OVERVIEW:
@@ -53,10 +52,10 @@ logic       lram_rden = 1'b0;           // LRAM read enable
 logic       lram_rstregn = 1'b0;        // LRAM output register reset
 
 // Cascade Chain Interface(s)
-wire [71:0] multa_h[NUM_MLPS-1:0];        // Forward cascade A, higher
-wire [71:0] multb_h[NUM_MLPS-1:0];        // Forward cascade B, higher
-wire [71:0] multa_l[NUM_MLPS-1:0];        // Forward cascade A, lower
-wire [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
+logic [71:0] multa_h[NUM_MLPS-1:0];        // Forward cascade A, higher
+logic [71:0] multb_h[NUM_MLPS-1:0];        // Forward cascade B, higher
+logic [71:0] multa_l[NUM_MLPS-1:0];        // Forward cascade A, lower
+logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
  mlp_bram #(
     // Select DIN_A[71:0] for both A ports at column base
