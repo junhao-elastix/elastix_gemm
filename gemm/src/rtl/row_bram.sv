@@ -23,7 +23,7 @@
 // Date: 10/31/2024
 // ------------------------------------------------------------------
 
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 `default_nettype none
 
 module row_bram #(

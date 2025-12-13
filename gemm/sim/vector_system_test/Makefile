@@ -1,8 +1,7 @@
-# Makefile for GEMM Engine Top Simulation (FIFO Interface)
-# Uses engine_top.sv with direct FIFO interface
+# Makefile for GEMM Engine Top Simulation (MLP-Based)
+# Uses engine_top.sv with MLP compute engine and direct FIFO interface
 # Tests: Complete MS2.0 pipeline with FIFO-based command/result interface
-# Updated: Uses ACX_INT_MULT_ADD primitives for hardware acceleration
-# Modified: Redirects compilation and simulation output to sim.log
+# Updated: Dec 2025 - MLP-only mode (modular compute engine deprecated)
 
 TB = tb_engine_top
 TOP = tb_engine_top
@@ -31,7 +30,7 @@ ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
 # Source directories 
 GEMM_RTL = ../../src/rtl
 GEMM_INC = ../../src/include
-GEMM_TB = ../../src/tb  # Local testbench directory
+GEMM_TB = ../../src/tb
 
 # Include paths (added ACX paths for primitives)
 INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)/libraries/ +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim +incdir+$(ACX_LIB_S7T)/common
@@ -39,8 +38,8 @@ INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)
 # Testbench sources - Always uses GDDR6 realistic memory model
 TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv tb_engine_top.sv
 
-# RTL sources (from gemm - MS2.0 FIFO architecture!)
-# Testing fetcher_opt with unpacking wait fix
+# RTL sources (MS2.0 MLP-based architecture)
+# engine_top.sv uses compute_engine_mlp directly
 RTL_SOURCES = \
 	$(GEMM_RTL)/flex_fifo.sv \
 	$(GEMM_RTL)/cmd_fifo.sv \
@@ -50,21 +49,27 @@ RTL_SOURCES = \
 	$(GEMM_RTL)/dispatcher.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram.sv \
-	$(GEMM_RTL)/tile_bram.sv \
-	$(GEMM_RTL)/compute_engine_modular.sv \
-	$(GEMM_RTL)/gfp8_bcv_controller.sv \
-	$(GEMM_RTL)/gfp8_nv_dot.sv \
-	$(GEMM_RTL)/gfp8_to_fp16.sv \
 	$(GEMM_RTL)/result_bram.sv \
 	$(GEMM_RTL)/result_fifo_to_simple_bram.sv \
 	$(GEMM_RTL)/result_arbiter.sv \
+	$(GEMM_RTL)/row_bram.sv \
+	$(GEMM_RTL)/weight_bram.sv \
+	$(GEMM_RTL)/mlp_bram.sv \
+	$(GEMM_RTL)/mlp_bram_col.sv \
+	$(GEMM_RTL)/mlp_bram_col_ctrl.sv \
+	$(GEMM_RTL)/mlp_dot16_int8.sv \
+	$(GEMM_RTL)/mlp_dot16_bfp8.sv \
+	$(GEMM_RTL)/fp24_add.sv \
+	$(GEMM_RTL)/fp24_to_fp16.sv \
+	$(GEMM_RTL)/compute_engine_mlp.sv \
 	$(GEMM_RTL)/engine_top.sv
 
 # NAP wrapper (contains t_AXI4 interface)
 NAP_WRAPPER = $(GEMM_RTL)/nap_responder_wrapper.sv
 
-.PHONY: all clean run run_realistic compile debug view-log summary help
+.PHONY: all clean run compile debug view-log summary help run_realistic
 
+# Default target: run simulation
 all: run
 
 # Create work library
@@ -78,7 +83,7 @@ compile: $(WORK)
 	@echo "  Compilation Started: $$(date)" | tee -a $(LOG_FILE)
 	@echo "======================================================================" | tee -a $(LOG_FILE)
 	@echo "Compiling packages..." | tee -a $(LOG_FILE)
-	@$(VLOG) -sv $(INCLUDES) -work $(WORK) \
+	@$(VLOG) -sv $(INCLUDES) -timescale "1ps/1ps" -work $(WORK) \
 		$(GEMM_INC)/gemm_pkg.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: Package compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling ACX libraries and primitives..." | tee -a $(LOG_FILE)
@@ -91,9 +96,10 @@ compile: $(WORK)
 		$(ACX_LIB_S7T)/common/acx_floating_point.sv \
 		$(ACX_LIB_S7T)/common/acx_integer.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE)" && exit 1)
-	@echo "Compiling testbench and RTL..." | tee -a $(LOG_FILE)
+	@echo "Compiling testbench and RTL (MLP mode)..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	$(VLOG) -sv $(INCLUDES) $(VLOG_DEFINES) +define+SIMULATION +define+SIM_VERBOSE \
+		-timescale "1ps/1ps" \
 		-err VCP2675 W1 \
 		-work $(WORK) \
 		$(NAP_WRAPPER) \
@@ -104,9 +110,12 @@ compile: $(WORK)
 	@echo ""
 
 # Run simulation
-run: compile
+run:
+	@$(MAKE) clean
+	@$(MAKE) compile
 	@echo "======================================================================" | tee -a $(LOG_FILE)
 	@echo "  Simulation Started: $$(date)" | tee -a $(LOG_FILE)
+	@echo "  Features: MLP compute engine, 256-bit direct result output" | tee -a $(LOG_FILE)
 	@echo "======================================================================" | tee -a $(LOG_FILE)
 	@echo "Running GEMM Engine Top simulation..." | tee -a $(LOG_FILE)
 	@$(VSIM) -c -do "run -all; quit -force" $(WORK).$(TOP) >> $(LOG_FILE) 2>&1 || \
@@ -122,14 +131,13 @@ run: compile
 	@echo "Full log available in: $(LOG_FILE)"
 
 # Run with explicit GDDR6 realistic timing (40-cycle latency)
-# Note: Default 'run' target already uses GDDR6 realistic model
 run_realistic: clean
 	@echo "======================================================================" | tee $(LOG_FILE)
 	@echo "  GDDR6 REALISTIC MEMORY MODEL (40-cycle latency, 32 outstanding ARs)" | tee -a $(LOG_FILE)
 	@echo "======================================================================" | tee -a $(LOG_FILE)
 	@$(MAKE) LATENCY=40 run
 
-# Run with GUI for debugging (logs to sim_debug.log)
+# Run with GUI for debugging
 debug: compile
 	@echo ""
 	@echo "Running simulation with GUI (logs to sim_debug.log)..."
@@ -170,15 +178,15 @@ clean:
 
 help:
 	@echo "========================================================================"
-	@echo "  Makefile for GEMM Engine Top Simulation"
+	@echo "  Makefile for GEMM Engine Top Simulation (MLP Mode)"
 	@echo "========================================================================"
 	@echo ""
-	@echo "Purpose: Test engine_top.sv with direct FIFO interface"
+	@echo "Purpose: Test engine_top.sv with MLP compute engine"
 	@echo "         MS2.0 architecture with command/result FIFOs"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              - Compile and run with GDDR6 realistic model (default)"
-	@echo "  make run          - Same as make (uses tb_memory_model_realistic.sv)"
+	@echo "  make              - Compile and run simulation"
+	@echo "  make run          - Same as make"
 	@echo "  make run LATENCY=N - Run with N-cycle memory latency (default: 40)"
 	@echo "  make run_realistic - Explicitly run with 40-cycle GDDR6 latency"
 	@echo "  make compile      - Compile only (no simulation)"
@@ -195,20 +203,21 @@ help:
 	@echo "  - Realistic GDDR6+NoC timing characteristics"
 	@echo ""
 	@echo "Key Features:"
-	@echo "  - GDDR6 realistic memory model (32 outstanding AR support)"
+	@echo "  - MLP-based compute engine (compute_engine_mlp)"
+	@echo "  - 256-bit direct result output (16 × FP16 per cycle)"
+	@echo "  - Internal GFP8E5 → GFP8E8 exponent conversion"
+	@echo "  - Supports C = 16, 32, 64, 128 (divisible by 16)"
+	@echo "  - GDDR6 realistic memory model"
 	@echo "  - Configurable latency via LATENCY parameter"
-	@echo "  - Direct FIFO interface (no CSR bridge)"
-	@echo "  - Command FIFO: 4096x32-bit"
-	@echo "  - Result FIFO: 16384x16-bit (FP16)"
-	@echo "  - Complete MS2.0 pipeline integration"
 	@echo "  - All output logged to $(LOG_FILE)"
 	@echo ""
 	@echo "Test Configurations:"
-	@echo "  B1_C1_V1, B2_C2_V2, B4_C4_V4, B2_C2_V64, B4_C4_V32,"
-	@echo "  B8_C8_V16, B1_C128_V1, B128_C1_V1, B1_C1_V128"
+	@echo "  C=16:  B4_C16_V8, B8_C16_V4, B16_C16_V8"
+	@echo "  C>16:  B4_C32_V4, B8_C32_V2, B8_C64_V2, B2_C128_V1"
 	@echo ""
 	@echo "========================================================================"
 
+.PHONY: multi-tile
 
 # Multi-tile debug test
 multi-tile: clean
@@ -222,5 +231,3 @@ multi-tile: clean
 	@echo "Multi-tile test complete. Results:"
 	@echo ""
 	@grep -E "TEST|PASS|FAIL|MONITOR" multi_tile.log || echo "No test results found"
-
-.PHONY: multi-tile

@@ -7,7 +7,7 @@
 // - Parameters: 16 values from BRAM (8 per bank, stored as 144-bit words)
 // - Output: Two dot product results (one per bank)
 
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 
 `default_nettype none
 // Achronix primitive simulation enables
@@ -33,6 +33,10 @@ module mlp_bram_col #(
     input  wire        load,            // Reset accumulator w/ value in DOUT
     input  wire accumulate,             // Add current DOUT to accumulator
 
+    // Block Floating Point exponent for activation data
+    // This drives the MLP's expb port via LRAM virtual port mapping
+    input  wire [7:0]  expb,            // Shared exponent for BFP mode
+
     // BRAM Interface - shared across all MLPs in column, with separate write enables
     input  wire [71:0]         bram_din,
     input  wire [9:0]          wraddr,
@@ -44,12 +48,20 @@ module mlp_bram_col #(
 );
 
 
-// Use internal accumulators instead of LRAM (for now)
-logic [5:0] lram_wraddr = 6'd0;         // LRAM write address
-logic       lram_wren = 1'b0;           // LRAM write enable
-logic [5:0] lram_rdaddr = 6'd0;         // LRAM read address
-logic       lram_rden = 1'b0;           // LRAM read enable
-logic       lram_rstregn = 1'b0;        // LRAM output register reset
+// LRAM virtual port mapping for expb (per mlp_bram.sv comments):
+// lram_wraddr[5:0] = expb[7:2]
+// lram_rdaddr[5:4] = expb[1:0]
+// lram_rdaddr[3:0] = ce[11:8] (not used here, set to 0)
+// This mapping allows the activation exponent to reach the MLP's expb input
+logic [5:0] lram_wraddr;
+logic       lram_wren = 1'b0;           // LRAM write enable (not used)
+logic [5:0] lram_rdaddr;
+logic       lram_rden = 1'b0;           // LRAM read enable (not used)
+logic       lram_rstregn = 1'b0;        // LRAM output register reset (not used)
+
+// Drive LRAM virtual ports to encode expb
+assign lram_wraddr = expb[7:2];          // Upper 6 bits of expb
+assign lram_rdaddr = {expb[1:0], 4'b0000}; // Lower 2 bits of expb + padding
 
 // Cascade Chain Interface(s)
 logic [71:0] multa_h[NUM_MLPS-1:0];        // Forward cascade A, higher

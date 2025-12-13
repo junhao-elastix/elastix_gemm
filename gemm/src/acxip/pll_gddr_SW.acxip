@@ -1,6 +1,6 @@
-#ACE 10.3.1 IP Properties File, generated on:
-#Tue May 06 15:43:26 PDT 2025
-acxip_version=7
+#ACE 10.4.1 IP Properties File, generated on:
+#Wed Dec 10 17:18:36 PST 2025
+acxip_version=8
 clkout0.clkout.port_name=gddr_ctlr_clk_SW
 clkout0.int_ODN_output_divider=8
 clkout0.int_OSN_output_divider=1

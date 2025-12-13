@@ -1,9 +1,15 @@
-// MS2.0 GEMM Engine Test
+// MS2.0 GEMM Engine Test (MLP Mode)
 //
 // Test suite using VP815GemmDevice class with:
+// - MLP-based compute engine (C must be divisible by 16)
 // - Encapsulated command interface
-// - Default multi-config test suite (10 configurations)
+// - Default MLP-compatible test suite
 // - CLI override support for single tests
+// - C > 16 result reordering support
+//
+// MLP Constraints:
+// - C must be divisible by 16 (16, 32, 64, 128)
+// - Results are output in column-group order for C > 16
 
 #include <iostream>
 #include <iomanip>
@@ -132,16 +138,20 @@ struct TestConfig {
     const char* name;
 };
 
+// Check if C is MLP-compatible (divisible by 16)
+bool is_mlp_compatible(int C) {
+    return (C % 16) == 0;
+}
+
 // Function Declarations
 bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en = 0x0001);
-bool run_single_test_with_collection(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing,
-                                     uint32_t& host_rd_ptr, bool reset_rd_ptr, vector<uint16_t>& collected_results);
 
 // Main
 int main(int argc, char* argv[]) {
     cout << "========================================" << endl;
-    cout << "MS2.0 GEMM Engine (Refactored)" << endl;
+    cout << "MS2.0 GEMM Engine (MLP Mode)" << endl;
     cout << "========================================" << endl;
+    cout << "NOTE: MLP compute engine requires C divisible by 16" << endl;
 
     // Parse command line arguments
     int device_id = 0;
@@ -174,9 +184,11 @@ int main(int argc, char* argv[]) {
             cout << "  -v                  Verbose output (results and debug info)\n";
             cout << "  -t                  Print timing information for each method\n";
             cout << "  -B N, -C N, -V N    Run single test with specified B, C, V parameters\n";
+            cout << "                      NOTE: C must be divisible by 16 (MLP constraint)\n";
             cout << "  -n N                Number of tiles (1,2,4,8) - sets col_en mask (default: 1)\n";
             cout << "  -h, --help          Show this help\n";
-            cout << "\nDefault: Runs 10-config test suite if B/C/V not specified.\n";
+            cout << "\nDefault: Runs MLP-compatible test suite (C divisible by 16).\n";
+            cout << "         Tests with C not divisible by 16 are skipped.\n";
             return 0;
         }
     }
@@ -210,7 +222,15 @@ int main(int argc, char* argv[]) {
         bool single_test_mode = (test_B >= 0 && test_C >= 0 && test_V >= 0);
 
         if (single_test_mode) {
-            // Single test mode
+            // Single test mode - validate MLP constraint
+            if (!is_mlp_compatible(test_C)) {
+                cerr << "\n========================================" << endl;
+                cerr << "ERROR: C=" << test_C << " is not divisible by 16" << endl;
+                cerr << "MLP compute engine requires C = 16, 32, 64, or 128" << endl;
+                cerr << "========================================" << endl;
+                return 1;
+            }
+
             cout << "\n========================================" << endl;
             cout << "Single Test: B=" << test_B << ", C=" << test_C << ", V=" << test_V << endl;
             cout << "Column Enable: 0x" << hex << setfill('0') << setw(6) << col_en << dec 
@@ -226,95 +246,94 @@ int main(int argc, char* argv[]) {
             return result ? 0 : 1;
         }
 
-        // Default multi-config test suite - THREE-STAGE MODE
+        // Default multi-config test suite
+        // MLP-compatible tests (C divisible by 16)
         const TestConfig test_suite[] = {
-            {1, 1, 1, "B1_C1_V1"},
-            {2, 2, 2, "B2_C2_V2"},
-            {4, 4, 4, "B4_C4_V4"},
-            {2, 2, 64, "B2_C2_V64"},
-            {4, 4, 32, "B4_C4_V32"},
-            {8, 8, 16, "B8_C8_V16"},
-            {16, 16, 8, "B16_C16_V8"},
-            {1, 128, 1, "B1_C128_V1"},
-            {128, 1, 1, "B128_C1_V1"},
-            {1, 1, 128, "B1_C1_V128"}
+            // MLP-compatible tests (C divisible by 16)
+            {16, 16, 8, "B16_C16_V8"},      // C=16 ✓
+            {1, 128, 1, "B1_C128_V1"},      // C=128 ✓
+            {4, 16, 8, "B4_C16_V8"},        // C=16 ✓
+            {8, 16, 4, "B8_C16_V4"},        // C=16 ✓
+            {4, 32, 4, "B4_C32_V4"},        // C=32 ✓ (2 column groups)
+            {8, 32, 2, "B8_C32_V2"},        // C=32 ✓ (2 column groups)
+            {8, 64, 2, "B8_C64_V2"},        // C=64 ✓ (4 column groups)
+            {2, 128, 1, "B2_C128_V1"},      // C=128 ✓ (8 column groups)
+            
+            // Legacy tests (will be skipped - C not divisible by 16)
+            {1, 1, 1, "B1_C1_V1"},          // C=1 ✗ (skipped)
+            {2, 2, 2, "B2_C2_V2"},          // C=2 ✗ (skipped)
+            {4, 4, 4, "B4_C4_V4"},          // C=4 ✗ (skipped)
+            {2, 2, 64, "B2_C2_V64"},        // C=2 ✗ (skipped)
+            {4, 4, 32, "B4_C4_V32"},        // C=4 ✗ (skipped)
+            {8, 8, 16, "B8_C8_V16"},        // C=8 ✗ (skipped)
+            {128, 1, 1, "B128_C1_V1"},      // C=1 ✗ (skipped)
+            {1, 1, 128, "B1_C1_V128"}       // C=1 ✗ (skipped)
         };
         const int num_tests = sizeof(test_suite) / sizeof(test_suite[0]);
 
         cout << "\n========================================" << endl;
-        cout << "THREE-STAGE CIRCULAR BUFFER VALIDATION" << endl;
+        cout << "MLP-COMPATIBLE TEST SUITE" << endl;
         cout << "========================================\n" << endl;
 
         // ===================================================================
-        // STAGE 1: Individual Tests with Reset (Baseline)
+        // Run Tests (skip non-MLP-compatible)
         // ===================================================================
-        cout << "================================================================" << endl;
-        cout << "STAGE 1: Individual Tests (Baseline with Reset)" << endl;
-        cout << "================================================================\n" << endl;
-
-        vector<uint16_t> results_stage1;
-        int stage1_passed = 0;
+        int tests_passed = 0;
+        int tests_skipped = 0;
+        int tests_failed = 0;
 
         for (int i = 0; i < num_tests; ++i) {
             const auto& config = test_suite[i];
 
+            // Check MLP compatibility
+            if (!is_mlp_compatible(config.C)) {
+                cout << "[SKIP] Test " << (i+1) << "/" << num_tests << ": " << config.name 
+                     << " (C=" << config.C << " not divisible by 16)" << endl;
+                tests_skipped++;
+                continue;
+            }
+
             cout << "----------------------------------------" << endl;
             cout << "Test " << (i+1) << "/" << num_tests << ": " << config.name << endl;
             cout << "  B=" << config.B << ", C=" << config.C << ", V=" << config.V << endl;
+            if (config.C > 16) {
+                cout << "  Column groups: " << (config.C / 16) << " (C > 16 mode)" << endl;
+            }
             cout << "----------------------------------------" << endl;
 
-            // STAGE 1: Soft reset before first test only
-            if (i == 0) {
-                gemm_device.soft_reset();  // Reset engine + circular buffer
-                cout << "  [Stage 1] Initial soft reset complete" << endl;
-            }
+            gemm_device.soft_reset();
 
             bool result = run_single_test(gemm_device, config.B, config.C, config.V, verbose, timing, col_en);
 
             if (result) {
-                stage1_passed++;
-
-                // Collect results into stage1 array
-                // Read results again to collect (already validated in run_single_test)
-                size_t result_count = config.B * config.C;
-
-                // Byte-addressed read from rd_ptr=0 (reset before each test)
-                uint32_t rd_ptr = 0;
-                uint32_t byte_offset = rd_ptr * 2;
-                uint32_t byte_count = result_count * 2;
-                uint32_t offset_in_first_line = byte_offset % 32;
-                uint32_t total_bytes = offset_in_first_line + byte_count;
-                uint32_t dma_bytes = ((total_bytes + 31) / 32) * 32;
-                uint32_t dma_start = (byte_offset / 32) * 32;
-
-                cout << "  [Stage 1 DMA] rd_ptr=" << rd_ptr
-                     << ", byte_offset=" << byte_offset
-                     << ", offset_in_line=" << offset_in_first_line
-                     << ", dma_start=" << dma_start
-                     << ", dma_bytes=" << dma_bytes << endl;
-
-                vector<uint8_t> bram_data(dma_bytes);
-                if (gemm_device.dma_read(BRAM_RESULT_BASE + dma_start, bram_data.data(), dma_bytes)) {
-                    for (size_t j = 0; j < result_count; j++) {
-                        size_t byte_pos = offset_in_first_line + j * 2;
-                        uint16_t fp16_val = *(uint16_t*)(bram_data.data() + byte_pos);
-                        results_stage1.push_back(fp16_val);
-                    }
-                }
-
-                // Soft reset AFTER collecting results, ready for next test
-                gemm_device.soft_reset();  // Reset engine + circular buffer (wr_ptr, rd_ptr)  
-                if (verbose) {
-                    cout << "  [Stage 1] Post-test reset: rd_ptr=0, wr_ptr=0" << endl;
-                }
+                tests_passed++;
+            } else {
+                tests_failed++;
             }
 
             cout << endl;
         }
 
-        cout << "[Stage 1 Complete] Tests: " << stage1_passed << "/" << num_tests << " passed" << endl;
-        cout << "[Stage 1 Complete] Collected: " << results_stage1.size() << " FP16 results\n" << endl;
-    return stage1_passed == num_tests;
+        // ===================================================================
+        // Test Summary
+        // ===================================================================
+        cout << "========================================" << endl;
+        cout << "TEST SUMMARY" << endl;
+        cout << "========================================" << endl;
+        cout << "Passed:  " << tests_passed << endl;
+        cout << "Failed:  " << tests_failed << endl;
+        cout << "Skipped: " << tests_skipped << " (C not divisible by 16)" << endl;
+        cout << "----------------------------------------" << endl;
+        if (tests_failed == 0 && tests_passed > 0) {
+            cout << "STATUS: ALL MLP TESTS PASSED" << endl;
+        } else if (tests_failed > 0) {
+            cout << "STATUS: SOME TESTS FAILED" << endl;
+        } else {
+            cout << "STATUS: NO TESTS RAN" << endl;
+        }
+        cout << "========================================" << endl;
+
+        return (tests_failed == 0 && tests_passed > 0) ? 0 : 1;
 
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;
@@ -326,6 +345,18 @@ int main(int argc, char* argv[]) {
 bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool verbose, bool timing, uint32_t col_en) {
     TimingStats timing_stats;
     auto test_start = chrono::high_resolution_clock::now();
+    
+    // Validate MLP constraint
+    if (!is_mlp_compatible(C)) {
+        cerr << "ERROR: C=" << C << " not divisible by 16 (MLP constraint)" << endl;
+        return false;
+    }
+
+    // Calculate number of column groups for C > 16
+    int num_col_groups = C / 16;
+    if (verbose && num_col_groups > 1) {
+        cout << "  [MLP Mode] C=" << C << " uses " << num_col_groups << " column groups" << endl;
+    }
     
     try {
         // Load matrices from hex files
@@ -362,15 +393,6 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
 
         int num_tiles = __builtin_popcount(col_en & 0xFF);
-        // if (C < num_tiles) {
-        //     if (C == 1) {
-        //         col_en = 0x0001;
-        //     } else if (C == 2) {
-        //         col_en = 0x0003;
-        //     } else if (C == 4) {
-        //         col_en = 0x000F;
-        //     }
-        // }
 
         if (verbose) {
             cout << "  [Circular Buffer] Reset rd_ptr to 0" << endl;
@@ -442,16 +464,10 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
 
 
         // Read results using packed BRAM format with two-pointer circular buffer
-        // New optimization: 16 FP16 values per 256-bit (32-byte) BRAM line
+        // MLP Mode: 16 FP16 values per 256-bit (32-byte) BRAM line
         // Hardware maintains wr_ptr, host maintains rd_ptr
 
         // Step 1: Read circular buffer pointers
-        // Register 0x230 (140) - REG_RD_PTR: Host read/write pointer
-        // Register 0x234 (141) - REG_WR_PTR: Hardware write pointer (read-only)
-        // Register 0x238 (142) - REG_USED_ENTRIES: Used entries (read-only)
-
-        // host_rd_ptr was already declared and reset at the start of this test
-
         uint32_t wr_ptr_raw = gemm_device.mmio_read32(0, 0x234);  // Read hardware write pointer
         uint32_t wr_ptr = wr_ptr_raw & 0x1FFF;  // 13-bit counter (0-8191)
 
@@ -463,9 +479,6 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
                  << ", rd_ptr = " << host_rd_ptr
                  << ", used_entries = " << used_entries << endl;
         }
-
-        // Step 2: Calculate available results (already calculated above)
-        // size_t result_count_expected = B * C;
 
         // Verify we have enough results
         if (used_entries < result_count_expected) {
@@ -484,25 +497,14 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             }
         }
 
-        // Step 3: Handle partial buffers - flush if needed
-        // If result count is not a multiple of 16, we have a partial line that needs flushing
-        if ((result_count_expected % 16) != 0) {
-            if (verbose) {
-                cout << "  [DMA Read] Forcing flush (partial line: " << result_count_expected
-                     << " results, not multiple of 16)" << endl;
-            }
+        // MLP Mode: Results are always complete 256-bit lines (16 FP16 each)
+        // No partial flush needed since MLP outputs 16 results at a time
 
-            // Trigger flush by writing 0 to write_top_reset (register 0x22C)
-                gemm_device.mmio_write32(0, 0x22C, 0x00000000);
-        }
-
-        // Step 4: Calculate byte-aligned DMA read
-        // Convert FP16 index to byte address (2 bytes per FP16)
+        // Step 2: Calculate byte-aligned DMA read
         uint32_t byte_offset = host_rd_ptr * 2;
         uint32_t byte_count = result_count_expected * 2;
 
         // Calculate how many complete 32-byte lines we need to read
-        // Account for starting offset within first line
         uint32_t offset_in_first_line = byte_offset % 32;
         uint32_t total_bytes_needed = offset_in_first_line + byte_count;
         uint32_t lines_to_read = (total_bytes_needed + 31) / 32;
@@ -523,13 +525,39 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             return false;
         }
 
-        // Step 5: Extract FP16 results with automatic offset handling
+        // Step 3: Extract raw FP16 results from BRAM (hardware order)
+        vector<uint16_t> hw_results_raw(result_count_expected);
+        for (size_t i = 0; i < result_count_expected; i++) {
+            size_t byte_pos = offset_in_first_line + i * 2;
+            hw_results_raw[i] = *(uint16_t*)(bram_data.data() + byte_pos);
+        }
+
+        // Step 4: Reorder results for C > 16 (column group mode)
+        // Hardware outputs: Group 0 (all B batches × 16 cols), Group 1, ...
+        // Golden file expects: Batch-major (batch 0 all cols, batch 1 all cols, ...)
         vector<uint16_t> result_fp16(result_count_expected);
 
-        for (size_t i = 0; i < result_count_expected; i++) {
-            // Calculate byte position in the DMA buffer
-            size_t byte_pos = offset_in_first_line + i * 2;
-            result_fp16[i] = *(uint16_t*)(bram_data.data() + byte_pos);
+        if (num_col_groups > 1) {
+            // Multi-group case: apply reordering
+            // Map from golden index to hardware index
+            if (verbose) {
+                cout << "  [Reorder] Applying C > 16 result reordering (" 
+                     << num_col_groups << " groups)" << endl;
+            }
+
+            for (size_t golden_idx = 0; golden_idx < result_count_expected; golden_idx++) {
+                int batch_idx = golden_idx / C;
+                int col_idx = golden_idx % C;
+                int group_idx = col_idx / 16;
+                int col_within_group = col_idx % 16;
+                int pulse_idx = group_idx * B + batch_idx;
+                int hw_idx = pulse_idx * 16 + col_within_group;
+
+                result_fp16[golden_idx] = hw_results_raw[hw_idx];
+            }
+        } else {
+            // Single group (C = 16): no reordering needed
+            result_fp16 = hw_results_raw;
         }
 
         if (verbose) {
@@ -617,22 +645,14 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // Update host read pointer after consuming results
-        // Advance rd_ptr by the number of results we just read
         host_rd_ptr = (host_rd_ptr + result_count_expected) & 0x1FFF;  // Wrap at 8192
-
-        // Write updated rd_ptr back to hardware (register 0x230)
         gemm_device.mmio_write32(0, 0x230, host_rd_ptr);
 
         if (verbose) {
             cout << "  [Circular Buffer] Updated rd_ptr to " << host_rd_ptr << endl;
-
-            // Verify updated state
             uint32_t new_used_entries = gemm_device.mmio_read32(0, 0x238) & 0x3FFF;
             cout << "  [Circular Buffer] After read: used_entries = " << new_used_entries << endl;
         }
-
-        // Note: We do NOT reset wr_ptr - circular buffer is persistent
-        // The buffer will wrap around automatically at 8192 results
 
         // Calculate total time
         auto test_end = chrono::high_resolution_clock::now();
@@ -640,10 +660,13 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
 
         // Print timing information if requested
         if (timing) {
-            int num_tiles = __builtin_popcount(col_en & 0xFF);
+            int num_tiles_active = __builtin_popcount(col_en & 0xFF);
             cout << "\n  ====================================================================" << endl;
             cout << "  TIMING BREAKDOWN (B=" << B << ", C=" << C << ", V=" << V 
-                 << ", " << num_tiles << " tile" << (num_tiles != 1 ? "s" : "") << ")" << endl;
+                 << ", " << num_tiles_active << " tile" << (num_tiles_active != 1 ? "s" : "") << ")" << endl;
+            if (num_col_groups > 1) {
+                cout << "  Column groups: " << num_col_groups << " (MLP processes 16 cols at a time)" << endl;
+            }
             cout << "  ====================================================================" << endl;
             cout << "  DMA Write:       " << fixed << setprecision(3) << timing_stats.dma_write_ms << " ms" << endl;
             cout << "  FETCH Left:      " << timing_stats.fetch_left_ms << " ms" << endl;

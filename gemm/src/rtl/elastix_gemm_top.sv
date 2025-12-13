@@ -400,11 +400,48 @@ module elastix_gemm_top
     logic [255:0] engine_bram_wr_data = 256'b0;
     logic [31:0]  engine_bram_wr_strobe = 32'b0;
     
-    // First 4 results from compute engine (for register-based testing)
-    logic [15:0] captured_result_0 = 16'd0;
-    logic [15:0] captured_result_1 = 16'd0;
-    logic [15:0] captured_result_2 = 16'd0;
-    logic [15:0] captured_result_3 = 16'd0;
+    // =========================================================================
+    // Pipeline Probe Signals (driven from engine_top in generate block)
+    // =========================================================================
+    // Probe 0: dispatcher_bram write data (verify FETCH)
+    logic [15:0] probe_disp_data = 16'd0;
+    logic        probe_disp_valid = 1'b0;
+    
+    // Probe 1: row_bram write data (verify DISPATCH)
+    logic [15:0] probe_rowbram_data = 16'd0;
+    logic        probe_rowbram_valid = 1'b0;
+    
+    // Probe 2: FP24 compute output (verify MLP compute)
+    logic [23:0] probe_fp24_data = 24'd0;
+    logic        probe_fp24_valid = 1'b0;
+    
+    // Probe 3: FP16 converted result (verify output conversion)
+    logic [15:0] probe_fp16_data = 16'd0;
+    logic        probe_fp16_valid = 1'b0;
+    
+    // =========================================================================
+    // Probe Capture Registers - Capture on valid, hold until next valid
+    // Format: probe_reg_N = {padding, probe_data} captured when probe_valid fires
+    // =========================================================================
+    logic [15:0] captured_probe_0 = 16'd0;  // dispatcher_bram data
+    logic [15:0] captured_probe_1 = 16'd0;  // row_bram data
+    logic [23:0] captured_probe_2 = 24'd0;  // FP24 compute result
+    logic [15:0] captured_probe_3 = 16'd0;  // FP16 final result
+    
+    always_ff @(posedge i_reg_clk or negedge reg_rstn) begin
+        if (!reg_rstn) begin
+            captured_probe_0 <= 16'd0;
+            captured_probe_1 <= 16'd0;
+            captured_probe_2 <= 24'd0;
+            captured_probe_3 <= 16'd0;
+        end else begin
+            // Each probe captures independently when its valid fires
+            if (probe_disp_valid)    captured_probe_0 <= probe_disp_data;
+            if (probe_rowbram_valid) captured_probe_1 <= probe_rowbram_data;
+            if (probe_fp24_valid)    captured_probe_2 <= probe_fp24_data;
+            if (probe_fp16_valid)    captured_probe_3 <= probe_fp16_data;
+        end
+    end
 
     // This instance is used for DMA transactions
     // Also accepts writes from MS2.0 Engine result writer via internal ports
@@ -597,17 +634,17 @@ module elastix_gemm_top
                         .i_fifo_afull  (cmd_fifo_afull)
                     );
 
-                    // Result path: engine_top -> result FIFO -> result_fifo_to_bram -> BRAM + Registers
-                    logic [15:0] result_fifo_rdata;
-                    logic        result_fifo_ren;
-                    logic        result_fifo_empty;
-                    logic [14:0] result_fifo_count;
-                    logic [15:0] result_count_16bit;  // FP16 result count
+                    // Result path: engine_top -> direct 256-bit output -> dma_bram_bridge
+                    // (MLP mode outputs 16×FP16 per cycle directly to BRAM)
+                    logic [255:0] result_256_data;
+                    logic         result_256_valid;
+                    logic [8:0]   result_256_wr_addr;
+                    logic [15:0]  result_count_16bit;  // FP16 result count
                     logic [3:0]  last_opcode;
                     logic [9:0]  bram_wr_count;  // Dispatcher BRAM write count (debug)
 
                     engine_top #(
-                        .GDDR6_PAGE_ID  (9'd0),   // Page 0 (matches DMA write address 0x0)
+                        .GDDR6_PAGE_ID  (9'd0),   // Match ACX_GDDR6_SPACE = 0x0 (DMA target)
                         .TGT_DATA_WIDTH (256),
                         .AXI_ADDR_WIDTH (42),
                         .NUM_TILES      (8)
@@ -620,11 +657,10 @@ module elastix_gemm_top
                         .o_cmd_fifo_full    (cmd_fifo_full),
                         .o_cmd_fifo_afull   (cmd_fifo_afull),
                         .o_cmd_fifo_count   (cmd_fifo_count),
-                        // Result FIFO interface
-                        .o_result_fifo_rdata  (result_fifo_rdata),
-                        .i_result_fifo_ren    (result_fifo_ren),
-                        .o_result_fifo_empty  (result_fifo_empty),
-                        .o_result_fifo_count  (result_fifo_count),
+                        // 256-bit result interface (direct to dma_bram_bridge)
+                        .o_result_256_data    (result_256_data),
+                        .o_result_256_valid   (result_256_valid),
+                        .o_result_256_wr_addr (result_256_wr_addr),
                         // NAP AXI interface
                         .nap_axi            (nap),
                         // Flow control
@@ -644,34 +680,53 @@ module elastix_gemm_top
                         .o_mc_payload_word2 (mc_payload_word2),
                         .o_mc_payload_word3 (mc_payload_word3),
                         .o_bcv_debug_state  (bcv_debug_state),
-                        .o_bcv_debug_dimensions (bcv_debug_dimensions)
+                        .o_bcv_debug_dimensions (bcv_debug_dimensions),
+                        // Probe outputs (pipeline debugging)
+                        .o_probe_disp_data    (probe_disp_data),
+                        .o_probe_disp_valid   (probe_disp_valid),
+                        .o_probe_rowbram_data (probe_rowbram_data),
+                        .o_probe_rowbram_valid(probe_rowbram_valid),
+                        .o_probe_fp24_data    (probe_fp24_data),
+                        .o_probe_fp24_valid   (probe_fp24_valid),
+                        .o_probe_fp16_data    (probe_fp16_data),
+                        .o_probe_fp16_valid   (probe_fp16_valid)
                     );
 
+                    // =====================================================================
+                    // Result BRAM Adapter (256-bit MLP mode with circular buffer tracking)
+                    // =====================================================================
                     // Local signals for capturing results
                     logic [15:0] local_result_0, local_result_1, local_result_2, local_result_3;
                     logic        result_almost_full;     // Backpressure signal
-                    
-                    // Circular buffer interface signals (direct connections, no intermediate registers)
-                    logic [12:0] result_rd_ptr;          // Read pointer to module (direct from CSR write register)
-                    logic [12:0] result_wr_ptr;          // Write pointer from hardware (registered in module)
-                    logic [13:0] result_used_entries;     // Used entries from hardware (combinational in module)
-                    logic        result_empty;            // Empty flag from hardware (combinational in module)
+
+                    // Circular buffer interface signals
+                    logic [12:0] result_rd_ptr;          // Read pointer from host (FP16 granularity)
+                    logic [12:0] result_wr_ptr;          // Write pointer from hardware (FP16 granularity)
+                    logic [13:0] result_used_entries;    // Used entries (FP16 count)
+                    logic        result_empty;           // Empty flag
 
                     result_fifo_to_simple_bram i_result_adapter (
                         .i_clk              (i_reg_clk),
                         .i_reset_n          (engine_rstn),
-                        .i_fifo_rdata       (result_fifo_rdata),
-                        .o_fifo_ren         (result_fifo_ren),
-                        .i_fifo_empty       (result_fifo_empty),
+                        // 256-bit result interface (MLP mode)
+                        .i_data_256         (result_256_data),
+                        .i_data_valid       (result_256_valid),
+                        .i_wr_addr          (result_256_wr_addr),
+                        // Legacy FIFO interface (tied off internally)
+                        .i_fifo_rdata       (16'd0),
+                        .o_fifo_ren         (),  // Unused
+                        .i_fifo_empty       (1'b1),
+                        // BRAM interface
                         .o_bram_wr_addr     (result_bram_wr_addr),
                         .o_bram_wr_data     (result_bram_wr_data),
                         .o_bram_wr_en       (result_bram_wr_en),
                         .o_bram_wr_strobe   (result_bram_wr_strobe),
+                        // First 4 results for CSR debug
                         .o_result_0         (local_result_0),
                         .o_result_1         (local_result_1),
                         .o_result_2         (local_result_2),
                         .o_result_3         (local_result_3),
-                        // Circular buffer interface (updated for circular buffer optimization)
+                        // Circular buffer interface (FP16 granularity)
                         .i_rd_ptr           (result_rd_ptr),
                         .o_wr_ptr           (result_wr_ptr),
                         .o_used_entries     (result_used_entries),
@@ -744,11 +799,10 @@ module elastix_gemm_top
                     assign engine_bram_wr_data   = result_bram_wr_data;
                     assign engine_bram_wr_strobe = result_bram_wr_strobe;
                     
-                    // Connect local results to module-level captured result signals
-                    assign captured_result_0 = local_result_0;  // From result_fifo_to_bram
-                    assign captured_result_1 = local_result_1;
-                    assign captured_result_2 = local_result_2;
-                    assign captured_result_3 = local_result_3;
+                    // Direct result capture signals for peek functionality
+                    // These connect to the top-level registers for CSR reads
+                    assign direct_result_256_data = result_256_data;
+                    assign direct_result_256_valid = result_256_valid;
 
                     // Tie off packet gen status signals for Channel 0
                     assign gddr_nap_running[i] = 1'b0;
@@ -973,12 +1027,15 @@ module elastix_gemm_top
     // Scratch register - Read/write test register
     assign user_regs_read[SCRATCH_REG] = user_regs_write[SCRATCH_REG];
     
-    // Result registers - First 4 FP16 results from compute engine (read-only)
-    // Each register holds one FP16 value in lower 16 bits
-    assign user_regs_read[RESULT_REG_0] = {16'd0, captured_result_0};
-    assign user_regs_read[RESULT_REG_1] = {16'd0, captured_result_1};
-    assign user_regs_read[RESULT_REG_2] = {16'd0, captured_result_2};
-    assign user_regs_read[RESULT_REG_3] = {16'd0, captured_result_3};
+    // Pipeline Probe Registers (read-only) - Debug pipeline stages
+    // REG_0: dispatcher_bram data (FETCH output)
+    // REG_1: row_bram data (DISPATCH output)
+    // REG_2: FP24 compute result (MLP output, lower 24 bits)
+    // REG_3: FP16 final result (after conversion)
+    assign user_regs_read[RESULT_REG_0] = {16'd0, captured_probe_0};  // disp_bram[15:0]
+    assign user_regs_read[RESULT_REG_1] = {16'd0, captured_probe_1};  // row_bram[15:0]
+    assign user_regs_read[RESULT_REG_2] = {8'd0, captured_probe_2};   // FP24[23:0]
+    assign user_regs_read[RESULT_REG_3] = {16'd0, captured_probe_3};  // FP16[15:0]
 
     //--------------------------------------------------------------------
     // VectorPath BMC interface block.  Supports flash updates via PCIe

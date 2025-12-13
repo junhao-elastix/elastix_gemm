@@ -32,7 +32,7 @@
 // Updated: Dec 2025 - Added support for C > 16 via column group iteration
 // ------------------------------------------------------------------
 
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 `default_nettype none
 
 module compute_engine_mlp #(
@@ -41,8 +41,8 @@ module compute_engine_mlp #(
     parameter int EXP_WIDTH = 8,              // Exponent width
     parameter int BRAM_DEPTH = 512,           // row_bram depth
     parameter int ADDR_WIDTH = $clog2(BRAM_DEPTH),
-    parameter int NUM_COLUMNS = 16,           // Number of MLP columns (fixed)
-    parameter int NUM_MLPS = 8                // Number of MLP primitives (2 columns each)
+    parameter int NUM_MLPS = 8,                // Number of MLP primitives (2 columns each)
+    parameter int NUM_COLUMNS = 2*NUM_MLPS           // Number of MLP columns (fixed)
 ) (
     input  logic                     i_clk,
     input  logic                     i_reset_n,
@@ -55,7 +55,7 @@ module compute_engine_mlp #(
     input  logic [15:0]              i_tile_left_addr,       // Left matrix start address (unused)
     input  logic [15:0]              i_tile_right_addr,      // Right matrix start address (unused)
     input  logic [7:0]               i_tile_left_ugd_len,    // B: Number of activation batches
-    input  logic [7:0]               i_tile_right_ugd_len,   // C: Number of columns (ignored, fixed 16)
+    input  logic [7:0]               i_tile_right_ugd_len,   // C: Number of columns
     input  logic [7:0]               i_tile_vec_len,         // V: Number of NVs to accumulate
     input  logic                     i_tile_left_man_4b,     // 4-bit mantissa left (unused)
     input  logic                     i_tile_right_man_4b,    // 4-bit mantissa right (unused)
@@ -99,7 +99,17 @@ module compute_engine_mlp #(
     // Debug Interface
     // =========================================================================
     output logic [3:0]               o_ce_state,
-    output logic [15:0]              o_result_count
+    output logic [15:0]              o_result_count,
+    
+    // =========================================================================
+    // Probe Interface (debug pipeline stages)
+    // =========================================================================
+    output logic [15:0]              o_probe_rowbram_data,   // First 16 bits written to row_bram
+    output logic                     o_probe_rowbram_valid,  // Valid when row_bram write occurs
+    output logic [23:0]              o_probe_fp24_data,      // First FP24 result from compute
+    output logic                     o_probe_fp24_valid,     // Valid when FP24 result ready
+    output logic [15:0]              o_probe_fp16_data,      // First FP16 result (converted)
+    output logic                     o_probe_fp16_valid      // Valid when FP16 result ready
 );
 
     // =========================================================================
@@ -107,10 +117,24 @@ module compute_engine_mlp #(
     // =========================================================================
 
     // row_bram NV read outputs
-    logic [31:0]          nv_left_exp;
+    logic [31:0]          nv_left_exp_raw;
     logic [MAN_WIDTH-1:0] nv_left_man [0:3];
-    logic [31:0]          nv_right_exp;
+    logic [31:0]          nv_right_exp_raw;
     logic [MAN_WIDTH-1:0] nv_right_man [0:3];
+
+    // Exponents for MLP (converted from E5 to E8 format)
+    logic [31:0]          nv_left_exp;
+    logic [31:0]          nv_right_exp;
+
+    // Exponent conversion: GFP8E5 (bias=15) from external memory → GFP8E8 (bias=133) for MLP
+    // Formula: exp_E8 = exp_E5 + (133 - 15) = exp_E5 + 118
+    // This is always needed since external memory stores GFP8E5 format
+    always_comb begin
+        for (int i = 0; i < 4; i++) begin
+            nv_left_exp[i*8 +: 8]  = nv_left_exp_raw[i*8 +: 8] + 8'd118;
+            nv_right_exp[i*8 +: 8] = nv_right_exp_raw[i*8 +: 8] + 8'd118;
+        end
+    end
 
     // row_bram NV read indices
     logic [6:0] nv_left_rd_idx;
@@ -324,13 +348,13 @@ module compute_engine_mlp #(
         .i_exp_right_wr_en(i_exp_right_wr_en),
         .i_exp_right_wr_data(i_exp_right_wr_data),
 
-        // NV read ports
+        // NV read ports (raw GFP8 exponents, converted above)
         .i_nv_left_rd_idx(nv_left_rd_idx),
-        .o_nv_left_exp(nv_left_exp),
+        .o_nv_left_exp(nv_left_exp_raw),
         .o_nv_left_man(nv_left_man),
 
         .i_nv_right_rd_idx(nv_right_rd_idx),
-        .o_nv_right_exp(nv_right_exp),
+        .o_nv_right_exp(nv_right_exp_raw),
         .o_nv_right_man(nv_right_man)
     );
 
@@ -483,6 +507,33 @@ module compute_engine_mlp #(
         end
     end
 
+    // Debug: trace FILL phase data flow
+    // synthesis translate_off
+    always @(posedge i_clk) begin
+        if (fill_state_reg == FILL_SEND) begin
+            $display("[CE_MLP_FILL] @%0t SEND: col=%0d, nv_idx=%0d, rd_idx=%0d, man0[31:0]=0x%08x",
+                     $time, col_sel, wt_nv_idx, fill_nv_idx, nv_right_man[0][31:0]);
+        end
+    end
+    // synthesis translate_on
+
+    // Debug: trace COMPUTE phase FSM (for debugging 0 results)
+    // synthesis translate_off
+    logic [3:0] comp_ctrl_state_prev;
+    always @(posedge i_clk) begin
+        comp_ctrl_state_prev <= comp_ctrl_state_reg;
+        if (comp_ctrl_state_reg != comp_ctrl_state_prev) begin
+            $display("[CE_MLP_COMP] @%0t state=%0d->%0d, batch=%0d, nv=%0d, act_ready=%b, compute_start=%b",
+                     $time, comp_ctrl_state_prev, comp_ctrl_state_reg, comp_batch_cnt, comp_nv_cnt, act_ready, compute_start);
+        end
+        if (comp_ctrl_state_reg == COMP_WAIT && !act_ready) begin
+            // Only print once per 1000 cycles to avoid flooding
+            if ($time % 10000 == 0)
+                $display("[CE_MLP_COMP] @%0t WAITING for act_ready (act_ready=%b)", $time, act_ready);
+        end
+    end
+    // synthesis translate_on
+
     // =========================================================================
     // Compute Controller FSM: Next State Logic
     // =========================================================================
@@ -602,8 +653,18 @@ module compute_engine_mlp #(
     // =========================================================================
     // Result Extraction: FP24 from MLP outputs
     // Each MLP produces 72 bits = 2 columns × 24-bit FP24 + padding
-    // mlp_dout[i][23:0] = even column (col 2*i)
-    // mlp_dout[i][47:24] = odd column (col 2*i+1)
+    //
+    // Weight loading bank mapping (from mlp_bram_col_ctrl):
+    //   - Even column (bank_sel=0): wraddr[0]=1 → BRAM upper [143:72] → Bank AB (Upper)
+    //   - Odd column (bank_sel=1): wraddr[0]=0 → BRAM lower [71:0] → Bank CD (Lower)
+    //
+    // MLP output (from mlp_dot16_bfp8):
+    //   - Bank 0 (Lower, BRAM[71:0]) → DOT_PRODUCT_0 → dout[23:0]
+    //   - Bank 1 (Upper, BRAM[143:72]) → DOT_PRODUCT_1 → dout[47:24]
+    //
+    // Therefore:
+    //   - Even column weights → Bank 1 → dout[47:24]
+    //   - Odd column weights → Bank 0 → dout[23:0]
     // =========================================================================
     genvar col;
     generate
@@ -612,8 +673,10 @@ module compute_engine_mlp #(
             localparam IS_ODD = col % 2;
 
             if (IS_ODD == 0) begin : even_col
+                // Even columns: extract from bank0 (dout[23:0])
                 assign fp24_results[col] = mlp_dout[MLP_IDX][23:0];
             end else begin : odd_col
+                // Odd columns: extract from bank1 (dout[47:24])
                 assign fp24_results[col] = mlp_dout[MLP_IDX][47:24];
             end
         end
@@ -643,16 +706,40 @@ module compute_engine_mlp #(
     // =========================================================================
     // Output Assembly: Pack 16 FP16 into 256-bit vector
     // Gate result_valid to only be active during compute phase
+    //
+    // NOTE: The pipeline has multiple stages of latency:
+    //   - mlp_bram_col_ctrl adder tree: +1 cycle
+    //   - fp24_to_fp16: +1 cycle
+    //   - output register: +1 cycle
+    // We need to extend in_compute_phase for these extra cycles so results
+    // that are in-flight when ST_COMPUTE ends are still captured.
     // =========================================================================
+    localparam PIPELINE_LATENCY_CYCLES = 4;  // Extra cycles to keep window open
+
+    logic in_compute_now;
+    logic [PIPELINE_LATENCY_CYCLES-1:0] compute_phase_history;
     logic in_compute_phase;
-    assign in_compute_phase = (top_state_reg == ST_COMPUTE);
+
+    assign in_compute_now = (top_state_reg == ST_COMPUTE);
+
+    // Shift register to track recent compute phase
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            compute_phase_history <= '0;
+        end else begin
+            compute_phase_history <= {compute_phase_history[PIPELINE_LATENCY_CYCLES-2:0], in_compute_now};
+        end
+    end
+
+    // Stay in compute phase window if currently in ST_COMPUTE OR was recently in it
+    assign in_compute_phase = in_compute_now | (|compute_phase_history);
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             o_result_data <= 256'd0;
             o_result_valid <= 1'b0;
         end else begin
-            // Only output results during compute phase
+            // Only output results during compute phase (extended window for pipeline)
             if (fp16_valid && in_compute_phase) begin
                 o_result_data <= {
                     fp16_results[15], fp16_results[14], fp16_results[13], fp16_results[12],
@@ -666,6 +753,69 @@ module compute_engine_mlp #(
             end
         end
     end
+
+    // =========================================================================
+    // Probe Registers - Capture pipeline stages for debugging
+    // =========================================================================
+    
+    // Probe 1: Row BRAM write data (first 16 bits when data written)
+    logic [15:0] probe_rowbram_data_reg;
+    logic        probe_rowbram_valid_reg;
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            probe_rowbram_data_reg <= 16'd0;
+            probe_rowbram_valid_reg <= 1'b0;
+        end else begin
+            probe_rowbram_valid_reg <= i_man_left_wr_en | i_man_right_wr_en;
+            if (i_man_left_wr_en) begin
+                probe_rowbram_data_reg <= i_man_left_wr_data[15:0];
+            end else if (i_man_right_wr_en) begin
+                probe_rowbram_data_reg <= i_man_right_wr_data[15:0];
+            end
+        end
+    end
+    
+    assign o_probe_rowbram_data = probe_rowbram_data_reg;
+    assign o_probe_rowbram_valid = probe_rowbram_valid_reg;
+    
+    // Probe 2: FP24 output (first result when valid)
+    logic [23:0] probe_fp24_data_reg;
+    logic        probe_fp24_valid_reg;
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            probe_fp24_data_reg <= 24'd0;
+            probe_fp24_valid_reg <= 1'b0;
+        end else begin
+            probe_fp24_valid_reg <= dout_valid;
+            if (dout_valid) begin
+                probe_fp24_data_reg <= fp24_results[0];
+            end
+        end
+    end
+    
+    assign o_probe_fp24_data = probe_fp24_data_reg;
+    assign o_probe_fp24_valid = probe_fp24_valid_reg;
+    
+    // Probe 3: FP16 output (first result when valid)
+    logic [15:0] probe_fp16_data_reg;
+    logic        probe_fp16_valid_reg;
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            probe_fp16_data_reg <= 16'd0;
+            probe_fp16_valid_reg <= 1'b0;
+        end else begin
+            probe_fp16_valid_reg <= fp16_valid;
+            if (fp16_valid) begin
+                probe_fp16_data_reg <= fp16_results[0];
+            end
+        end
+    end
+    
+    assign o_probe_fp16_data = probe_fp16_data_reg;
+    assign o_probe_fp16_valid = probe_fp16_valid_reg;
 
 endmodule
 

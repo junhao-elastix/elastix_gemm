@@ -1,6 +1,6 @@
-#ACE 10.3.1 IP Properties File, generated on:
-#Mon May 12 16:17:27 PDT 2025
-acxip_version=7
+#ACE 10.4.1 IP Properties File, generated on:
+#Wed Dec 10 17:18:36 PST 2025
+acxip_version=8
 clkout0.clkout.port_name=ddr4_clk
 clkout0.int_ODN_output_divider=8
 clkout0.int_OSN_output_divider=1
@@ -15,10 +15,7 @@ clkout1.int_OSN_output_divider=1
 clkout1.int_out_dividers_combined=8
 clkout1.is_OSN_enabled=No
 clkout1.is_outer_bypass=No
-clkout0.is_output_connected_to_core=No
 clkout1.is_output_connected_to_core=No
-clkout2.is_output_connected_to_core=No
-clkout3.is_output_connected_to_core=No
 clkout1.outer_bypass_clock_source_name=rx_clock_from_refio_p_1
 clkout1.phase_shift=0
 clkout2.clkout.port_name=i_reg_clk

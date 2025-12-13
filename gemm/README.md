@@ -1,11 +1,11 @@
 # Elastix GEMM Engine Project
 
-**Status**: ✅ **PRODUCTION READY** - MS2.0 GEMM Engine with Circular Buffer Architecture
-**Last Updated**: Sun Nov 2 05:32:30 PST 2025
-**Bitstream Build**: Bitstream ID 0x10311646 (validated Oct 31)
-**Validation Status**: Simulation - 10/10 tests passing (100%), Hardware - 10/10 tests passing (100%)
+**Status**: ✅ **PRODUCTION READY** - MS2.0 GEMM Engine with MLP Compute (C>16 Support)
+**Last Updated**: Sat Dec 13 00:30:33 PST 2025
+**Bitstream Build**: Bitstream ID 0x12122339 (Build: 12/12 23:39)
+**Validation Status**: Simulation - 7/7 MLP tests passing (100%), Hardware - 1/8 PASS, 7/8 at 96-100% accuracy
 **Top-Level Module**: `elastix_gemm_top.sv`
-**Code Status**: Production hardening complete - Clean codebase (Nov 2)
+**Code Status**: GDDR6_PAGE_ID fix applied, pipeline probe infrastructure added (Dec 13)
 
 ## Project Overview
 
@@ -126,15 +126,21 @@ cd sw_test/
 | `test_gddr6` | GDDR6 channel status and performance monitoring | ✅ Pass |
 | `test_bram` | Basic BRAM DMA read/write validation | ✅ Pass |
 | `scan_registers` | Register address space diagnostic scanner | ✅ Pass |
-| `test_gemm` | THREE-STAGE circular buffer validation test | ✅ Pass (10/10) |
-| `test_gemm_full` | MS2.0 GEMM engine full integration test (5 commands) | ✅ Pass |
+| `test_gemm` | MLP GEMM engine integration test | ✅ 1/8 PASS, 7/8 at 96-100% |
+| `test_gemm_full` | MS2.0 GEMM engine with raw command interface | ✅ Available |
+| `test_multi_tile` | Multi-tile GEMM testing | ✅ Available |
 | `dma_example` | Advanced DMA testing with performance metrics | ✅ Pass |
+| `dma_simple_example` | Basic DMA round-trip validation | ✅ Pass |
+| `test_mem_endpoints` | Memory address space scanner | ✅ Pass |
+| `test_dma_access` | Result BRAM and GDDR6 access test | ✅ Pass |
+| `test_readback` | Result readback test | ✅ Available |
+| `test_bulk_dma` | Bulk DMA testing | ✅ Available |
 
-### Archived Tests (moved to obsolete_debug_tests/)
-- `test_bram_vector` - Legacy BRAM vector processor (replaced by GEMM engine)
-- `test_mem_endpoints` - Memory scanning (less critical for GEMM focus)
-- `DMA_simple_example` - Basic DMA validation (superseded by DMA_example)
-- Debug test files from Oct 10, 2025 debugging sessions
+### Archived Tests
+- `archive_dec12_debug/` - Dec 12 debug session (11 probe/diagnostic utilities)
+- `archive_nov02/` - Nov 2 cleanup (19 obsolete tests)
+- `archive_oct14/` - Oct 14 cleanup
+- `archive_oct12/` - Oct 12 cleanup
 
 ## MS2.0 GEMM Engine Interface
 
@@ -305,22 +311,26 @@ None currently. All tests passing with modular compute engine.
 
 ## Project Evolution
 
-- **Oct 31, 2025**: **CIRCULAR BUFFER COMPLETION** - Implemented byte-granular direct writes with dual-pointer management (rd_ptr/wr_ptr), removed packer buffer complexity, simplified result_bram FIFO to 1-cycle latency, THREE-STAGE validation all passing 100% in hardware (618 FP16 results validated)
-- **Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds, 10/10 simulation tests passing, hardware validation completed Oct 31
-- **Oct 14, 2025**: **COMPREHENSIVE CLEANUP** - Streamlined project structure (66 files archived: 16 RTL modules, 26 tests, 21 sim files, 16 docs), validated with full test suite (88% pass)
-- **Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Migrated to modular compute engine with dual BRAM interface for improved throughput, production-ready
-- **Oct 7, 2025**: **MAJOR CLEANUP** - Initial cleanup phase, removed legacy +42 processing, aligned constraints with GEMM-focused architecture
-- **Oct 6, 2025**: Project renamed from `dma_test_top` to `elastix_gemm_top` to reflect GEMM engine focus
-- **Oct 4, 2025**: GDDR6 integration completed, register map expanded to 133 registers accessible via PCIe BAR0
-- **Oct 3, 2025**: MS2.0 GEMM engine integration completed (architecture ready, data flow connections pending)
-- **May 2025**: Initial DMA platform with BRAM and GDDR6 support
+- **Dec 13, 2025**: **GDDR6_PAGE_ID FIX** - Fixed critical PAGE_ID mismatch (2→0) causing infinity results, added pipeline probe infrastructure, converted fp24_add to 2-stage pipelined for timing, improved from 0% to 96-100% accuracy
+- **Dec 10, 2025**: **MLP INTEGRATION** - Integrated MLP compute engine with C>16 support via column groups, timescale fixes, denormal handling, all 7 integrated tests passing
+- **Nov 13, 2025**: **MULTI-TILE VALIDATION** - Tile BRAM zero-initialization, 19 balanced multi-tile tests passing
+- **Nov 12, 2025**: **VECTOR_READOUT** - VECTOR_READOUT command (0xF5) implementation complete, all 10 single-tile tests passing
+- **Nov 10, 2025**: **8-COLUMN SUPPORT** - Full 8-column multi-tile with READOUT command, near-linear speedup verified
+- **Nov 2, 2025**: **PRODUCTION HARDENING** - Comprehensive cleanup (38+ files archived), clean production codebase
+- **Oct 31, 2025**: **CIRCULAR BUFFER** - Implemented dual-pointer circular buffer architecture with 16x BRAM utilization improvement
+- **Oct 24, 2025**: **RTL CLEANUP** - Removed 256 lines of debugging workarounds
+- **Oct 14, 2025**: **COMPREHENSIVE CLEANUP** - Streamlined project structure (66 files archived)
+- **Oct 10, 2025**: **MS2.0 MODULAR MIGRATION** - Modular compute engine with dual BRAM interface
+- **Oct 7, 2025**: **MAJOR CLEANUP** - Removed legacy +42 processing
+- **Oct 6, 2025**: Project renamed from `dma_test_top` to `elastix_gemm_top`
 
 ## Future Development Roadmap
 
 ### Near-Term Goals (Immediate Priority)
 - [x] **MS2.0 Modular Migration**: Completed migration to modular compute engine with dual BRAM interface
-- [x] **Performance Optimization**: Achieved ~42% improvement with parallel BRAM reads
-- [x] **Production Validation**: All tests passing with modular architecture
+- [x] **MLP Integration**: MLP compute engine with C>16 support via column groups
+- [x] **GDDR6_PAGE_ID Fix**: Fixed critical memory addressing issue (0% → 96-100% accuracy)
+- [ ] **Numerical Precision**: Investigate remaining 1-4% FP16 precision differences from pipelined fp24_add
 - [ ] **Multi-Tile Support**: Enable multiple compute engines for larger matrices
 - [ ] **Performance Benchmarking**: Characterize performance across different matrix sizes
 

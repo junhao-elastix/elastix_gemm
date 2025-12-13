@@ -29,7 +29,7 @@
 // Date: 2024
 // ------------------------------------------------------------------
 
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 `default_nettype none
 
 module fp24_to_fp16 (

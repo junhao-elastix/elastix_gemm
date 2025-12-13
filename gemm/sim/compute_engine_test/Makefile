@@ -1,25 +1,22 @@
 # ---------------------------------------------------------------------
-# Makefile for OPTIMIZED Compute Engine Modular Simulation
+# Makefile for MLP Compute Engine Simulation
 #
-# Purpose: Validate optimized compute engine with direct path architecture
+# Purpose: Validate compute_engine_mlp with MLP-based architecture
 # Features:
-#   - Direct path from tile_bram to MLP primitives
-#   - Optimized 4-state BCV controller (no FILL_BUFFER)
-#   - 2-cycle NV dot product (reduced from 3)
-#   - Parallel tree-based max-finding
-#   - 33% latency reduction
+#   - Direct path from row_bram to MLP primitives
+#   - 256-bit (16 × FP16) result output
+#   - Supports C divisible by 16 (16, 32, 64, 128)
+#   - Internal GFP8E5 → GFP8E8 exponent conversion
 #
-# Author: Optimized Compute Engine Testing
-# Date: Thu Oct 31 2025
+# Author: Compute Engine Testing
+# Date: Dec 2025
 # ---------------------------------------------------------------------
 
 # Simulation settings
-SIM_TOP := tb_compute_engine_modular_opt
-SIM_TOP_MLP := tb_compute_engine_mlp
+SIM_TOP := tb_compute_engine_mlp
 DEVICE := AC7t1500
 BASE_NAME := ac7t1500
-LOG_FILE := sim_opt.log
-LOG_FILE_MLP := sim_mlp.log
+LOG_FILE := sim_mlp.log
 
 # Achronix environment setup
 export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
@@ -30,19 +27,19 @@ DEVICE_MODELS := $(ACE_INSTALL_DIR)/libraries/device_models/$(DEVICE)_simmodels.
 # Achronix Speedster7t library paths
 ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
 
-# Source directories (PROJECT - point directly to source, not copies)
+# Source directories
 GEMM_RTL := ../../src/rtl
 GEMM_INC := ../../src/include
 GEMM_TB := .
 
-# MLP RTL is now in main RTL directory (gemm/src/rtl/)
+# MLP RTL is in main RTL directory
 MLP_RTL := $(GEMM_RTL)
 
 # Compilation flags
 VLOG_OPTIONS := +define+SIMULATION
 VLOG_OPTIONS += -sv
 VLOG_OPTIONS += -timescale "1ps/1ps"
-VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal (valid for sim init)
+VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal
 VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/
 VLOG_OPTIONS += +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim
 VLOG_OPTIONS += +incdir+$(ACX_LIB_S7T)/common
@@ -58,16 +55,11 @@ create_library:
 	@echo "Creating work library..." | tee $(LOG_FILE)
 	@vlib work >> $(LOG_FILE) 2>&1
 
-# Compile the design
+# Compile MLP design
 compile: create_library
 	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "  Compilation Started: $$(date)" | tee -a $(LOG_FILE)
+	@echo "  MLP Compilation Started: $$(date)" | tee -a $(LOG_FILE)
 	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "Compiling packages..." | tee -a $(LOG_FILE)
-	@export LD_LIBRARY_PATH="" && \
-	vlog $(VLOG_OPTIONS) \
-		$(GEMM_INC)/gemm_pkg.sv >> $(LOG_FILE) 2>&1 || \
-		(echo "ERROR: Package compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling Achronix primitives..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
@@ -76,59 +68,7 @@ compile: create_library
 		$(ACX_LIB_S7T)/common/acx_integer.sv \
 		$(ACX_LIB_S7T)/common/acx_floating_point.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE)" && exit 1)
-	@echo "Compiling RTL modules..." | tee -a $(LOG_FILE)
-	@export LD_LIBRARY_PATH="" && \
-	vlog $(VLOG_OPTIONS) \
-		$(GEMM_RTL)/gfp8_nv_dot.sv \
-		$(GEMM_RTL)/gfp8_bcv_controller.sv \
-		$(GEMM_RTL)/gfp8_to_fp16.sv \
-		$(GEMM_RTL)/tile_bram.sv \
-		$(GEMM_RTL)/compute_engine_modular.sv \
-		tb_compute_engine_modular_opt.sv >> $(LOG_FILE) 2>&1 || \
-		(echo "ERROR: RTL compilation failed. See $(LOG_FILE)" && exit 1)
-	@echo "Compilation completed successfully" | tee -a $(LOG_FILE)
-	@echo ""
-
-# Run simulation
-run_vsim: compile
-	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "  Simulation Started: $$(date)" | tee -a $(LOG_FILE)
-	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "Running Compute Engine Modular simulation..." | tee -a $(LOG_FILE)
-	@export LD_LIBRARY_PATH="" && \
-	vsim -c -do "run -all; quit -force" work.$(SIM_TOP) >> $(LOG_FILE) 2>&1 || \
-		(echo "ERROR: Simulation failed. See $(LOG_FILE)" && exit 1)
-	@echo "" | tee -a $(LOG_FILE)
-	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "  Simulation Completed: $$(date)" | tee -a $(LOG_FILE)
-	@echo "======================================================================" | tee -a $(LOG_FILE)
-	@echo "" | tee -a $(LOG_FILE)
-	@echo "Extracting test summary..." | tee -a $(LOG_FILE)
-	@grep -A 10 "TEST SUMMARY" $(LOG_FILE) || echo "Warning: Could not find test summary"
-	@echo ""
-	@echo "Full log available in: $(LOG_FILE)"
-
-# Complete run (compile + simulate)
-run: run_vsim
-
-# =====================================================================
-# MLP Testbench Targets (compute_engine_mlp)
-# =====================================================================
-
-# Compile MLP design (uses same testbench with USE_MLP define)
-compile_mlp: create_library
-	@echo "======================================================================" | tee $(LOG_FILE_MLP)
-	@echo "  MLP Compilation Started: $$(date)" | tee -a $(LOG_FILE_MLP)
-	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
-	@echo "Compiling Achronix primitives..." | tee -a $(LOG_FILE_MLP)
-	@export LD_LIBRARY_PATH="" && \
-	vlog $(VLOG_OPTIONS) \
-		$(DSM_COMPILE_FILE) \
-		$(DEVICE_MODELS) \
-		$(ACX_LIB_S7T)/common/acx_integer.sv \
-		$(ACX_LIB_S7T)/common/acx_floating_point.sv >> $(LOG_FILE_MLP) 2>&1 || \
-		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE_MLP)" && exit 1)
-	@echo "Compiling MLP RTL modules..." | tee -a $(LOG_FILE_MLP)
+	@echo "Compiling MLP RTL modules..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
 		$(MLP_RTL)/mlp_dot16_int8.sv \
@@ -140,47 +80,41 @@ compile_mlp: create_library
 		$(MLP_RTL)/mlp_bram_col_ctrl.sv \
 		$(MLP_RTL)/row_bram.sv \
 		$(MLP_RTL)/fp24_to_fp16.sv \
-		$(MLP_RTL)/compute_engine_mlp.sv >> $(LOG_FILE_MLP) 2>&1 || \
-		(echo "ERROR: MLP RTL compilation failed. See $(LOG_FILE_MLP)" && exit 1)
-	@echo "Compiling testbench with USE_MLP define..." | tee -a $(LOG_FILE_MLP)
+		$(MLP_RTL)/compute_engine_mlp.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: MLP RTL compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling testbench..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
-	vlog $(VLOG_OPTIONS) +define+USE_MLP \
-		tb_compute_engine_modular_opt.sv >> $(LOG_FILE_MLP) 2>&1 || \
-		(echo "ERROR: MLP testbench compilation failed. See $(LOG_FILE_MLP)" && exit 1)
-	@echo "MLP compilation completed successfully" | tee -a $(LOG_FILE_MLP)
+	vlog $(VLOG_OPTIONS) \
+		tb_compute_engine_mlp.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Testbench compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "MLP compilation completed successfully" | tee -a $(LOG_FILE)
 	@echo ""
 
-# Run MLP simulation (uses same testbench with USE_MLP define)
-run_vsim_mlp: compile_mlp
-	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
-	@echo "  MLP Simulation Started: $$(date)" | tee -a $(LOG_FILE_MLP)
-	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
-	@echo "Running Compute Engine MLP simulation..." | tee -a $(LOG_FILE_MLP)
+# Run MLP simulation
+run_vsim: compile
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "  MLP Simulation Started: $$(date)" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "Running Compute Engine MLP simulation..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
-	vsim -c -do "run -all; quit -force" work.$(SIM_TOP) >> $(LOG_FILE_MLP) 2>&1 || \
-		(echo "ERROR: MLP simulation failed. See $(LOG_FILE_MLP)" && exit 1)
-	@echo "" | tee -a $(LOG_FILE_MLP)
-	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
-	@echo "  MLP Simulation Completed: $$(date)" | tee -a $(LOG_FILE_MLP)
-	@echo "======================================================================" | tee -a $(LOG_FILE_MLP)
-	@echo "" | tee -a $(LOG_FILE_MLP)
-	@echo "Extracting test summary..." | tee -a $(LOG_FILE_MLP)
-	@grep -E "PASS|FAIL|ALL TESTS" $(LOG_FILE_MLP) | tail -10 || echo "Warning: Could not find test summary"
+	vsim -c -do "run -all; quit -force" work.$(SIM_TOP) >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: MLP simulation failed. See $(LOG_FILE)" && exit 1)
+	@echo "" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "  MLP Simulation Completed: $$(date)" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "" | tee -a $(LOG_FILE)
+	@echo "Extracting test summary..." | tee -a $(LOG_FILE)
+	@grep -E "PASS|FAIL|ALL TESTS" $(LOG_FILE) | tail -10 || echo "Warning: Could not find test summary"
 	@echo ""
-	@echo "Full log available in: $(LOG_FILE_MLP)"
+	@echo "Full log available in: $(LOG_FILE)"
 
-# Run MLP tests
-run_mlp: run_vsim_mlp
+# Run tests
+run: run_vsim
 
-# Debug MLP with GUI (uses same testbench with USE_MLP define)
-debug_mlp: compile_mlp
-	@echo "=== Running Compute Engine MLP Debug Simulation ==="
-	@export LD_LIBRARY_PATH="" && \
-	vsim -gui work.$(SIM_TOP) &
-
-# Run with GUI for debugging
+# Debug MLP with GUI
 debug: compile
-	@echo "=== Running Compute Engine Modular Debug Simulation ==="
+	@echo "=== Running Compute Engine MLP Debug Simulation ==="
 	@export LD_LIBRARY_PATH="" && \
 	vsim -gui work.$(SIM_TOP) &
 
@@ -220,11 +154,11 @@ clean:
 # Help
 help:
 	@echo "========================================================================"
-	@echo "  Makefile for Compute Engine Modular Simulation"
+	@echo "  Makefile for MLP Compute Engine Simulation"
 	@echo "========================================================================"
 	@echo ""
-	@echo "Purpose: Test compute_engine_modular.sv with dual BRAM and FP16 output"
-	@echo "         Validates full BCV orchestration, GFP8 computation, and format conversion"
+	@echo "Purpose: Test compute_engine_mlp.sv with MLP-based architecture"
+	@echo "         Validates 256-bit (16 × FP16) output and GFP8 computation"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make             - Compile and run simulation (outputs to $(LOG_FILE))"
@@ -237,17 +171,16 @@ help:
 	@echo "  make help        - Show this help message"
 	@echo ""
 	@echo "Key Features:"
-	@echo "  - Dual BRAM interface (parallel left/right matrix reads)"
-	@echo "  - Separate exponent read ports"
-	@echo "  - FP16 result output validation"
-	@echo "  - Golden reference comparison with tolerance"
+	@echo "  - MLP-based compute engine (replaces modular)"
+	@echo "  - 256-bit result output (16 × FP16 per cycle)"
+	@echo "  - Internal GFP8E5 → GFP8E8 exponent conversion"
+	@echo "  - Supports C = 16, 32, 64, 128 (divisible by 16)"
 	@echo "  - All output logged to $(LOG_FILE)"
 	@echo ""
 	@echo "Test Configurations:"
-	@echo "  B1_C1_V1, B2_C2_V2, B4_C4_V4, B2_C2_V64, B4_C4_V32,"
-	@echo "  B8_C8_V16, B1_C128_V1, B128_C1_V1, B1_C1_V128"
+	@echo "  C=16:  B16_C16_V8 (baseline)"
+	@echo "  C>16:  B4_C32_V4, B8_C32_V2, B8_C64_V2, B2_C128_V1"
 	@echo ""
 	@echo "========================================================================"
 
-.PHONY: all create_library compile run_vsim run debug view-log summary clean help \
-        compile_mlp run_vsim_mlp run_mlp debug_mlp
+.PHONY: all create_library compile run_vsim run debug view-log summary clean help

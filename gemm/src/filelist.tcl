@@ -39,6 +39,17 @@ result_fifo_to_simple_bram.sv
 shift_reg.sv
 tile_bram.sv
 tile_result_fifo.sv
+# MLP compute engine modules (Dec 2025)
+compute_engine_mlp.sv
+fp24_add.sv
+fp24_to_fp16.sv
+mlp_bram.sv
+mlp_bram_col.sv
+mlp_bram_col_ctrl.sv
+mlp_dot16_bfp8.sv
+mlp_dot16_int8.sv
+row_bram.sv
+weight_bram.sv
 }
 
 # WARNING: do not modify the files below this line unless you know what you are doing

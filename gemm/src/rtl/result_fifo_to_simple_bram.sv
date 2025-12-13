@@ -1,47 +1,49 @@
 // =============================================================================
-// result_fifo_to_simple_bram.sv - Direct Write (No Packer)
+// result_fifo_to_simple_bram.sv - 256-bit Direct Write (MLP Mode)
 // =============================================================================
-// Direct adapter: Result FIFO (16-bit FP16) -> BRAM (byte-granular writes)
+// Direct adapter: 256-bit results (16×FP16) -> BRAM with circular buffer tracking
 //
 // Description:
-//   - Reads FP16 results from compute engine's result FIFO (1-cycle latency)
-//   - Writes each FP16 DIRECTLY to BRAM using byte enables
-//   - No buffering/packing - immediate write on each result
-//   - Implements circular FIFO with 13-bit wr_ptr counter (8192 results)
+//   - Receives 16 FP16 results per cycle from MLP compute engine
+//   - Writes full 256-bit lines directly to BRAM
+//   - Implements circular FIFO with 13-bit wr_ptr counter (8192 FP16 results)
+//   - Increments wr_ptr by 16 for each 256-bit write
 //   - Provides backpressure when 8128 results are written
 //
-// Key Changes from Packed Version:
-//   - Removed pack_buffer and pack_position (no accumulation)
-//   - Removed flush logic (no longer needed)
-//   - Added o_bram_wr_strobe for byte-granular writes
-//   - wr_ptr always reflects actual BRAM state
-//   - Simplified to 1-cycle FIFO read latency (was 2-cycle)
+// MLP Mode Changes (Dec 2025):
+//   - Changed input from 16-bit FIFO to 256-bit direct (i_data_256, i_data_valid)
+//   - wr_ptr increments by 16 per write (16 FP16 values per 256-bit line)
+//   - Removed FIFO read latency handling (direct write on valid)
+//   - Simplified flow: valid -> immediate BRAM write
 //
 // Architecture:
-//   - Standard synchronous FIFO: rd_en on cycle N, data valid on cycle N+1
-//   - Continuous draining with immediate byte-granular writes
-//   - 13-bit FP16 addressing: {addr[12:0], 1'b0} for 2-byte alignment
-//   - BRAM line = addr[12:4], byte position = addr[3:0] * 2
-//   - Circular buffer wraps at 8192
+//   - 256-bit writes at line granularity (no byte-granular positioning needed)
+//   - 13-bit FP16 addressing: ptr/16 = line address, ptr%16 = position in line
+//   - Circular buffer wraps at 8192 (512 lines × 16 FP16/line)
 //
 // Author: Junhao Pan
-// Date:
+// Date: December 2025
 // =============================================================================
 
 module result_fifo_to_simple_bram (
     input  logic        i_clk,
     input  logic        i_reset_n,
 
-    // Result FIFO interface (from compute engine)
+    // 256-bit result interface (from MLP compute engine)
+    input  logic [255:0] i_data_256,        // 16×FP16 results
+    input  logic         i_data_valid,      // Valid pulse
+    input  logic [8:0]   i_wr_addr,         // Write address from engine (for verification)
+
+    // Legacy FIFO interface (directly connected for backward compat, unused)
     input  logic [15:0] i_fifo_rdata,
     output logic        o_fifo_ren,
     input  logic        i_fifo_empty,
 
-    // BRAM interface (256-bit per line, byte-granular writes)
+    // BRAM interface (256-bit per line, full-line writes)
     output logic [8:0]   o_bram_wr_addr,   // Line address (0-511)
-    output logic [255:0] o_bram_wr_data,   // Data (FP16 positioned by strobe)
+    output logic [255:0] o_bram_wr_data,   // Full 256-bit data
     output logic         o_bram_wr_en,
-    output logic [31:0]  o_bram_wr_strobe, // Byte enables (2 bits set per FP16)
+    output logic [31:0]  o_bram_wr_strobe, // All bytes valid for 256-bit write
 
     // First 4 results exposed to registers (for quick host access)
     output logic [15:0] o_result_0,
@@ -50,8 +52,8 @@ module result_fifo_to_simple_bram (
     output logic [15:0] o_result_3,
 
     // Circular buffer interface
-    input  logic [12:0] i_rd_ptr,         // Read pointer from host (0-8191)
-    output logic [12:0] o_wr_ptr,         // Write pointer (0-8191)
+    input  logic [12:0] i_rd_ptr,         // Read pointer from host (0-8191, FP16 granularity)
+    output logic [12:0] o_wr_ptr,         // Write pointer (0-8191, FP16 granularity)
     output logic [13:0] o_used_entries,   // Number of valid FP16 results (0-8192)
     output logic        o_empty,          // Buffer empty flag
     output logic        o_almost_full     // Backpressure signal
@@ -61,21 +63,20 @@ module result_fifo_to_simple_bram (
     // Parameters
     // =========================================================================
     localparam TOTAL_CAPACITY = 8192;           // Total FP16 results
-    localparam ALMOST_FULL_THRESHOLD = 8128;    // Trigger when < 256 FP16s free
+    localparam ALMOST_FULL_THRESHOLD = 8128;    // Trigger when < 64 FP16s free (4 lines)
+    localparam FP16_PER_LINE = 16;              // 16 FP16 values per 256-bit line
 
     // =========================================================================
     // Internal State
     // =========================================================================
-    logic         fifo_rd_valid;             // 1-cycle pipeline for FIFO read latency
-    logic [12:0]  rd_ptr;                    // FP16 read position (0-8191)
+    logic [12:0]  rd_ptr;                    // FP16 read position (0-8191) from host
     logic [12:0]  wr_ptr;                    // FP16 write position (0-8191)
-    logic [12:0]  first_four_count;          // Counter for first 4 results capture
+    logic         first_write_captured;       // Flag for first write capture
 
-    // Direct write calculation signals (unused, kept for potential debug)
-    logic [8:0]   line_addr;                 // BRAM line address
-    logic [3:0]   fp16_position;             // FP16 position within line (0-15)
-    logic [4:0]   byte_position;             // Byte position within 256-bit line
-    logic [31:0]  byte_strobe;               // Byte enable mask
+    // =========================================================================
+    // Legacy FIFO interface - tie off (not used in MLP mode)
+    // =========================================================================
+    assign o_fifo_ren = 1'b0;  // Never read from legacy FIFO
 
     // =========================================================================
     // Circular Buffer Management
@@ -94,19 +95,24 @@ module result_fifo_to_simple_bram (
     // =========================================================================
     // Write Pointer Management
     // =========================================================================
-    // Circular counter with automatic wrap (simplified - single reset path)
+    // Circular counter with automatic wrap, increments by 16 per 256-bit write
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             wr_ptr <= 13'd0;
             rd_ptr <= 13'd0;
-        end else if (i_rd_ptr != rd_ptr) begin
-            rd_ptr <= i_rd_ptr;
-        end else if (fifo_rd_valid) begin
-            // Increment on each valid result (wraps at 8192)
-            if (wr_ptr == TOTAL_CAPACITY - 1) begin
-                wr_ptr <= 13'd0;  // Wrap around
-            end else begin
-                wr_ptr <= wr_ptr + 13'd1;
+        end else begin
+            // Update rd_ptr from host CSR
+            if (i_rd_ptr != rd_ptr) begin
+                rd_ptr <= i_rd_ptr;
+            end
+
+            // Increment wr_ptr by 16 on each valid 256-bit write
+            if (i_data_valid) begin
+                if (wr_ptr >= TOTAL_CAPACITY - FP16_PER_LINE) begin
+                    wr_ptr <= 13'd0;  // Wrap around
+                end else begin
+                    wr_ptr <= wr_ptr + 13'd16;  // Increment by 16 FP16 values
+                end
             end
         end
     end
@@ -120,12 +126,10 @@ module result_fifo_to_simple_bram (
     end
 
     // =========================================================================
-    // FIFO Read and BRAM Write Logic (Direct Write - No Packing!)
+    // BRAM Write Logic (Direct 256-bit Write)
     // =========================================================================
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
-            o_fifo_ren       <= 1'b0;
-            fifo_rd_valid    <= 1'b0;
             o_bram_wr_en     <= 1'b0;
             o_bram_wr_addr   <= 9'd0;
             o_bram_wr_data   <= 256'd0;
@@ -134,43 +138,27 @@ module result_fifo_to_simple_bram (
             o_result_1       <= 16'd0;
             o_result_2       <= 16'd0;
             o_result_3       <= 16'd0;
-            first_four_count <= 13'd0;
+            first_write_captured <= 1'b0;
         end else begin
             // Default: no write
             o_bram_wr_en <= 1'b0;
 
-            // Pipeline FIFO read (1 cycle for data to arrive)
-            // Standard synchronous FIFO: Assert rd_en on cycle N, data valid on cycle N+1
-            fifo_rd_valid <= o_fifo_ren;
-
-            // Issue FIFO read pulse (ONE cycle only!) if not empty and not already reading
-            // CRITICAL: o_fifo_ren must be a pulse, not level-sensitive!
-            if (!i_fifo_empty && !o_almost_full && !o_fifo_ren && !fifo_rd_valid) begin
-                o_fifo_ren <= 1'b1;
-            end else begin
-                o_fifo_ren <= 1'b0;
-            end
-
-            // Write directly to BRAM 1 cycle after read (when fifo_rd_valid is high)
-            if (fifo_rd_valid) begin
-                // Capture first 4 results to dedicated registers
-                if (first_four_count < 4) begin
-                    case (first_four_count)
-                        13'd0: o_result_0 <= i_fifo_rdata;
-                        13'd1: o_result_1 <= i_fifo_rdata;
-                        13'd2: o_result_2 <= i_fifo_rdata;
-                        13'd3: o_result_3 <= i_fifo_rdata;
-                        default: ;
-                    endcase
-                    first_four_count <= first_four_count + 13'd1;
-                end
-
-                // Write FP16 immediately to BRAM
-                // Use direct expressions to avoid blocking assignment timing issues
-                o_bram_wr_addr   <= wr_ptr[12:4];  // Line address
-                o_bram_wr_data   <= {240'd0, i_fifo_rdata} << ({wr_ptr[3:0], 1'b0} * 8);  // Position FP16
+            // Write 256-bit line directly to BRAM when valid
+            if (i_data_valid) begin
+                // BRAM line address from wr_ptr (divide by 16)
+                o_bram_wr_addr   <= wr_ptr[12:4];
+                o_bram_wr_data   <= i_data_256;
                 o_bram_wr_en     <= 1'b1;
-                o_bram_wr_strobe <= 32'd3 << {wr_ptr[3:0], 1'b0};  // Byte strobe
+                o_bram_wr_strobe <= 32'hFFFFFFFF;  // All 32 bytes valid
+
+                // Capture first 4 results on first write only
+                if (!first_write_captured) begin
+                    o_result_0 <= i_data_256[15:0];
+                    o_result_1 <= i_data_256[31:16];
+                    o_result_2 <= i_data_256[47:32];
+                    o_result_3 <= i_data_256[63:48];
+                    first_write_captured <= 1'b1;
+                end
             end
         end
     end

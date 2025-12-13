@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 
 from sim_utils.build_misc import get_acx_vlog_flags
-from cocotb_tools.runner import get_runner
+try:
+    from cocotb_tools.runner import get_runner  # cocotb 2.0+
+except ImportError:
+    from cocotb.runner import get_runner  # cocotb 1.9.x
 
 
 def test_compute_engine_mlp_runner():

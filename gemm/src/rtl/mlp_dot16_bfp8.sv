@@ -13,7 +13,7 @@
 // Bank 0 (Lower): DIN[8 values] × BRAM_DOUT[71:0][8 parameters] → DOT_PRODUCT_0
 // Bank 1 (Upper): DIN[8 values] × BRAM_DOUT[143:72][8 parameters] → DOT_PRODUCT_1
 
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 
 // Achronix primitive simulation enables
 `ifdef SPEEDSTER7T_SIMULATION

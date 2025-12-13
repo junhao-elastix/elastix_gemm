@@ -8,7 +8,8 @@
 // - Parameters: 16 values from BRAM (8 per bank, stored as 144-bit words)
 // - Output: Two dot product results (one per bank)
 
-`timescale 1ns / 1ps `default_nettype none
+`timescale 1ps / 1ps
+`default_nettype none
 // Achronix primitive simulation enables
 `ifdef SPEEDSTER7T_SIMULATION
 `define ACX_ENABLE_PRIMITIVE_SIM

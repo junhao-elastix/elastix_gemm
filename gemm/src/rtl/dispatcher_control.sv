@@ -96,7 +96,11 @@ import gemm_pkg::*;
     output logic [10:0]                  o_disp_wr_addr,    // Debug: BRAM write address
     output logic                         o_disp_wr_en,      // Debug: BRAM write enable
     output logic [8:0]                   o_disp_rd_addr,    // DISPATCH read address (debug)
-    output logic                         o_disp_rd_en       // DISPATCH read enable (debug)
+    output logic                         o_disp_rd_en,      // DISPATCH read enable (debug)
+    
+    // Probe Interface (first 16 bits of fetcher data when valid)
+    output logic [15:0]                  o_probe_disp_data,
+    output logic                         o_probe_disp_valid
 );
 
     // ====================================================================
@@ -272,6 +276,28 @@ import gemm_pkg::*;
     assign o_disp_rd_addr = dispatcher_man_left_rd_addr[8:0];  // Use left (or right, doesn't matter)
     assign o_disp_rd_en = dispatcher_man_left_rd_en | dispatcher_man_right_rd_en;
     assign o_disp_wr_count = 10'd0;  // Not used in refactored architecture
+
+    // ====================================================================
+    // Probe Outputs - Capture first 16 bits of fetcher data when valid
+    // ====================================================================
+    logic [15:0] probe_disp_data_reg;
+    logic        probe_disp_valid_reg;
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            probe_disp_data_reg <= 16'd0;
+            probe_disp_valid_reg <= 1'b0;
+        end else begin
+            probe_disp_valid_reg <= fetcher_bram_wr_en;
+            if (fetcher_bram_wr_en) begin
+                // Capture first 16 bits of fetcher write data
+                probe_disp_data_reg <= fetcher_bram_wr_data[15:0];
+            end
+        end
+    end
+    
+    assign o_probe_disp_data = probe_disp_data_reg;
+    assign o_probe_disp_valid = probe_disp_valid_reg;
 
 endmodule : dispatcher_control
 

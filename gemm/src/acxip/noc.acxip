@@ -1,6 +1,6 @@
-#ACE 10.3.1 IP Properties File, generated on:
-#Tue May 06 15:43:26 PDT 2025
-acxip_version=10
+#ACE 10.4.1 IP Properties File, generated on:
+#Wed Dec 10 17:18:36 PST 2025
+acxip_version=11
 enoc_n_frequency=1300.0
 enoc_n_int_frequency=1500.0
 enoc_n_int_pll_divfi=15

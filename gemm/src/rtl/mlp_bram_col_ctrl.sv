@@ -1,4 +1,4 @@
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 
 // MLP BRAM Column Controller - 4-Stack Parallel Architecture
 //
@@ -28,35 +28,35 @@ module mlp_bram_col_ctrl #(
     parameter integer PIPELINE_LATENCY = 2      // MLP pipeline latency for load timing
 ) (
     // Clock and Reset
-    input  wire        clk,
-    input  wire        rstn,
+    input  logic        clk,
+    input  logic        rstn,
 
     // =========================================================================
     // Weight Loading Interface (upstream)
     // =========================================================================
-    input  wire        i_wt_valid,           // Weight data valid
-    output wire        o_wt_ready,           // Ready to accept weight data
-    input  wire [255:0]  i_nv_right_man [0:3], // 128 mantissas as 4 groups of 256 bits
-    input  wire [31:0]   i_nv_right_exp,       // 4 exponents (8-bit each)
-    input  wire [3:0]    i_col_sel,            // Target column (0-15)
-    input  wire [6:0]    i_wt_nv_idx,          // NV index within column (for V>1)
+    input  logic        i_wt_valid,           // Weight data valid
+    output logic        o_wt_ready,           // Ready to accept weight data
+    input  logic [255:0]  i_nv_right_man [0:3], // 128 mantissas as 4 groups of 256 bits
+    input  logic [31:0]   i_nv_right_exp,       // 4 exponents (8-bit each)
+    input  logic [3:0]    i_col_sel,            // Target column (0-15)
+    input  logic [6:0]    i_wt_nv_idx,          // NV index within column (for V>1)
 
     // =========================================================================
     // Compute/Activation Interface (upstream)
     // =========================================================================
-    input  wire        i_act_valid,          // Activation data valid
-    output wire        o_act_ready,          // Ready to accept activation data
-    input  wire [255:0]  i_nv_left_man [0:3], // 128 activation mantissas as 4 groups of 256 bits
-    input  wire [31:0]   i_nv_left_exp,       // 4 exponents (8-bit each)
-    input  wire        i_new_dot,            // Start new dot product (reset accumulator)
-    input  wire        i_last_nv,            // This is the last NV of the batch (output after drain)
+    input  logic        i_act_valid,          // Activation data valid
+    output logic        o_act_ready,          // Ready to accept activation data
+    input  logic [255:0]  i_nv_left_man [0:3], // 128 activation mantissas as 4 groups of 256 bits
+    input  logic [31:0]   i_nv_left_exp,       // 4 exponents (8-bit each)
+    input  logic        i_new_dot,            // Start new dot product (reset accumulator)
+    input  logic        i_last_nv,            // This is the last NV of the batch (output after drain)
 
     // =========================================================================
     // Result Interface (downstream)
     // =========================================================================
-    output wire [71:0] o_dout [NUM_MLPS-1:0], // MLP outputs (combined from 4 stacks)
-    output wire        o_dout_valid,          // Results valid
-    input  wire        i_dout_ready           // Downstream ready
+    output logic [71:0] o_dout [NUM_MLPS-1:0], // MLP outputs (combined from 4 stacks)
+    output logic        o_dout_valid,          // Results valid
+    input  logic        i_dout_ready           // Downstream ready
 
 );
 
@@ -168,56 +168,89 @@ module mlp_bram_col_ctrl #(
     // =========================================================================
     // Column to MLP/Bank Mapping (for weight loading)
     // =========================================================================
-    wire [2:0] mlp_index = col_sel_reg[3:1];  // col_sel / 2
-    wire       bank_sel  = col_sel_reg[0];     // col_sel % 2
+    logic [2:0] mlp_index;
+    logic       bank_sel;
+    assign mlp_index = col_sel_reg[3:1];  // col_sel / 2
+    assign bank_sel  = col_sel_reg[0];     // col_sel % 2
 
     // Generate wren mask (only one MLP enabled during weight loading)
     // Same wren broadcast to all 4 stacks
-    wire [NUM_MLPS-1:0] wren_wt = (wt_state_reg == WT_LOAD) ?
+    logic [NUM_MLPS-1:0] wren_wt;
+    assign wren_wt = (wt_state_reg == WT_LOAD) ?
         ({{(NUM_MLPS-1){1'b0}}, 1'b1} << mlp_index) : {NUM_MLPS{1'b0}};
 
     // Generate wraddr:
     //   With 4 stacks, each stack stores 32 elements (4 cycles worth)
     //   Address layout: {wt_nv_idx[6:0], wt_cycle_cnt[1:0], ~bank_sel}
+    //   Bank mapping (for asymmetric BRAM read/write):
+    //     - Even column (bank_sel=0): wraddr[0]=1 → odd slot → BRAM upper [143:72] → Bank AB
+    //     - Odd column (bank_sel=1): wraddr[0]=0 → even slot → BRAM lower [71:0] → Bank CD
+    //   This inverted mapping means: even columns → Bank AB, odd columns → Bank CD
+    //   The extraction in compute_engine_mlp.sv must match this mapping.
     //   - NV 0: addresses 0-7 (4 cycles × 2 banks)
     //   - NV 1: addresses 8-15
     //   - etc.
-    wire [9:0] wraddr_wt = {wt_nv_idx_reg[6:0], wt_cycle_cnt, ~bank_sel};
+    logic [9:0] wraddr_wt;
+    assign wraddr_wt = {wt_nv_idx_reg[6:0], wt_cycle_cnt, ~bank_sel};
+
+    // Debug: trace weight BRAM writes
+    // synthesis translate_off
+    always @(posedge clk) begin
+        if (wt_state_reg == WT_LOAD && |wren_wt) begin
+            $display("[MLP_BRAM_COL_CTRL] @%0t WRITE: mlp_idx=%0d, col_sel=%0d, bank_sel=%0d, wraddr=0x%03x (LSB=%0d), wt_nv_idx=%0d, cycle=%0d",
+                     $time, mlp_index, col_sel_reg, bank_sel, wraddr_wt, wraddr_wt[0], wt_nv_idx_reg, wt_cycle_cnt);
+            $display("[MLP_BRAM_COL_CTRL] @%0t WRITE_DATA: exp[3:0]={0x%02x,0x%02x,0x%02x,0x%02x}, bram_din_stack[0]=0x%018x",
+                     $time, wt_exp_reg[31:24], wt_exp_reg[23:16], wt_exp_reg[15:8], wt_exp_reg[7:0], bram_din_stack[0]);
+        end
+    end
+    // synthesis translate_on
 
     // =========================================================================
     // Compute Control Signal Generation
     // =========================================================================
-    wire is_loading = (wt_state_reg == WT_LOAD);
-    wire is_streaming = (comp_state_reg == COMP_STREAM);
+    logic is_loading;
+    logic is_streaming;
+    assign is_loading = (wt_state_reg == WT_LOAD);
+    assign is_streaming = (comp_state_reg == COMP_STREAM);
 
     // ce: Active during streaming AND drain
-    wire comp_ce = (comp_state_reg == COMP_STREAM) || (comp_state_reg == COMP_DRAIN);
+    logic comp_ce;
+    assign comp_ce = (comp_state_reg == COMP_STREAM) || (comp_state_reg == COMP_DRAIN);
 
     // accumulate: Enable after first cycle of COMP_STREAM, and during COMP_DRAIN
-    wire comp_accumulate = ((comp_state_reg == COMP_STREAM) && (comp_cycle_cnt > 2'd0)) ||
-                           (comp_state_reg == COMP_DRAIN);
+    logic comp_accumulate;
+    assign comp_accumulate = ((comp_state_reg == COMP_STREAM) && (comp_cycle_cnt > 2'd0)) ||
+                             (comp_state_reg == COMP_DRAIN);
 
     // load: Pulse at cycle 2 for new dot product (accounts for pipeline latency)
     // With 4 cycles, load at cycle 2 is still valid (cycles 0,1,2,3)
-    wire comp_load = (comp_state_reg == COMP_STREAM) &&
-                     (comp_cycle_cnt == PIPELINE_LATENCY[1:0]) && new_dot_reg;
+    logic comp_load;
+    assign comp_load = (comp_state_reg == COMP_STREAM) &&
+                       (comp_cycle_cnt == PIPELINE_LATENCY[1:0]) && new_dot_reg;
 
     // =========================================================================
     // MLP BRAM Column Signal Muxing (shared across all stacks)
     // =========================================================================
-    wire [9:0]          mlp_wraddr    = is_loading ? wraddr_wt : 10'b0;
-    wire [NUM_MLPS-1:0] mlp_wren      = wren_wt;
+    logic [9:0]          mlp_wraddr;
+    logic [NUM_MLPS-1:0] mlp_wren;
+    assign mlp_wraddr = is_loading ? wraddr_wt : 10'b0;
+    assign mlp_wren   = wren_wt;
 
     // rdaddr: For V>1, weights are stored at nv_index * 4 + cycle offset
     // (was nv_index * 16 with single stack)
-    wire [8:0] nv_base_addr = {nv_index[6:0], 2'd0};  // nv_index * 4
-    wire [8:0]          mlp_rdaddr    = is_loading ? 9'b0 :
+    logic [8:0] nv_base_addr;
+    logic [8:0] mlp_rdaddr;
+    assign nv_base_addr = {nv_index[6:0], 2'd0};  // nv_index * 4
+    assign mlp_rdaddr   = is_loading ? 9'b0 :
                                         (comp_state_reg == COMP_SETUP) ? nv_base_addr :
                                         (comp_state_reg == COMP_STREAM) ? (nv_base_addr + {7'd0, comp_cycle_cnt} + 9'd1) :
                                         9'b0;
-    wire                mlp_ce        = is_loading ? 1'b1 : comp_ce;
-    wire                mlp_load      = is_loading ? 1'b0 : comp_load;
-    wire                mlp_accumulate = is_loading ? 1'b0 : comp_accumulate;
+    logic mlp_ce;
+    logic mlp_load;
+    logic mlp_accumulate;
+    assign mlp_ce         = is_loading ? 1'b1 : comp_ce;
+    assign mlp_load       = is_loading ? 1'b0 : comp_load;
+    assign mlp_accumulate = is_loading ? 1'b0 : comp_accumulate;
 
     // =========================================================================
     // Weight Loading FSM: Next State Logic
@@ -390,32 +423,95 @@ module mlp_bram_col_ctrl #(
 
     // Pulse o_dout_valid for exactly 1 cycle when result is ready
     // Result is ready when transitioning from DRAIN to IDLE AND this was the last NV of batch
+    // NOTE: Valid signal is delayed by 4 cycles to match pipelined FP24 adder tree
+    //       (2 cycles per level × 2 levels = 4 cycles total)
     logic was_draining;
     logic was_last_nv;
+    logic dout_valid_pre;       // Pre-pipeline valid signal
+    logic dout_valid_d1;        // Pipeline delay stage 1
+    logic dout_valid_d2;        // Pipeline delay stage 2
+    logic dout_valid_d3;        // Pipeline delay stage 3
+    logic dout_valid_d4;        // Pipeline delay stage 4
+
     always_ff @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            was_draining <= 1'b0;
-            was_last_nv  <= 1'b0;
+            was_draining   <= 1'b0;
+            was_last_nv    <= 1'b0;
+            dout_valid_d1  <= 1'b0;
+            dout_valid_d2  <= 1'b0;
+            dout_valid_d3  <= 1'b0;
+            dout_valid_d4  <= 1'b0;
         end else begin
             was_draining <= (comp_state_reg == COMP_DRAIN);
             // Capture last_nv_reg at end of DRAIN so it's valid when we check in IDLE
             if (comp_state_reg == COMP_DRAIN) begin
                 was_last_nv <= last_nv_reg;
             end
+            // 4-stage pipeline delay to match adder tree latency
+            dout_valid_d1 <= dout_valid_pre;
+            dout_valid_d2 <= dout_valid_d1;
+            dout_valid_d3 <= dout_valid_d2;
+            dout_valid_d4 <= dout_valid_d3;
         end
     end
-    // Pulse when entering IDLE from DRAIN AND this was the last NV of the batch
-    assign o_dout_valid = (comp_state_reg == COMP_IDLE) && was_draining && was_last_nv && !is_loading;
+    // Pre-pipeline valid: pulse when entering IDLE from DRAIN AND this was the last NV
+    assign dout_valid_pre = (comp_state_reg == COMP_IDLE) && was_draining && was_last_nv && !is_loading;
+    // Output valid delayed by 4 cycles to align with pipelined adder tree output
+    assign o_dout_valid = dout_valid_d4;
+
+    // Debug: trace mlp_bram_col_ctrl FSM and signals
+    // synthesis translate_off
+    logic [2:0] comp_state_prev, wt_state_prev;
+    always @(posedge clk) begin
+        comp_state_prev <= comp_state_reg;
+        wt_state_prev <= wt_state_reg;
+
+        // Report state changes
+        if (comp_state_reg != comp_state_prev) begin
+            $display("[MLP_CTRL_COMP] @%0t state=%0d->%0d, act_valid=%b, is_loading=%b, last_nv=%b",
+                     $time, comp_state_prev, comp_state_reg, i_act_valid, is_loading, i_last_nv);
+        end
+        if (wt_state_reg != wt_state_prev) begin
+            $display("[MLP_CTRL_WT] @%0t state=%0d->%0d", $time, wt_state_prev, wt_state_reg);
+        end
+
+        // Report when result is valid
+        if (o_dout_valid) begin
+            $display("[MLP_CTRL] @%0t DOUT_VALID: was_draining=%b, was_last_nv=%b, is_loading=%b",
+                     $time, was_draining, was_last_nv, is_loading);
+            // Show Bank 0 (CD) and Bank 1 (AB) values for first 4 MLPs
+            $display("[MLP_CTRL] @%0t MLP0: bank0(CD)=0x%06x bank1(AB)=0x%06x o_dout=0x%018x",
+                     $time, final_bank0[0], final_bank1[0], o_dout[0]);
+            $display("[MLP_CTRL] @%0t MLP1: bank0(CD)=0x%06x bank1(AB)=0x%06x o_dout=0x%018x",
+                     $time, final_bank0[1], final_bank1[1], o_dout[1]);
+            $display("[MLP_CTRL] @%0t MLP2: bank0(CD)=0x%06x bank1(AB)=0x%06x o_dout=0x%018x",
+                     $time, final_bank0[2], final_bank1[2], o_dout[2]);
+            $display("[MLP_CTRL] @%0t MLP3: bank0(CD)=0x%06x bank1(AB)=0x%06x o_dout=0x%018x",
+                     $time, final_bank0[3], final_bank1[3], o_dout[3]);
+        end
+
+        // Report act_ready signal
+        if (o_act_ready && i_act_valid) begin
+            $display("[MLP_CTRL] @%0t ACT_HANDSHAKE: act_valid=%b, act_ready=%b, new_dot=%b, last_nv=%b",
+                     $time, i_act_valid, o_act_ready, i_new_dot, i_last_nv);
+        end
+    end
+    // synthesis translate_on
 
     // =========================================================================
     // 4 × MLP BRAM Column Instances
     // =========================================================================
-    wire [71:0] stack_dout [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic [71:0] stack_dout [NUM_STACKS-1:0][NUM_MLPS-1:0];
 
     generate
         for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_mlp_stack
             // Per-stack din: zero during loading, activation during streaming
-            wire [71:0] stack_din = (is_loading || !is_streaming) ? 72'b0 : din_stack[s];
+            logic [71:0] stack_din;
+            assign stack_din = (is_loading || !is_streaming) ? 72'b0 : din_stack[s];
+
+            // Per-stack expb: zero during loading, activation exponent during streaming
+            logic [7:0] stack_expb;
+            assign stack_expb = (is_loading || !is_streaming) ? 8'b0 : act_exp_chunk[s];
 
             mlp_bram_col #(
                 .NUM_MLPS(NUM_MLPS)
@@ -426,6 +522,7 @@ module mlp_bram_col_ctrl #(
                 .din(stack_din),
                 .load(mlp_load),
                 .accumulate(mlp_accumulate),
+                .expb(stack_expb),              // BFP activation exponent
                 .bram_din(bram_din_stack[s]),
                 .wraddr(mlp_wraddr),
                 .wren(mlp_wren),
@@ -443,77 +540,151 @@ module mlp_bram_col_ctrl #(
     // =========================================================================
 
     // Extract FP24 values from each stack for each MLP
-    wire [23:0] fp24_bank0 [NUM_STACKS-1:0][NUM_MLPS-1:0];  // Even columns
-    wire [23:0] fp24_bank1 [NUM_STACKS-1:0][NUM_MLPS-1:0];  // Odd columns
+    logic [23:0] fp24_bank0 [NUM_STACKS-1:0][NUM_MLPS-1:0];  // Even columns
+    logic [23:0] fp24_bank1 [NUM_STACKS-1:0][NUM_MLPS-1:0];  // Odd columns
 
     generate
         for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_fp24_extract
             for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_mlp_fp24
-                assign fp24_bank0[s][m] = stack_dout[s][m][23:0];   // Bank CD (even col)
-                assign fp24_bank1[s][m] = stack_dout[s][m][47:24];  // Bank AB (odd col)
+                assign fp24_bank0[s][m] = stack_dout[s][m][23:0];   // Bank CD (odd col)
+                assign fp24_bank1[s][m] = stack_dout[s][m][47:24];  // Bank AB (even col)
             end
         end
     endgenerate
 
-    // 2-level adder tree for each bank of each MLP
-    // Level 1: stack[0]+stack[1], stack[2]+stack[3]
-    // Level 2: sum_01 + sum_23
-    wire [23:0] sum_01_bank0 [NUM_MLPS-1:0];
-    wire [23:0] sum_23_bank0 [NUM_MLPS-1:0];
-    wire [23:0] final_bank0 [NUM_MLPS-1:0];
+    // =========================================================================
+    // Pipelined 2-level adder tree for each bank of each MLP
+    // Each fp24_add has 2-cycle latency with internal pipeline
+    // Level 1: stack[0]+stack[1], stack[2]+stack[3] (2 cycles)
+    // Level 2: sum_01 + sum_23 (2 cycles)
+    // Total latency: 4 cycles from drain_valid to final output
+    // =========================================================================
 
-    wire [23:0] sum_01_bank1 [NUM_MLPS-1:0];
-    wire [23:0] sum_23_bank1 [NUM_MLPS-1:0];
-    wire [23:0] final_bank1 [NUM_MLPS-1:0];
+    // Level 1 outputs (from pipelined adders)
+    logic [23:0] sum_01_bank0 [NUM_MLPS-1:0];
+    logic [23:0] sum_23_bank0 [NUM_MLPS-1:0];
+    logic [23:0] sum_01_bank1 [NUM_MLPS-1:0];
+    logic [23:0] sum_23_bank1 [NUM_MLPS-1:0];
+
+    // Level 1 valid outputs
+    logic level1_valid_01_bank0 [NUM_MLPS-1:0];
+    logic level1_valid_23_bank0 [NUM_MLPS-1:0];
+    logic level1_valid_01_bank1 [NUM_MLPS-1:0];
+    logic level1_valid_23_bank1 [NUM_MLPS-1:0];
+
+    // Level 2 outputs (final results)
+    logic [23:0] final_bank0 [NUM_MLPS-1:0];
+    logic [23:0] final_bank1 [NUM_MLPS-1:0];
+
+    // Level 2 valid outputs
+    logic level2_valid_bank0 [NUM_MLPS-1:0];
+    logic level2_valid_bank1 [NUM_MLPS-1:0];
+
+    // Status bits from stack 0, delayed to match 4-cycle pipeline
+    logic [23:0] stack0_status_d1 [NUM_MLPS-1:0];
+    logic [23:0] stack0_status_d2 [NUM_MLPS-1:0];
+    logic [23:0] stack0_status_d3 [NUM_MLPS-1:0];
+    logic [23:0] stack0_status_d4 [NUM_MLPS-1:0];
+    
+    // Drain valid signal - triggers level 1 adders
+    logic drain_valid;
+    assign drain_valid = (comp_state_reg == COMP_DRAIN);
 
     generate
         for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_adder_tree
-            // Bank 0 (even columns) adder tree
+            // =====================================================================
+            // Level 1: Combine pairs of stacks (2-cycle pipelined adders)
+            // =====================================================================
+
+            // Bank 0 (even columns) - level 1
             fp24_add u_add_01_bank0 (
+                .clk(clk),
+                .rstn(rstn),
                 .a(fp24_bank0[0][m]),
                 .b(fp24_bank0[1][m]),
-                .sum(sum_01_bank0[m])
+                .i_valid(drain_valid),
+                .sum(sum_01_bank0[m]),
+                .o_valid(level1_valid_01_bank0[m])
             );
 
             fp24_add u_add_23_bank0 (
+                .clk(clk),
+                .rstn(rstn),
                 .a(fp24_bank0[2][m]),
                 .b(fp24_bank0[3][m]),
-                .sum(sum_23_bank0[m])
+                .i_valid(drain_valid),
+                .sum(sum_23_bank0[m]),
+                .o_valid(level1_valid_23_bank0[m])
             );
 
-            fp24_add u_add_final_bank0 (
-                .a(sum_01_bank0[m]),
-                .b(sum_23_bank0[m]),
-                .sum(final_bank0[m])
-            );
-
-            // Bank 1 (odd columns) adder tree
+            // Bank 1 (odd columns) - level 1
             fp24_add u_add_01_bank1 (
+                .clk(clk),
+                .rstn(rstn),
                 .a(fp24_bank1[0][m]),
                 .b(fp24_bank1[1][m]),
-                .sum(sum_01_bank1[m])
+                .i_valid(drain_valid),
+                .sum(sum_01_bank1[m]),
+                .o_valid(level1_valid_01_bank1[m])
             );
 
             fp24_add u_add_23_bank1 (
+                .clk(clk),
+                .rstn(rstn),
                 .a(fp24_bank1[2][m]),
                 .b(fp24_bank1[3][m]),
-                .sum(sum_23_bank1[m])
+                .i_valid(drain_valid),
+                .sum(sum_23_bank1[m]),
+                .o_valid(level1_valid_23_bank1[m])
+            );
+
+            // =====================================================================
+            // Level 2: Final sum (2-cycle pipelined adders)
+            // Input valid comes from level 1 output valid
+            // =====================================================================
+            fp24_add u_add_final_bank0 (
+                .clk(clk),
+                .rstn(rstn),
+                .a(sum_01_bank0[m]),
+                .b(sum_23_bank0[m]),
+                .i_valid(level1_valid_01_bank0[m]),  // Both level1 valids are synchronized
+                .sum(final_bank0[m]),
+                .o_valid(level2_valid_bank0[m])
             );
 
             fp24_add u_add_final_bank1 (
+                .clk(clk),
+                .rstn(rstn),
                 .a(sum_01_bank1[m]),
                 .b(sum_23_bank1[m]),
-                .sum(final_bank1[m])
+                .i_valid(level1_valid_01_bank1[m]),  // Both level1 valids are synchronized
+                .sum(final_bank1[m]),
+                .o_valid(level2_valid_bank1[m])
             );
 
+            // =====================================================================
+            // Status bits pipeline (4 cycles to match adder tree latency)
+            // =====================================================================
+            always_ff @(posedge clk or negedge rstn) begin
+                if (!rstn) begin
+                    stack0_status_d1[m] <= 24'd0;
+                    stack0_status_d2[m] <= 24'd0;
+                    stack0_status_d3[m] <= 24'd0;
+                    stack0_status_d4[m] <= 24'd0;
+                end else begin
+                    stack0_status_d1[m] <= drain_valid ? stack_dout[0][m][71:48] : stack0_status_d1[m];
+                    stack0_status_d2[m] <= stack0_status_d1[m];
+                    stack0_status_d3[m] <= stack0_status_d2[m];
+                    stack0_status_d4[m] <= stack0_status_d3[m];
+                end
+            end
+
             // Combine back into 72-bit output format
-            // dout[23:0] = Bank CD (even column)
-            // dout[47:24] = Bank AB (odd column)
-            // dout[71:48] = status bits (keep from stack 0)
-            assign o_dout[m] = {stack_dout[0][m][71:48], final_bank1[m], final_bank0[m]};
+            // dout[23:0] = Bank CD = odd column result (bank0)
+            // dout[47:24] = Bank AB = even column result (bank1)
+            // dout[71:48] = status bits (delayed to match 4-cycle pipeline)
+            assign o_dout[m] = {stack0_status_d4[m], final_bank1[m], final_bank0[m]};
         end
     endgenerate
 
 endmodule
-
-`default_nettype wire

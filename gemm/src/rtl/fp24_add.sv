@@ -1,26 +1,35 @@
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 
-// Combinational FP24 Adder
+// 2-Stage Pipelined FP24 Adder
 //
 // FP24 Format (ACX MLP native):
 //  - Sign: 1 bit [23]
 //  - Exponent: 8 bits [22:15] (bias=127)
 //  - Mantissa: 15 bits [14:0] (implicit leading 1)
 //
-// This is a purely combinational adder for summing partial dot products.
-// Designed for use in the 4-stack mlp_bram_col accumulation path.
+// Pipeline stages:
+//  - Stage 1: Field extraction, exponent comparison, mantissa alignment
+//  - Stage 2: Addition, normalization, result assembly
+//
+// Latency: 2 cycles (i_valid → o_valid)
 
 `default_nettype none
 
 module fp24_add (
+    input  logic        clk,
+    input  logic        rstn,
     input  logic [23:0] a,
     input  logic [23:0] b,
-    output logic [23:0] sum
+    input  logic        i_valid,
+    output logic [23:0] sum,
+    output logic        o_valid
 );
 
     // =========================================================================
-    // Field Extraction
+    // Stage 1: Field Extraction and Alignment (Combinational)
     // =========================================================================
+    
+    // Field Extraction
     logic        a_sign, b_sign;
     logic [7:0]  a_exp, b_exp;
     logic [14:0] a_mant, b_mant;
@@ -33,9 +42,7 @@ module fp24_add (
     assign b_exp  = b[22:15];
     assign b_mant = b[14:0];
 
-    // =========================================================================
     // Special Case Detection
-    // =========================================================================
     logic a_is_zero, b_is_zero;
     logic a_is_inf_nan, b_is_inf_nan;
 
@@ -44,17 +51,13 @@ module fp24_add (
     assign a_is_inf_nan = (a_exp == 8'd255);
     assign b_is_inf_nan = (b_exp == 8'd255);
 
-    // =========================================================================
     // Add Implicit Leading 1
-    // =========================================================================
     logic [15:0] a_mant_full, b_mant_full;
 
     assign a_mant_full = a_is_zero ? 16'd0 : {1'b1, a_mant};
     assign b_mant_full = b_is_zero ? 16'd0 : {1'b1, b_mant};
 
-    // =========================================================================
     // Exponent Comparison and Alignment
-    // =========================================================================
     logic        a_exp_larger;
     logic [7:0]  exp_diff;
     logic [7:0]  larger_exp;
@@ -77,39 +80,83 @@ module fp24_add (
     assign a_mant_aligned = a_exp_larger ? a_mant_ext : (a_mant_ext >> shift_amt);
     assign b_mant_aligned = a_exp_larger ? (b_mant_ext >> shift_amt) : b_mant_ext;
 
-    // =========================================================================
-    // Addition/Subtraction
-    // =========================================================================
+    // Effective subtract
     logic eff_subtract;
-    logic a_mant_larger;
+    assign eff_subtract = (a_sign != b_sign);
 
-    assign eff_subtract  = (a_sign != b_sign);
-    assign a_mant_larger = (a_mant_aligned >= b_mant_aligned);
+    // =========================================================================
+    // Stage 1 Pipeline Registers
+    // =========================================================================
+    logic        s1_valid;
+    logic [23:0] s1_a, s1_b;
+    logic        s1_a_sign, s1_b_sign;
+    logic        s1_a_is_zero, s1_b_is_zero;
+    logic        s1_a_is_inf_nan, s1_b_is_inf_nan;
+    logic [7:0]  s1_larger_exp;
+    logic [18:0] s1_a_mant_aligned, s1_b_mant_aligned;
+    logic        s1_eff_subtract;
 
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            s1_valid           <= 1'b0;
+            s1_a               <= 24'd0;
+            s1_b               <= 24'd0;
+            s1_a_sign          <= 1'b0;
+            s1_b_sign          <= 1'b0;
+            s1_a_is_zero       <= 1'b0;
+            s1_b_is_zero       <= 1'b0;
+            s1_a_is_inf_nan    <= 1'b0;
+            s1_b_is_inf_nan    <= 1'b0;
+            s1_larger_exp      <= 8'd0;
+            s1_a_mant_aligned  <= 19'd0;
+            s1_b_mant_aligned  <= 19'd0;
+            s1_eff_subtract    <= 1'b0;
+        end else begin
+            s1_valid           <= i_valid;
+            s1_a               <= a;
+            s1_b               <= b;
+            s1_a_sign          <= a_sign;
+            s1_b_sign          <= b_sign;
+            s1_a_is_zero       <= a_is_zero;
+            s1_b_is_zero       <= b_is_zero;
+            s1_a_is_inf_nan    <= a_is_inf_nan;
+            s1_b_is_inf_nan    <= b_is_inf_nan;
+            s1_larger_exp      <= larger_exp;
+            s1_a_mant_aligned  <= a_mant_aligned;
+            s1_b_mant_aligned  <= b_mant_aligned;
+            s1_eff_subtract    <= eff_subtract;
+        end
+    end
+
+    // =========================================================================
+    // Stage 2: Addition, Normalization, Result (Combinational from S1 regs)
+    // =========================================================================
+
+    // Mantissa comparison (from registered values)
+    logic s1_a_mant_larger;
+    assign s1_a_mant_larger = (s1_a_mant_aligned >= s1_b_mant_aligned);
+
+    // Addition/Subtraction
     logic [19:0] add_result, sub_result, mant_sum;
 
-    assign add_result = {1'b0, a_mant_aligned} + {1'b0, b_mant_aligned};
-    assign sub_result = a_mant_larger ?
-                        ({1'b0, a_mant_aligned} - {1'b0, b_mant_aligned}) :
-                        ({1'b0, b_mant_aligned} - {1'b0, a_mant_aligned});
-    assign mant_sum   = eff_subtract ? sub_result : add_result;
+    assign add_result = {1'b0, s1_a_mant_aligned} + {1'b0, s1_b_mant_aligned};
+    assign sub_result = s1_a_mant_larger ?
+                        ({1'b0, s1_a_mant_aligned} - {1'b0, s1_b_mant_aligned}) :
+                        ({1'b0, s1_b_mant_aligned} - {1'b0, s1_a_mant_aligned});
+    assign mant_sum   = s1_eff_subtract ? sub_result : add_result;
 
     // Result sign
     logic result_sign;
-    assign result_sign = eff_subtract ? (a_mant_larger ? a_sign : b_sign) : a_sign;
+    assign result_sign = s1_eff_subtract ? (s1_a_mant_larger ? s1_a_sign : s1_b_sign) : s1_a_sign;
 
-    // =========================================================================
     // Overflow and Zero Detection
-    // =========================================================================
     logic overflow;
     logic is_zero_result;
 
     assign overflow       = mant_sum[19];
     assign is_zero_result = (mant_sum == 20'd0);
 
-    // =========================================================================
     // Leading Zero Count
-    // =========================================================================
     function automatic logic [4:0] count_leading_zeros(input logic [19:0] val);
         logic [4:0] clz;
         clz = 5'd20;
@@ -123,9 +170,7 @@ module fp24_add (
     logic [4:0] leading_zeros;
     assign leading_zeros = count_leading_zeros(mant_sum);
 
-    // =========================================================================
     // Normalization
-    // =========================================================================
     logic [4:0]  norm_left_shift;
     logic [19:0] mant_after_norm;
 
@@ -144,9 +189,7 @@ module fp24_add (
             mant_after_norm = 20'd0;
     end
 
-    // =========================================================================
     // Exponent Adjustment
-    // =========================================================================
     logic signed [9:0] exp_adjust;
     logic signed [9:0] new_exp_signed;
 
@@ -163,11 +206,9 @@ module fp24_add (
             exp_adjust = 10'sd0;
     end
 
-    assign new_exp_signed = $signed({2'b0, larger_exp}) + exp_adjust;
+    assign new_exp_signed = $signed({2'b0, s1_larger_exp}) + exp_adjust;
 
-    // =========================================================================
     // Exponent Clamping
-    // =========================================================================
     logic        exp_overflow_flag;
     logic        exp_underflow_flag;
     logic [7:0]  final_exp;
@@ -184,27 +225,40 @@ module fp24_add (
                         exp_overflow_flag ? 15'd0 :
                         mant_after_norm[17:3];
 
-    // =========================================================================
-    // Result Assembly
-    // =========================================================================
+    // Result Assembly (combinational)
     logic [23:0] result_normal;
+    logic [23:0] sum_comb;
+    
     assign result_normal = {result_sign, final_exp, final_mant};
 
     always_comb begin
-        if (a_is_zero && b_is_zero)
-            sum = 24'd0;
-        else if (a_is_zero)
-            sum = b;
-        else if (b_is_zero)
-            sum = a;
-        else if (a_is_inf_nan)
-            sum = a;
-        else if (b_is_inf_nan)
-            sum = b;
+        if (s1_a_is_zero && s1_b_is_zero)
+            sum_comb = 24'd0;
+        else if (s1_a_is_zero)
+            sum_comb = s1_b;
+        else if (s1_b_is_zero)
+            sum_comb = s1_a;
+        else if (s1_a_is_inf_nan)
+            sum_comb = s1_a;
+        else if (s1_b_is_inf_nan)
+            sum_comb = s1_b;
         else if (is_zero_result)
-            sum = {result_sign, 23'd0};
+            sum_comb = {result_sign, 23'd0};
         else
-            sum = result_normal;
+            sum_comb = result_normal;
+    end
+
+    // =========================================================================
+    // Stage 2 Output Registers
+    // =========================================================================
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            sum     <= 24'd0;
+            o_valid <= 1'b0;
+        end else begin
+            sum     <= sum_comb;
+            o_valid <= s1_valid;
+        end
     end
 
 endmodule
