@@ -5,7 +5,8 @@ llm_vp_demo_pcie_orig
 shell_demo
 
 #build results
-**/build/results/**
+**/sim_build/**
+**/build/results/**/*.acxdb
 # **/*.flash
 # **/*.hex
 **/demo/**/*.hex
@@ -25,3 +26,4 @@ hex/*.txt
 **/*.mgf
 **/*.asdb
 **/*.asdbw
+**/*.vcd
