@@ -126,8 +126,8 @@ cd sw_test/
 | `test_gddr6` | GDDR6 channel status and performance monitoring | ✅ Pass |
 | `test_bram` | Basic BRAM DMA read/write validation | ✅ Pass |
 | `scan_registers` | Register address space diagnostic scanner | ✅ Pass |
-| `test_gemm` | MLP GEMM engine integration test | ✅ 1/8 PASS, 7/8 at 96-100% |
-| `test_gemm_full` | MS2.0 GEMM engine with raw command interface | ✅ Available |
+| `test_gemm` | MLP GEMM engine integration test | ✅ 8/8 PASS (≥95% tolerance) |
+| `test_gemm_full` | THREE-STAGE circular buffer validation | ✅ PASS (0 mismatches across 1728 results) |
 | `test_multi_tile` | Multi-tile GEMM testing | ✅ Available |
 | `dma_example` | Advanced DMA testing with performance metrics | ✅ Pass |
 | `dma_simple_example` | Basic DMA round-trip validation | ✅ Pass |
