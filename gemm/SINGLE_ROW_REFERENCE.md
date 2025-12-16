@@ -1,25 +1,31 @@
-# Single-Row Multi-Tile Architecture Development Plan
+# MS2.0 GEMM Engine Architecture Reference
 
-**Project**: GEMM Engine Single-Row Multi-Tile Extension
+**Project**: MS2.0 GEMM Engine with MLP Compute Engine
 
 ---
 
 ## Executive Summary
 
-Migrating GEMM engine from single compute_engine_modular to scalable single-row multi-tile architecture supporting up to 24 parallel compute tiles per row. Implementing three-level memory hierarchy (L3: GDDR6 → L2: dispatcher_bram → L1: tile_bram) with DISPATCH phase to distribute data across tiles for parallel matrix operations within a row.
+MS2.0 GEMM Engine implements a three-level memory hierarchy (L3: GDDR6 → L2: dispatcher_bram → L1: row_bram) with a single compute engine featuring 16 fixed MLP columns. For matrices with C > 16 columns, the engine processes data in sequential column groups of 16.
+
+**Current Implementation**: Single compute engine with column group iteration  
+**Future Design**: Multi-engine parallel architecture (not yet implemented)
 
 ---
 
-## Overall Goal
+## Overall Architecture
 
-**Transform single-tile architecture into multi-tile system**:
-- **Before**: 1 compute engine reads from shared dispatcher_bram
-- **After**: N compute tiles (N≤24) with private L1 caches, parallel execution
+**Current Implementation**:
+- **Compute Engine**: Single `compute_engine_mlp` instance with 16 fixed MLP columns
+- **Memory Hierarchy**: L3 (GDDR6) → L2 (dispatcher_bram) → L1 (row_bram)
+- **Column Groups**: For C > 16, columns processed sequentially in groups of 16
+- **Output**: 256-bit (16 × FP16) results per cycle
 
-**Key Benefits**:
-- **Scalability**: Linear performance scaling with tile count
-- **Flexibility**: Runtime-configurable tile count via column_enable mask
-- **Efficiency**: Parallel GEMM operations for large matrices
+**Key Features**:
+- **Three-Level Memory**: Efficient data staging from GDDR6 to compute
+- **Column Group Processing**: Sequential processing for C > 16 (C/16 groups)
+- **Fixed Hardware**: 16 MLP columns (2 per MLP primitive)
+- **Scalability**: Future expansion to multiple engines for parallel processing
 
 ---
 
@@ -65,7 +71,7 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
 ## Numbering Format and Organization
 
 ### GFP8 Number Format
-[GFP Explanation](/home/dev/Dev/elastix_gemm/gemm/GFP_EXPLANATION.md)
+[GFP Explanation](../emulator/GFP_EXPLANATION.md)
 
 ### Terminology and Default Configurations
 
@@ -97,13 +103,15 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
 - Right UGD length (C/column/dim_c):
   - The number of UGD vectors to process on right
 - UGD vector length (V/inner dimension/dim_v):
-  - The number of Native Vectors to dispatch to a tile at a time
-  - Example: if `ugd_vec_size = 8`, then dispatcher will forward `ugd_vec_size*4 = 8*4 = 32` lines to one tile, then the next tile will get the next `ugd_vec_size*4 = 8*4 = 32`, until all data has been dispatched.
+  - The number of Native Vectors per UGD vector
+  - Example: if `ugd_vec_size = 8`, then each UGD vector contains 8 NVs (32 lines)
+  - Used in column group processing: each column group processes V NVs per column
 - Row:
-  - A row of compute engine tiles in our 2-D compute engine architecture
-  - Mapped to one DDR channel
+  - (Future design) A row of compute engine tiles in 2-D architecture
+  - Currently: Single compute engine per system
 - Column:
-  - A column of compute engine tiles in our 2-D compute engine architecture
+  - MLP column within the compute engine (16 fixed hardware columns)
+  - Column Group: Set of 16 columns processed together (for C > 16, multiple groups processed sequentially)
 ---
 
 ## Architecture Overview
@@ -111,23 +119,27 @@ Migrating GEMM engine from single compute_engine_modular to scalable single-row 
 ### Three-Level Memory Hierarchy
 
 ```
-L3: GDDR6 (Shared, 8 channels)
+L3: GDDR6 (External memory, 2GB per channel)
     ↓ FETCH (AXI4 burst reads)
-L2: dispatcher_bram (Shared per row, buffers FETCH read)
-    ↓ DISPATCH (data copy + distribute)
-L1: tile_bram (Private per tile, serves the compute)
-    ↓ MATMUL (parallel computation)
-Compute Tile[0..23] (24 parallel engines)
-    ↓ Results
-Result Collector (aggregate tile outputs)
+L2: dispatcher_bram (512 lines, buffers FETCH read)
+    ↓ DISPATCH (data copy to L1)
+L1: row_bram (512 lines, inside compute engine)
+    ↓ MATMUL (column group processing)
+Compute Engine: 16 MLP columns (fixed hardware)
+    ↓ Results (256-bit = 16 × FP16 per cycle)
+Result Output
 ```
+
+**Current Implementation**: Single compute engine with sequential column group processing for C > 16.
 
 ### Command Flow (5-stage pipeline)
 
 1. **FETCH** (0xF0): GDDR6 → dispatcher_bram (528 lines)
-2. **DISPATCH** (0xF1): dispatcher_bram → tile_bram[0..N-1] (broadcast/distribute)
+2. **DISPATCH** (0xF1): dispatcher_bram → row_bram (single compute engine L1)
 3. **WAIT_DISPATCH** (0xF3): Synchronization barrier
-4. **MATMUL** (0xF2): Parallel tile computation
+4. **MATMUL** (0xF2): Sequential column group computation
+   - For C ≤ 16: Single pass through 16 columns
+   - For C > 16: Multiple passes (C/16 column groups processed sequentially)
 5. **WAIT_MATMUL** (0xF4): Result collection ready
 
 ---
@@ -138,7 +150,7 @@ Result Collector (aggregate tile outputs)
 
 **One Memory Block = 528 Lines Total**
 
-The data fetched from GDDR6 is organized in a packed format optimized for transfer efficiency. The number format is called Group Floating-Point. Refer to the [emulator](/home/dev/Dev/elastix_gemm/emulator/CLAUDE.md) project for details about GFP number format.  
+The data fetched from GDDR6 is organized in a packed format optimized for transfer efficiency. The number format is called Group Floating-Point. Refer to the [emulator](../emulator/CLAUDE.md) project for details about GFP number format.  
 
 ```
 Lines 0-15:   Packed Exponents (16 lines)
@@ -206,18 +218,18 @@ FETCH will return DONE signal after all the unpacking has finished. Unpacking mu
 
 ### DISPATCH Operation - Specification
 
-**Purpose**: Copy aligned data from shared L2 (dispatcher_bram) to private L1 (tile_bram)
+**Purpose**: Copy aligned data from shared L2 (dispatcher_bram) to private L1 (row_bram inside compute engine)
 
 **Command Parameters** (see details in the next section **MS2.0 Microcode Command Reference**):
 - **Mantissa NV count (man_nv_cnt)**: Number of Native Vectors to dispatch
   - Each NV = 4 lines → Total lines = man_nv_cnt × 4
   - Example: 128 NVs = 512 lines
-- **Tile destination address (tile_addr)**: Starting line in tile_bram where data will be written
-- **UGD vector size (ugd_nv_size)**: NVs per UGD 
-- **Column enable (col_en)**: Bitmask for enabling tiles: bit 0 = tile 0, bit 1 = tile 1, etc.
-  - **Hardware Constraint**: All enabled bits must be sequential starting from bit 0
-  - Valid: 0x000001, 0x000003, 0x000007, 0x00000F, 0x00FFFF, 0xFFFFFF
-  - Invalid: 0x0101 (non-sequential), 0x7000 (doesn't start from bit 0)
+- **Tile destination address (tile_addr)**: Starting line in row_bram where data will be written
+- **UGD vector size (ugd_nv_size)**: NVs per UGD vector
+- **Column enable (col_en)**: Bitmask for enabling columns within the compute engine
+  - **Current Implementation**: Only bit 0 effectively used (single compute engine)
+  - Hardware has 16 fixed MLP columns; col_en[15:0] controls which columns are active
+  - **Future Design**: Would enable multiple compute engines (bits 0-23)
 - **Flags**:
   - Mantissa width (0: 8-bit mantissa, 1: 4-bit mantissa)
   - Broadcast mode (0: distribute, 1: broadcast)
@@ -351,29 +363,51 @@ man_right[0-511]         ↔  tile_bram_right.man[0-511]  (256-bit mantissas)
 
 ---
 
-### tile_bram Organization
+### row_bram Organization
 
-**Key Insight**: tile_bram has IDENTICAL organization to dispatcher_bram's aligned buffers
+**Key Insight**: row_bram (inside compute engine) has NV-packed organization for efficient access
 
 ```
-tile_bram_left:
-├─ exp[0-511]:  512 exponent bytes (8-bit each)
-└─ man[0-511]:  512 mantissa lines (256-bit each)
+row_bram_left:
+├─ nv_exp_left[0-127]:  128 packed exponent words (32-bit each, 4 bytes per NV)
+└─ nv_man_left[0-127][0-3]:  128 NVs × 4 mantissa groups (256-bit each)
 
-tile_bram_right:
-├─ exp[0-511]:  512 exponent bytes (8-bit each)
-└─ man[0-511]:  512 mantissa lines (256-bit each)
+row_bram_right:
+├─ nv_exp_right[0-127]:  128 packed exponent words (32-bit each, 4 bytes per NV)
+└─ nv_man_right[0-127][0-3]:  128 NVs × 4 mantissa groups (256-bit each)
 ```
 
 **Why This Matters**:
-- Compute engine logic remains unchanged from single-tile version
-- Address generation works identically for L1 (tile_bram) as it did for L2 (dispatcher_bram)
-- Only difference: Compute engine now reads from private tile_bram instead of shared dispatcher_bram
+- NV-packed format enables single-cycle Native Vector reads
+- Compute engine reads complete NVs (4 mantissa groups + packed exponents) in one cycle
+- Address generation: NV index (0-127) maps to 4 consecutive mantissa lines
 
-**Storage Capacity per tile**:
-- 512 lines × 256-bit = 16 KB mantissa data
-- 512 bytes exponent data
-- Total: 128 Native Vectors per tile
+**Storage Capacity**:
+- 128 Native Vectors per side (left/right)
+- 512 lines × 256-bit = 16 KB mantissa data per side
+- 512 bytes exponent data per side
+- Total: 128 NVs per side
+
+**Current Implementation**: Single row_bram inside single compute engine
+
+### MLP Column Architecture
+
+**Design Strategy**: 4-stack parallel processing for increased throughput
+
+**Column Organization**:
+- 8 MLP primitives × 2 columns each = 16 logical columns
+- Each MLP handles two adjacent columns (e.g., MLP 0 → columns 0 and 1)
+- 4 parallel stacks share the workload per NV, reducing cycles by 4×
+
+**Compute Pipeline**:
+- Weight loading phase: Load weights into MLP internal BRAMs
+- Compute phase: Stream activations while reading stored weights
+- FP24 adder tree combines partial results from all stacks
+
+**Output**:
+- Each MLP produces two FP24 results (one per column)
+- Results converted to FP16 before output
+- 16 FP16 values output per compute cycle
 
 ### Memory Management Rule for Back-to-Back Operations
 
@@ -568,7 +602,7 @@ Command interface signals follow a simpler pattern than BRAM data path signals, 
 
 ## MS2.0 Microcode Command Reference
 
-This section documents all commands supported by the MS2.0 architecture, aligned with the [MS2.0_uCode-Single_Row.csv](/home/dev/Dev/elastix_gemm/MS2.0_uCode-Single_Row.csv) specification, and the actual hardware implementation in [gemm_pkg.sv](/home/dev/Dev/elastix_gemm/gemm/src/include/gemm_pkg.sv) will be updated to match this specification.
+This section documents all commands supported by the MS2.0 architecture, aligned with the [MS2.0_uCode-Single_Row.csv](../MS2.0_uCode-Single_Row.csv) specification, and the actual hardware implementation in [gemm_pkg.sv](src/include/gemm_pkg.sv) will be updated to match this specification.
 
 ### Command Architecture
 

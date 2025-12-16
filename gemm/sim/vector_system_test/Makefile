@@ -38,20 +38,20 @@ INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)
 # Testbench sources - Always uses GDDR6 realistic memory model
 TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv tb_engine_top.sv
 
-# RTL sources (MS2.0 MLP-based architecture)
-# engine_top.sv uses compute_engine_mlp directly
+# RTL sources (MS2.0 MLP-based architecture - Dec 2025)
+# engine_top.sv uses compute_engine_mlp with direct 256-bit output
+# Legacy modules archived to archive_dec15/:
+#   - compute_engine_modular, gfp8_*, tile_bram, tile_result_fifo
+#   - result_arbiter, result_bram (not used in MLP mode)
 RTL_SOURCES = \
 	$(GEMM_RTL)/flex_fifo.sv \
 	$(GEMM_RTL)/cmd_fifo.sv \
-	$(GEMM_RTL)/tile_result_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
 	$(GEMM_RTL)/fetcher.sv \
 	$(GEMM_RTL)/dispatcher.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
 	$(GEMM_RTL)/dispatcher_bram.sv \
-	$(GEMM_RTL)/result_bram.sv \
 	$(GEMM_RTL)/result_fifo_to_simple_bram.sv \
-	$(GEMM_RTL)/result_arbiter.sv \
 	$(GEMM_RTL)/row_bram.sv \
 	$(GEMM_RTL)/weight_bram.sv \
 	$(GEMM_RTL)/mlp_bram.sv \

@@ -445,19 +445,27 @@ module tb_compute_engine_mlp;
     endtask
 
     // ===================================================================
-    // Helper Task: Validate FP16 Results
-    // MLP uses FP24 intermediate, allowing 5% relative tolerance
+    // Helper Task: Validate FP16 Results with Reordering for C>16
+    // Hardware outputs: Group-major (all batches for group 0, then group 1, ...)
+    // Golden expects: Batch-major (batch 0 all cols, batch 1 all cols, ...)
     // ===================================================================
-    task validate_fp16_results(input integer expected_count);
+    task validate_fp16_results_bcv(input integer B, input integer C, input integer V);
+        integer expected_count;
+        integer num_col_groups;
         integer mismatches;
+        integer exact_matches;
+        integer close_matches;
         integer diff;
-        real rel_err;
-        integer max_val;
-        // MLP uses FP24 intermediate, allowing 5% relative tolerance
-        localparam int ABS_TOL = 50;   // Larger absolute tolerance for MLP
-        localparam real REL_TOL = 0.05; // 5% relative tolerance
+        integer golden_idx, batch_idx, col_idx, group_idx, col_within_group, pulse_idx, hw_idx;
+        logic [15:0] hw_val, golden_val;
+        // Match software test tolerance (4 LSB)
+        localparam int ABS_TOL = 4;    // 4 LSB tolerance (matches test_gemm.cpp)
 
-        $display("  Validating %0d FP16 results...", expected_count);
+        expected_count = B * C;
+        num_col_groups = (C + 15) / 16;  // Ceiling division
+
+        $display("  Validating %0d FP16 results (B=%0d, C=%0d, groups=%0d, tolerance=%0d LSB)...",
+                 expected_count, B, C, num_col_groups, ABS_TOL);
 
         if (results_collected != expected_count) begin
             $display("  [FAIL] Expected %0d results, got %0d", expected_count, results_collected);
@@ -466,30 +474,50 @@ module tb_compute_engine_mlp;
         end
 
         mismatches = 0;
-        for (int i = 0; i < expected_count; i++) begin
-            diff = (results_fp16[i] > golden_fp16[i]) ?
-                   (results_fp16[i] - golden_fp16[i]) :
-                   (golden_fp16[i] - results_fp16[i]);
+        exact_matches = 0;
+        close_matches = 0;
 
-            // Get max value for relative comparison
-            max_val = (results_fp16[i] > golden_fp16[i]) ? results_fp16[i] : golden_fp16[i];
+        // Compare with reordering for C>16 (matches test_gemm.cpp logic)
+        for (golden_idx = 0; golden_idx < expected_count; golden_idx++) begin
+            golden_val = golden_fp16[golden_idx];
 
-            // Check both absolute and relative tolerance
-            if (diff > ABS_TOL && (max_val == 0 || (real'(diff) / real'(max_val)) > REL_TOL)) begin
-                rel_err = (max_val > 0) ? (100.0 * real'(diff) / real'(max_val)) : 0.0;
-                $display("    MISMATCH[%0d]: hw=0x%04x golden=0x%04x diff=%0d (%.2f%%)",
-                         i, results_fp16[i], golden_fp16[i], diff, rel_err);
+            if (num_col_groups > 1) begin
+                // Multi-group: apply reordering to find hw_idx
+                batch_idx = golden_idx / C;
+                col_idx = golden_idx % C;
+                group_idx = col_idx / 16;
+                col_within_group = col_idx % 16;
+                pulse_idx = group_idx * B + batch_idx;
+                hw_idx = pulse_idx * 16 + col_within_group;
+            end else begin
+                // Single group: no reordering
+                hw_idx = golden_idx;
+            end
+
+            hw_val = results_fp16[hw_idx];
+            diff = (hw_val > golden_val) ? (hw_val - golden_val) : (golden_val - hw_val);
+
+            if (diff == 0) begin
+                exact_matches++;
+            end else if (diff <= ABS_TOL) begin
+                close_matches++;
+            end else begin
+                // Mismatch - show first 10
+                if (mismatches < 10) begin
+                    $display("    MISMATCH[%0d→hw%0d]: hw=0x%04x golden=0x%04x diff=%0d LSB",
+                             golden_idx, hw_idx, hw_val, golden_val, diff);
+                end
                 mismatches++;
             end
         end
 
-        $display("  Matches: %0d/%0d (%0d mismatches)",
-                 expected_count - mismatches, expected_count, mismatches);
+        $display("  Validation: %0d/%0d within tolerance (%0d exact, %0d within %0d LSB)",
+                 exact_matches + close_matches, expected_count, exact_matches, close_matches, ABS_TOL);
 
         if (mismatches == 0) begin
-            $display("  [PASS] All results match!\n");
+            $display("  [PASS] All results within tolerance!\n");
         end else begin
-            $display("  [FAIL] %0d mismatches detected\n", mismatches);
+            $display("  [FAIL] %0d mismatches (diff > %0d LSB)\n", mismatches, ABS_TOL);
             test_passed = 0;
         end
     endtask
@@ -537,21 +565,128 @@ module tb_compute_engine_mlp;
         $display("Tests: C must be divisible by 16");
         $display("========================================\n");
 
+        // Load BRAM once (same data for all tests)
+        load_bram_from_hex();
+        dispatch_to_tile_bram(512);
+
         // ===============================================================
         // Test 1: B16_C16_V8 (baseline test)
         // ===============================================================
         test_num = 1;
-        $display("[TEST %0d] B16_C16_V8", test_num);
+        $display("[TEST %0d] B16_C16_V8 (B×C = 16×16 = 256 results)", test_num);
 
-        load_bram_from_hex();
-        dispatch_to_tile_bram(512);
         load_golden_reference("../../../hex/golden_B16_C16_V8.hex", 256);
         results_collected = 0;
 
         send_tile_command(8'd16, 8'd16, 8'd8);
         wait_tile_done(500000);
 
-        validate_fp16_results(256);
+        validate_fp16_results_bcv(16, 16, 8);
+        tests_run++;
+
+        // ===============================================================
+        // Test 2: B1_C128_V1 (8 column groups)
+        // ===============================================================
+        test_num = 2;
+        $display("[TEST %0d] B1_C128_V1 (8 column groups, B×C = 1×128 = 128 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B1_C128_V1.hex", 128);
+        results_collected = 0;
+
+        send_tile_command(8'd1, 8'd128, 8'd1);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(1, 128, 1);
+        tests_run++;
+
+        // ===============================================================
+        // Test 3: B4_C16_V8
+        // ===============================================================
+        test_num = 3;
+        $display("[TEST %0d] B4_C16_V8 (B×C = 4×16 = 64 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B4_C16_V8.hex", 64);
+        results_collected = 0;
+
+        send_tile_command(8'd4, 8'd16, 8'd8);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(4, 16, 8);
+        tests_run++;
+
+        // ===============================================================
+        // Test 4: B8_C16_V4
+        // ===============================================================
+        test_num = 4;
+        $display("[TEST %0d] B8_C16_V4 (B×C = 8×16 = 128 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B8_C16_V4.hex", 128);
+        results_collected = 0;
+
+        send_tile_command(8'd8, 8'd16, 8'd4);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(8, 16, 4);
+        tests_run++;
+
+        // ===============================================================
+        // Test 5: B4_C32_V4 (2 column groups)
+        // ===============================================================
+        test_num = 5;
+        $display("[TEST %0d] B4_C32_V4 (2 column groups, B×C = 4×32 = 128 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B4_C32_V4.hex", 128);
+        results_collected = 0;
+
+        send_tile_command(8'd4, 8'd32, 8'd4);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(4, 32, 4);
+        tests_run++;
+
+        // ===============================================================
+        // Test 6: B8_C32_V2 (2 column groups)
+        // ===============================================================
+        test_num = 6;
+        $display("[TEST %0d] B8_C32_V2 (2 column groups, B×C = 8×32 = 256 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B8_C32_V2.hex", 256);
+        results_collected = 0;
+
+        send_tile_command(8'd8, 8'd32, 8'd2);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(8, 32, 2);
+        tests_run++;
+
+        // ===============================================================
+        // Test 7: B8_C64_V2 (4 column groups)
+        // ===============================================================
+        test_num = 7;
+        $display("[TEST %0d] B8_C64_V2 (4 column groups, B×C = 8×64 = 512 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B8_C64_V2.hex", 512);
+        results_collected = 0;
+
+        send_tile_command(8'd8, 8'd64, 8'd2);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(8, 64, 2);
+        tests_run++;
+
+        // ===============================================================
+        // Test 8: B2_C128_V1 (8 column groups)
+        // ===============================================================
+        test_num = 8;
+        $display("[TEST %0d] B2_C128_V1 (8 column groups, B×C = 2×128 = 256 results)", test_num);
+
+        load_golden_reference("../../../hex/golden_B2_C128_V1.hex", 256);
+        results_collected = 0;
+
+        send_tile_command(8'd2, 8'd128, 8'd1);
+        wait_tile_done(500000);
+
+        validate_fp16_results_bcv(2, 128, 1);
         tests_run++;
 
         // ===============================================================
@@ -575,7 +710,7 @@ module tb_compute_engine_mlp;
     // Timeout
     // ===================================================================
     initial begin
-        #10000000;  // 10ms timeout
+        #100000000;  // 100ms timeout (8 tests)
         $display("ERROR: Testbench timeout!");
         $finish;
     end

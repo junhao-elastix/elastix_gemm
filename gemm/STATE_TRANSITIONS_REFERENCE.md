@@ -40,12 +40,12 @@ IDLE -> READ_HDR -> READ_PL1 -> READ_PL2 -> READ_PL3 -> DECODE -> WAIT_DISP -> C
 ```
 
 **Purpose**: Synchronization barrier for DISPATCH operations
-**Block Condition**: Stays in WAIT_DISP state until `i_dc_state == IDLE`
+**Block Condition**: Stays in WAIT_DISP state until `i_dc_state == IDLE` AND `i_dc_disp_done == 1`
 **ID Tracking**: `wait_id_reg` stores which command ID we're waiting for (for debug/logging)
-**Release**: When DC returns to IDLE state, barrier passes and proceeds to CMD_COMPLETE
+**Release**: When DC returns to IDLE state AND signals done, barrier passes
 **Use Case**: Insert after DISPATCH commands to ensure DISPATCH operation completes before MATMUL
 
-**Mechanism**: Direct state machine check (not ID comparison) - simplest and most reliable
+**Mechanism**: Direct state machine check plus done signal (ensures operation fully complete)
 
 ### MATMUL Command (0xF2) - Asynchronous Trigger
 ```
@@ -72,25 +72,46 @@ IDLE -> READ_HDR -> READ_PL1 -> READ_PL2 -> READ_PL3 -> DECODE -> WAIT_TILE -> C
 
 **Mechanism**: Direct state machine check (not ID comparison) - simplest and most reliable
 
+### READOUT Command (0xF5) - Result Collection
+```
+IDLE -> READ_HDR -> READ_PL1 -> READ_PL2 -> READ_PL3 -> DECODE -> EXEC_READOUT -> WAIT_READOUT -> CMD_COMPLETE -> IDLE
+```
+
+**Purpose**: Collect results from compute engine and output to result buffer
+**Trigger**: `readout_en_reg = 1` in EXEC_READOUT state
+**Parameters**:
+- `start_col[7:0]`: Starting tile index (0-23)
+- `rd_len[31:0]`: Total FP16 results to read
+
+**Wait Condition**: Stays in WAIT_READOUT until `i_readout_done == 1`
+
+**⚠️ CURRENT STATUS: BYPASSED IN MLP MODE**
+- `arb_mc_readout_done` is hardwired to `1'b1` in `engine_top.sv`
+- Results flow **directly** from `compute_engine_mlp` to `o_result_256_*` outputs
+- READOUT command completes immediately without triggering actual result collection
+- The MLP compute engine outputs results to circular buffer during ST_COMPUTE phase
+
 ---
 
-## Dispatcher Control (DC)
+## Fetcher Module
 
 ### FETCH Operation
 ```
-IDLE -> FETCH_INIT -> FETCH_READ -> FETCH_READ_EXP -> FETCH_READ_MAN -> FETCH_DONE -> IDLE
+ST_IDLE -> ST_FETCH_INIT -> ST_FETCH_ACTIVE -> ST_FETCH_DONE
 ```
 
 **Trigger**: `i_fetch_en == 1`
 **State Flow**:
-- FETCH_INIT: Initialize operation
-- FETCH_READ: Issue AXI AR (address read) requests, wait for arvalid && arready handshake
-- FETCH_READ_EXP: Receive exponent data (16 lines), loop back to FETCH_READ for next burst
-- FETCH_READ_MAN: Receive mantissa data (512 lines), loop back to FETCH_READ for next burst
-- FETCH_DONE: All data received, signal completion
+- ST_FETCH_INIT: Initialize operation, capture fetch parameters
+- ST_FETCH_ACTIVE: Single unified state for issuing AXI AR requests and receiving R data
+- ST_FETCH_DONE: All data received, signal completion
 **Done Signal**: `o_fetch_done = 1` (1 cycle pulse)
-**AXI Reads**: 528 lines total (16 exponent + 512 mantissa via 16-beat bursts)
-**BRAM Write**: Left buffers (exp_left_packed, man_left) OR Right buffers (exp_right_packed, man_right) depending on fetch_right flag
+**AXI Reads**: 528 lines total (16 exponent + 512 mantissa via 16-beat bursts with 33 ARs)
+**BRAM Write**: Left buffers (exp_left, man_left) OR Right buffers (exp_right, man_right) depending on fetch_right flag
+
+---
+
+## Dispatcher Module
 
 ### DISPATCH Operation
 ```
@@ -118,23 +139,43 @@ IDLE -> DISP_BUSY -> DISP_DONE -> IDLE
 
 ## Compute Engine 
 
-### Top Level
+### Top Level (`compute_engine_mlp`)
 ```
-IDLE -> COMP_BUSY -> COMP_DONE -> IDLE
+ST_IDLE -> ST_FILL -> ST_COMPUTE -> ST_DONE
+        (for C > 16: ST_FILL -> ST_COMPUTE loops for each column group)
 ```
 
 **Trigger**: `i_tile_en == 1`
-**Processing**: BCV controller executes B×C×V loops
+**Processing**: MLP column controller executes dot products with 4-stack parallelism
 **Done Signal**: `o_tile_done = 1`
+**Column Groups**: For C > 16, processes in sequential groups of 16
 
-### BCV Controller (Internal)
-```
-IDLE -> B_LOOP -> C_LOOP -> V_LOOP -> ACCUMULATE -> OUTPUT -> (next B/C) -> BCV_DONE -> IDLE
-```
+### MLP Column Controller (`mlp_bram_col_ctrl`)
 
-**Nested Loops**: for b in [0:B), for c in [0:C), for v in [0:V)
-**BRAM Reads**: Dual-port (left + right) per V iteration
-**Output**: FP16 result per (b,c) pair
+**Weight Loading FSM**:
+```
+WT_IDLE -> WT_LOAD -> WT_DONE -> WT_IDLE
+```
+- WT_LOAD: 4 cycles per NV (4-stack parallel architecture)
+
+**Compute FSM**:
+```
+COMP_IDLE -> COMP_SETUP -> COMP_STREAM -> COMP_DRAIN -> COMP_IDLE
+```
+- COMP_SETUP: 1 cycle (BRAM read address setup)
+- COMP_STREAM: 4 cycles per NV (parallel 8×8 dot products across 4 stacks)
+- COMP_DRAIN: 3 cycles (pipeline flush + FP24 adder tree)
+
+**4-Stack Parallel Architecture**:
+- 4 × `mlp_bram_col` stacked in parallel
+- Each stack: 32 elements (256-bit mantissa + 8-bit exponent)
+- FP24 adder tree: 2-level pipelined (4-cycle latency)
+- Output: 8 MLPs × 2 banks (AB+CD) = 16 logical columns
+
+**Output Format** (per MLP):
+- `dout[23:0]`: Bank CD (odd column FP24 result)
+- `dout[47:24]`: Bank AB (even column FP24 result)
+- `dout[71:48]`: Status bits
 
 ---
 
@@ -144,14 +185,12 @@ IDLE -> B_LOOP -> C_LOOP -> V_LOOP -> ACCUMULATE -> OUTPUT -> (next B/C) -> BCV_
 ```
 MC: dc_fetch_en=1 ────────────────┐
                                   ▼
-DC:                   FETCH_INIT → FETCH_READ → FETCH_READ_EXP → FETCH_READ → FETCH_READ_MAN → FETCH_READ → FETCH_DONE
-                                  │            ↑______________|              ↑______________|
-                                  │         (loop for 16 exp bursts)      (loop for 32 man bursts)
-                                  │
-                                  │ (~528 lines via AXI bursts)
-                                  │
-DC: o_fetch_done=1 ───────────────┤
-                                  ▼
+Fetcher:              ST_FETCH_INIT → ST_FETCH_ACTIVE → ST_FETCH_DONE
+                                        │
+                                        │ (issues 33 ARs, receives 528 lines)
+                                        │
+Fetcher: o_fetch_done=1 ────────────────┤
+                                        ▼
 MC:                   dc_fetch_en=0, proceed to CMD_COMPLETE
 ```
 
@@ -174,7 +213,7 @@ DC: o_disp_done=1 (pulse)     Done signal
 Later (separate WAIT_DISPATCH command):
 MC: Enters WAIT_DISP state ───────┐
                                   ▼
-MC:                   Checks: i_dc_state == IDLE ?
+MC:                   Checks: (i_dc_state == IDLE) && (i_dc_disp_done == 1) ?
                                   │
                                   │ If YES: barrier passes
                                   ▼
@@ -205,3 +244,21 @@ MC:                   Checks: i_ce_state == IDLE ?
                                   ▼
 MC:                   Proceeds to CMD_COMPLETE
 ```
+
+### READOUT Handshake (BYPASSED IN MLP MODE)
+```
+MC: readout_en=1 ─────────────────┐
+                                  ▼
+MC:                   Enters ST_EXEC_READOUT → ST_WAIT_READOUT
+                                  │
+                                  │ arb_mc_readout_done = 1'b1 (hardwired)
+                                  ▼
+MC:                   Immediately proceeds to CMD_COMPLETE
+
+Actual Result Path (Direct MLP Output):
+compute_engine_mlp: o_result_256_valid ────┐
+                                           ▼
+engine_top:         o_result_256_data/valid/wr_addr → external circular buffer
+```
+
+**Note**: In MLP mode, results are output directly during ST_COMPUTE phase via the 256-bit result interface. The READOUT command exists in the command flow but the actual result collection is handled by the direct MLP output path.

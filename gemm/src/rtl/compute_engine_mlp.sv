@@ -154,10 +154,8 @@ module compute_engine_mlp #(
     logic [71:0] mlp_dout [NUM_MLPS-1:0];
     logic        dout_valid;
 
-    // FP24 results (extracted from MLP outputs)
-    logic [23:0] fp24_results [NUM_COLUMNS-1:0];
-
-    // FP16 results (after conversion)
+    // FP16 results (directly from MLP outputs - no conversion needed!)
+    // mlp_bram_col_ctrl now outputs FP16 directly via integer-domain adder
     logic [15:0] fp16_results [NUM_COLUMNS-1:0];
     logic        fp16_valid;
 
@@ -651,65 +649,46 @@ module compute_engine_mlp #(
     end
 
     // =========================================================================
-    // Result Extraction: FP24 from MLP outputs
-    // Each MLP produces 72 bits = 2 columns × 24-bit FP24 + padding
+    // Result Extraction: FP16 directly from MLP outputs
+    // mlp_bram_col_ctrl now outputs FP16 (not FP24!) via integer-domain adder
+    // Each MLP produces 72 bits = 2 columns × 16-bit FP16 + status + padding
     //
-    // Weight loading bank mapping (from mlp_bram_col_ctrl):
-    //   - Even column (bank_sel=0): wraddr[0]=1 → BRAM upper [143:72] → Bank AB (Upper)
-    //   - Odd column (bank_sel=1): wraddr[0]=0 → BRAM lower [71:0] → Bank CD (Lower)
+    // New mlp_bram_col_ctrl output format (with integer-domain adder):
+    //   - dout[15:0]  = Bank 0 result (FP16)
+    //   - dout[31:16] = Bank 1 result (FP16)
+    //   - dout[55:32] = status bits (24 bits)
+    //   - dout[71:56] = padding (unused)
     //
-    // MLP output (from mlp_dot16_bfp8):
-    //   - Bank 0 (Lower, BRAM[71:0]) → DOT_PRODUCT_0 → dout[23:0]
-    //   - Bank 1 (Upper, BRAM[143:72]) → DOT_PRODUCT_1 → dout[47:24]
-    //
-    // Therefore:
-    //   - Even column weights → Bank 1 → dout[47:24]
-    //   - Odd column weights → Bank 0 → dout[23:0]
+    // Weight loading bank mapping remains same:
+    //   - Even column weights → Bank 1 → dout[31:16]
+    //   - Odd column weights → Bank 0 → dout[15:0]
     // =========================================================================
     genvar col;
     generate
-        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_fp24_extract
+        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_fp16_extract
             localparam MLP_IDX = col / 2;
             localparam IS_ODD = col % 2;
 
             if (IS_ODD == 0) begin : even_col
-                // Even columns: extract from bank0 (dout[23:0])
-                assign fp24_results[col] = mlp_dout[MLP_IDX][23:0];
+                // Even columns: extract from bank0 (dout[15:0])
+                assign fp16_results[col] = mlp_dout[MLP_IDX][15:0];
             end else begin : odd_col
-                // Odd columns: extract from bank1 (dout[47:24])
-                assign fp24_results[col] = mlp_dout[MLP_IDX][47:24];
+                // Odd columns: extract from bank1 (dout[31:16])
+                assign fp16_results[col] = mlp_dout[MLP_IDX][31:16];
             end
         end
     endgenerate
 
-    // =========================================================================
-    // FP24 to FP16 Conversion (16 parallel converters)
-    // =========================================================================
-    logic [15:0] fp16_conv_valid;
-
-    generate
-        for (col = 0; col < NUM_COLUMNS; col = col + 1) begin : gen_fp16_conv
-            fp24_to_fp16 u_fp24_to_fp16 (
-                .i_clk(i_clk),
-                .i_reset_n(i_reset_n),
-                .i_fp24(fp24_results[col]),
-                .i_valid(dout_valid),
-                .o_fp16(fp16_results[col]),
-                .o_valid(fp16_conv_valid[col])
-            );
-        end
-    endgenerate
-
-    // All converters have same latency, use any valid signal
-    assign fp16_valid = fp16_conv_valid[0];
+    // FP16 results are directly available - no conversion stage needed!
+    // Valid signal comes directly from mlp_bram_col_ctrl output
+    assign fp16_valid = dout_valid;
 
     // =========================================================================
     // Output Assembly: Pack 16 FP16 into 256-bit vector
     // Gate result_valid to only be active during compute phase
     //
     // NOTE: The pipeline has multiple stages of latency:
-    //   - mlp_bram_col_ctrl adder tree: +1 cycle
-    //   - fp24_to_fp16: +1 cycle
+    //   - mlp_bram_col_ctrl integer-domain adder: 4 cycles
     //   - output register: +1 cycle
     // We need to extend in_compute_phase for these extra cycles so results
     // that are in-flight when ST_COMPUTE ends are still captured.
@@ -790,7 +769,8 @@ module compute_engine_mlp #(
         end else begin
             probe_fp24_valid_reg <= dout_valid;
             if (dout_valid) begin
-                probe_fp24_data_reg <= fp24_results[0];
+                // mlp_dout now contains FP16 at [15:0], pad to 24 bits for probe
+                probe_fp24_data_reg <= {8'h0, mlp_dout[0][15:0]};
             end
         end
     end

@@ -77,6 +77,10 @@ compile: create_library
 		$(MLP_RTL)/mlp_bram.sv \
 		$(MLP_RTL)/mlp_bram_col.sv \
 		$(MLP_RTL)/fp24_add.sv \
+		$(MLP_RTL)/fp_to_int.sv \
+		$(MLP_RTL)/int_to_fp.sv \
+		$(MLP_RTL)/int_adder_tree.sv \
+		$(MLP_RTL)/fp_adder_pipeline.sv \
 		$(MLP_RTL)/mlp_bram_col_ctrl.sv \
 		$(MLP_RTL)/row_bram.sv \
 		$(MLP_RTL)/fp24_to_fp16.sv \

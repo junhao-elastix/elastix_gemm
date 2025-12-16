@@ -5,7 +5,7 @@
 // Architecture: 4 × mlp_bram_col stacked in parallel
 //   - Each stack handles 32 elements (one 256-bit mantissa group + 8-bit exponent)
 //   - All 4 stacks process in parallel: 4× throughput
-//   - Combinational FP24 adder tree sums partial results
+//   - Integer-domain FP adder pipeline sums partial results
 //
 // Weight Loading:
 //   - 4 cycles to load one NV (vs 16 cycles with single stack)
@@ -15,9 +15,10 @@
 // Compute:
 //   - 4 cycles of streaming (vs 16 with single stack)
 //   - Each stack computes partial 32-element dot product
-//   - FP24 adder tree combines 4 partial sums per column
+//   - Integer-domain adder pipeline combines 4 partial sums per column
+//   - Single rounding point (FP24→Int→Sum→FP16) for improved accuracy
 //
-// Output: 16 × FP24 results (same interface as before)
+// Output: 16 × FP16 results (changed from FP24 for direct use)
 
 `default_nettype none
 
@@ -533,10 +534,16 @@ module mlp_bram_col_ctrl #(
     endgenerate
 
     // =========================================================================
-    // FP24 Adder Tree: Combine 4 partial results per column
+    // Integer-Domain FP Adder Pipeline: Combine 4 partial results per column
     // Each MLP produces 2 FP24 results (Bank 0 and Bank 1)
-    // dout[23:0]  = Bank CD result (even column)
-    // dout[47:24] = Bank AB result (odd column)
+    // New approach: Convert FP24→Int→Sum→FP16 for single rounding point
+    // 
+    // Architecture:
+    //   - 4 FP24 inputs from stacks → fp_to_int (1 cycle)
+    //   - Integer adder tree (1 cycle for 2 levels)
+    //   - int_to_fp with RNE rounding (2 cycles)
+    //   - Total latency: 4 cycles (same as before)
+    //   - Output: FP16 (eliminates downstream fp24_to_fp16 conversion)
     // =========================================================================
 
     // Extract FP24 values from each stack for each MLP
@@ -546,39 +553,32 @@ module mlp_bram_col_ctrl #(
     generate
         for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_fp24_extract
             for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_mlp_fp24
-                assign fp24_bank0[s][m] = stack_dout[s][m][23:0];   // Bank CD (odd col)
-                assign fp24_bank1[s][m] = stack_dout[s][m][47:24];  // Bank AB (even col)
+                assign fp24_bank0[s][m] = stack_dout[s][m][23:0];   // Bank CD
+                assign fp24_bank1[s][m] = stack_dout[s][m][47:24];  // Bank AB
             end
         end
     endgenerate
 
-    // =========================================================================
-    // Pipelined 2-level adder tree for each bank of each MLP
-    // Each fp24_add has 2-cycle latency with internal pipeline
-    // Level 1: stack[0]+stack[1], stack[2]+stack[3] (2 cycles)
-    // Level 2: sum_01 + sum_23 (2 cycles)
-    // Total latency: 4 cycles from drain_valid to final output
-    // =========================================================================
+    // Repack FP24 inputs into [3:0][23:0] format for fp_adder_pipeline
+    logic [NUM_STACKS-1:0][23:0] adder_input_bank0 [NUM_MLPS-1:0];
+    logic [NUM_STACKS-1:0][23:0] adder_input_bank1 [NUM_MLPS-1:0];
+    
+    generate
+        for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_repack
+            for (genvar s = 0; s < NUM_STACKS; s = s + 1) begin : gen_stack_repack
+                assign adder_input_bank0[m][s] = fp24_bank0[s][m];
+                assign adder_input_bank1[m][s] = fp24_bank1[s][m];
+            end
+        end
+    endgenerate
 
-    // Level 1 outputs (from pipelined adders)
-    logic [23:0] sum_01_bank0 [NUM_MLPS-1:0];
-    logic [23:0] sum_23_bank0 [NUM_MLPS-1:0];
-    logic [23:0] sum_01_bank1 [NUM_MLPS-1:0];
-    logic [23:0] sum_23_bank1 [NUM_MLPS-1:0];
+    // Final FP16 outputs (changed from FP24)
+    logic [15:0] final_bank0 [NUM_MLPS-1:0];
+    logic [15:0] final_bank1 [NUM_MLPS-1:0];
 
-    // Level 1 valid outputs
-    logic level1_valid_01_bank0 [NUM_MLPS-1:0];
-    logic level1_valid_23_bank0 [NUM_MLPS-1:0];
-    logic level1_valid_01_bank1 [NUM_MLPS-1:0];
-    logic level1_valid_23_bank1 [NUM_MLPS-1:0];
-
-    // Level 2 outputs (final results)
-    logic [23:0] final_bank0 [NUM_MLPS-1:0];
-    logic [23:0] final_bank1 [NUM_MLPS-1:0];
-
-    // Level 2 valid outputs
-    logic level2_valid_bank0 [NUM_MLPS-1:0];
-    logic level2_valid_bank1 [NUM_MLPS-1:0];
+    // Valid outputs
+    logic adder_valid_bank0 [NUM_MLPS-1:0];
+    logic adder_valid_bank1 [NUM_MLPS-1:0];
 
     // Status bits from stack 0, delayed to match 4-cycle pipeline
     logic [23:0] stack0_status_d1 [NUM_MLPS-1:0];
@@ -586,80 +586,52 @@ module mlp_bram_col_ctrl #(
     logic [23:0] stack0_status_d3 [NUM_MLPS-1:0];
     logic [23:0] stack0_status_d4 [NUM_MLPS-1:0];
     
-    // Drain valid signal - triggers level 1 adders
+    // Drain valid signal - triggers adders
     logic drain_valid;
     assign drain_valid = (comp_state_reg == COMP_DRAIN);
 
     generate
         for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_adder_tree
             // =====================================================================
-            // Level 1: Combine pairs of stacks (2-cycle pipelined adders)
+            // Integer-Domain FP Adder Pipeline for Bank 0 (even columns)
+            // Sums 4 FP24 inputs → outputs 1 FP16 result
             // =====================================================================
-
-            // Bank 0 (even columns) - level 1
-            fp24_add u_add_01_bank0 (
+            fp_adder_pipeline #(
+                .NUM_INPUTS(4),
+                .FP_IN_WIDTH(24),
+                .FP_OUT_WIDTH(16),
+                .INT_WIDTH(64),
+                .FRAC_BITS(32),      // 32-bit fractional: 256x better precision
+                .SEG_LEN(2)
+            ) u_adder_bank0 (
                 .clk(clk),
-                .rstn(rstn),
-                .a(fp24_bank0[0][m]),
-                .b(fp24_bank0[1][m]),
+                .rst_n(rstn),
+                .en(1'b1),
+                .i_fp(adder_input_bank0[m]),
                 .i_valid(drain_valid),
-                .sum(sum_01_bank0[m]),
-                .o_valid(level1_valid_01_bank0[m])
-            );
-
-            fp24_add u_add_23_bank0 (
-                .clk(clk),
-                .rstn(rstn),
-                .a(fp24_bank0[2][m]),
-                .b(fp24_bank0[3][m]),
-                .i_valid(drain_valid),
-                .sum(sum_23_bank0[m]),
-                .o_valid(level1_valid_23_bank0[m])
-            );
-
-            // Bank 1 (odd columns) - level 1
-            fp24_add u_add_01_bank1 (
-                .clk(clk),
-                .rstn(rstn),
-                .a(fp24_bank1[0][m]),
-                .b(fp24_bank1[1][m]),
-                .i_valid(drain_valid),
-                .sum(sum_01_bank1[m]),
-                .o_valid(level1_valid_01_bank1[m])
-            );
-
-            fp24_add u_add_23_bank1 (
-                .clk(clk),
-                .rstn(rstn),
-                .a(fp24_bank1[2][m]),
-                .b(fp24_bank1[3][m]),
-                .i_valid(drain_valid),
-                .sum(sum_23_bank1[m]),
-                .o_valid(level1_valid_23_bank1[m])
+                .o_fp(final_bank0[m]),
+                .o_valid(adder_valid_bank0[m])
             );
 
             // =====================================================================
-            // Level 2: Final sum (2-cycle pipelined adders)
-            // Input valid comes from level 1 output valid
+            // Integer-Domain FP Adder Pipeline for Bank 1 (odd columns)
+            // Sums 4 FP24 inputs → outputs 1 FP16 result
             // =====================================================================
-            fp24_add u_add_final_bank0 (
+            fp_adder_pipeline #(
+                .NUM_INPUTS(4),
+                .FP_IN_WIDTH(24),
+                .FP_OUT_WIDTH(16),
+                .INT_WIDTH(64),
+                .FRAC_BITS(32),      // 32-bit fractional: 256x better precision
+                .SEG_LEN(2)
+            ) u_adder_bank1 (
                 .clk(clk),
-                .rstn(rstn),
-                .a(sum_01_bank0[m]),
-                .b(sum_23_bank0[m]),
-                .i_valid(level1_valid_01_bank0[m]),  // Both level1 valids are synchronized
-                .sum(final_bank0[m]),
-                .o_valid(level2_valid_bank0[m])
-            );
-
-            fp24_add u_add_final_bank1 (
-                .clk(clk),
-                .rstn(rstn),
-                .a(sum_01_bank1[m]),
-                .b(sum_23_bank1[m]),
-                .i_valid(level1_valid_01_bank1[m]),  // Both level1 valids are synchronized
-                .sum(final_bank1[m]),
-                .o_valid(level2_valid_bank1[m])
+                .rst_n(rstn),
+                .en(1'b1),
+                .i_fp(adder_input_bank1[m]),
+                .i_valid(drain_valid),
+                .o_fp(final_bank1[m]),
+                .o_valid(adder_valid_bank1[m])
             );
 
             // =====================================================================
@@ -679,11 +651,13 @@ module mlp_bram_col_ctrl #(
                 end
             end
 
-            // Combine back into 72-bit output format
-            // dout[23:0] = Bank CD = odd column result (bank0)
-            // dout[47:24] = Bank AB = even column result (bank1)
-            // dout[71:48] = status bits (delayed to match 4-cycle pipeline)
-            assign o_dout[m] = {stack0_status_d4[m], final_bank1[m], final_bank0[m]};
+            // Combine into output format
+            // NOTE: Results are now FP16 instead of FP24!
+            // dout[15:0] = Bank 0 result (FP16)
+            // dout[31:16] = Bank 1 result (FP16)
+            // dout[55:32] = status bits (24 bits, delayed to match 4-cycle pipeline)
+            // dout[71:56] = padding (unused)
+            assign o_dout[m] = {16'd0, stack0_status_d4[m], final_bank1[m], final_bank0[m]};
         end
     endgenerate
 
