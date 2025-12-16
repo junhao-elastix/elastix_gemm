@@ -42,25 +42,26 @@ import gemm_pkg::*;
     input  logic                         i_fetch_target, // 0=left, 1=right
     output logic                         o_fetch_done,
 
-    // Dispatcher BRAM Write Interface
-    output logic [MAN_WIDTH-1:0]         o_bram_wr_data,
-    output logic [BRAM_ADDR_WIDTH+1:0]   o_bram_wr_addr,
-    output logic                         o_bram_wr_en,
-    output logic                         o_bram_wr_target,
+    // row_bram Write Interface (Direct writes to compute_engine row_bram)
+    // Left mantissa write port
+    output logic [TILE_ADDR_WIDTH-1:0]   o_man_left_wr_addr,
+    output logic                         o_man_left_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_man_left_wr_data,
+    
+    // Right mantissa write port
+    output logic [TILE_ADDR_WIDTH-1:0]   o_man_right_wr_addr,
+    output logic                         o_man_right_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_man_right_wr_data,
 
-    // Dispatcher BRAM Exponent Aligned Write Ports
+    // Left exponent write port  
     output logic [TILE_ADDR_WIDTH-1:0]   o_exp_left_wr_addr,
     output logic                         o_exp_left_wr_en,
     output logic [EXP_WIDTH-1:0]         o_exp_left_wr_data,
     
+    // Right exponent write port
     output logic [TILE_ADDR_WIDTH-1:0]   o_exp_right_wr_addr,
     output logic                         o_exp_right_wr_en,
     output logic [EXP_WIDTH-1:0]         o_exp_right_wr_data,
-
-    // Dispatcher BRAM Read Interface (for unpacking exp_packed)
-    output logic [3:0]                   o_exp_packed_rd_addr,
-    output logic                         o_exp_packed_rd_target,
-    input  logic [MAN_WIDTH-1:0]         i_exp_packed_rd_data,
 
     // AXI-4 Initiator Interface
     t_AXI4.initiator                     axi_ddr_if,
@@ -453,45 +454,61 @@ import gemm_pkg::*;
     assign axi_ddr_if.rready = (state_reg == ST_FETCH_ACTIVE);
 
     // ===================================================================
-    // BRAM Write Logic (Port A - GDDR6 to BRAM)
+    // row_bram Mantissa Write Logic (Direct to compute_engine row_bram)
     // ===================================================================
-    logic [10:0] bram_wr_addr_reg;
-    logic [MAN_WIDTH-1:0] bram_wr_data_reg;
-    logic        bram_wr_en_reg;
-    logic        bram_wr_target_reg;
+    logic [8:0] man_wr_addr_reg;
+    logic [MAN_WIDTH-1:0] man_wr_data_reg;
+    logic        man_wr_en_left_reg;
+    logic        man_wr_en_right_reg;
+    
+    // Packed exponent buffer (temporary storage for unpacking)
+    logic [MAN_WIDTH-1:0] exp_packed_buffer [0:15];
 
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
-            bram_wr_addr_reg <= '0;
-            bram_wr_data_reg <= '0;
-            bram_wr_en_reg <= 1'b0;
-            bram_wr_target_reg <= 1'b0;
+            man_wr_addr_reg <= '0;
+            man_wr_data_reg <= '0;
+            man_wr_en_left_reg <= 1'b0;
+            man_wr_en_right_reg <= 1'b0;
+            for (int i = 0; i < 16; i++) begin
+                exp_packed_buffer[i] <= '0;
+            end
         end else begin
-            bram_wr_en_reg <= 1'b0;  // Default
+            man_wr_en_left_reg <= 1'b0;   // Default
+            man_wr_en_right_reg <= 1'b0;  // Default
 
             if (state_reg == ST_FETCH_ACTIVE && axi_ddr_if.rvalid && axi_ddr_if.rready && lines_received < 528) begin
-                // Write data to BRAM
                 if (lines_received < 16) begin
-                    bram_wr_addr_reg <= {7'd0, exp_lines_received[3:0]};  // 0-15
+                    // Lines 0-15: Store packed exponents in local buffer (for unpacking)
+                    exp_packed_buffer[exp_lines_received[3:0]] <= axi_ddr_if.rdata;
                 end else begin
-                    bram_wr_addr_reg <= {2'd0, man_lines_received[8:0]} + 11'd16;  // 16-527
+                    // Lines 16-527: Write mantissas directly to row_bram (address 0-511)
+                    man_wr_addr_reg <= man_lines_received[8:0];  // Direct mapping: 0-511
+                    man_wr_data_reg <= axi_ddr_if.rdata;
+                    
+                    // Split write enables based on target
+                    if (r_target_current_burst == 1'b0) begin
+                        man_wr_en_left_reg <= 1'b1;
+                    end else begin
+                        man_wr_en_right_reg <= 1'b1;
+                    end
                 end
-                bram_wr_data_reg <= axi_ddr_if.rdata;
-                bram_wr_en_reg <= 1'b1;
-                bram_wr_target_reg <= r_target_current_burst;
             end
         end
     end
 
-    assign o_bram_wr_data = bram_wr_data_reg;
-    assign o_bram_wr_addr = bram_wr_addr_reg;
-    assign o_bram_wr_en = bram_wr_en_reg;
-    assign o_bram_wr_target = bram_wr_target_reg;
+    // Mantissa write outputs (split left/right)
+    assign o_man_left_wr_addr = man_wr_addr_reg;
+    assign o_man_left_wr_data = man_wr_data_reg;
+    assign o_man_left_wr_en = man_wr_en_left_reg;
+    
+    assign o_man_right_wr_addr = man_wr_addr_reg;
+    assign o_man_right_wr_data = man_wr_data_reg;
+    assign o_man_right_wr_en = man_wr_en_right_reg;
 
     // ===================================================================
-    // Parallel Exponent Unpacking (PRESERVED FROM ORIGINAL)
+    // Parallel Exponent Unpacking (from local buffer to row_bram)
     // ===================================================================
-    logic [3:0]  unpack_exp_packed_rd_addr_reg;
     logic [9:0]  unpack_idx_reg;
 
     // Continuous unpacking counter (runs every cycle during mantissa phase)
@@ -501,48 +518,39 @@ import gemm_pkg::*;
         end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
             unpack_idx_reg <= 10'd0;
         end else if (state_reg == ST_FETCH_ACTIVE && lines_received >= 16 && unpack_idx_reg < 10'd512) begin
-            // Start unpacking once we're in mantissa phase (stop at 511, total 512 exponents)
+            // Start unpacking once we're in mantissa phase (total 512 exponents)
             unpack_idx_reg <= unpack_idx_reg + 10'd1;
         end
     end
 
-    // Calculate unpacking write index (1 cycle for BRAM read latency)
-    logic [9:0] unpack_wr_idx;
-    assign unpack_wr_idx = unpack_idx_reg - 10'd1;
-
-    // Read address for exp_packed
-    assign unpack_exp_packed_rd_addr_reg = unpack_wr_idx[9:5];  // /32
-
-    // Extract byte offset
+    // Calculate buffer index and byte offset
+    logic [3:0] exp_packed_idx;
     logic [4:0] exp_byte_offset;
-    assign exp_byte_offset = unpack_wr_idx[4:0];  // %32
+    assign exp_packed_idx = unpack_idx_reg[9:5];   // /32 (which packed line)
+    assign exp_byte_offset = unpack_idx_reg[4:0];  // %32 (which byte in line)
 
-    // Extract current exponent byte
+    // Extract current exponent byte from local buffer
     logic [7:0] current_exp_byte;
-    assign current_exp_byte = i_exp_packed_rd_data[exp_byte_offset*8 +: 8];
+    assign current_exp_byte = exp_packed_buffer[exp_packed_idx][exp_byte_offset*8 +: 8];
 
-    // Exponent write enables
+    // Exponent write enables (split left/right)
     assign o_exp_left_wr_en = (state_reg == ST_FETCH_ACTIVE) &&
                               (fetch_target_reg == 1'b0) &&
-                              (unpack_idx_reg >= 10'd1) &&
-                              (unpack_idx_reg <= 10'd512);
+                              (unpack_idx_reg >= 10'd0) &&
+                              (unpack_idx_reg < 10'd512);
 
     assign o_exp_right_wr_en = (state_reg == ST_FETCH_ACTIVE) &&
                                (fetch_target_reg == 1'b1) &&
-                               (unpack_idx_reg >= 10'd1) &&
-                               (unpack_idx_reg <= 10'd512);
+                               (unpack_idx_reg >= 10'd0) &&
+                               (unpack_idx_reg < 10'd512);
 
-    // Exponent write addresses
-    assign o_exp_left_wr_addr = unpack_wr_idx[8:0];
-    assign o_exp_right_wr_addr = unpack_wr_idx[8:0];
+    // Exponent write addresses (direct mapping to row_bram)
+    assign o_exp_left_wr_addr = unpack_idx_reg[8:0];
+    assign o_exp_right_wr_addr = unpack_idx_reg[8:0];
 
     // Exponent write data
     assign o_exp_left_wr_data = current_exp_byte;
     assign o_exp_right_wr_data = current_exp_byte;
-
-    // Exp packed read interface
-    assign o_exp_packed_rd_addr = unpack_exp_packed_rd_addr_reg;
-    assign o_exp_packed_rd_target = fetch_target_reg;
 
     // ===================================================================
     // AXI Write Channels (unused - tie off)
@@ -582,8 +590,24 @@ import gemm_pkg::*;
     // ===================================================================
     // Debug Outputs
     // ===================================================================
-    assign o_fetcher_state = state_reg;
-    assign o_wr_addr = bram_wr_addr_reg;
-    assign o_wr_en = bram_wr_en_reg;
+    // Note: o_fetcher_state, o_wr_addr, o_wr_en removed (no longer in port list)
+    
+    `ifdef SIMULATION
+    always @(posedge i_clk) begin
+        if (state_reg == ST_FETCH_ACTIVE && lines_received == 16) begin
+            $display("[FETCHER] @%0t Finished exp_packed phase, starting mantissa phase", $time);
+        end
+        if (state_reg == ST_FETCH_ACTIVE && lines_received == 528) begin
+            $display("[FETCHER] @%0t All 528 lines received, unpack_idx=%0d, settle=%0d",
+                     $time, unpack_idx_reg, settle_cycles);
+        end
+        if (state_reg == ST_FETCH_ACTIVE && unpack_idx_reg == 512) begin
+            $display("[FETCHER] @%0t Unpacking complete (512 exponents)", $time);
+        end
+        if (state_reg == ST_FETCH_DONE) begin
+            $display("[FETCHER] @%0t FETCH_DONE, returning to IDLE", $time);
+        end
+    end
+    `endif
 
 endmodule

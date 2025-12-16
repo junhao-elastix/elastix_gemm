@@ -27,7 +27,7 @@
 module engine_top
 import gemm_pkg::*;
 #(
-    parameter [8:0] GDDR6_PAGE_ID = 9'd2,   // GDDR6 Channel page ID
+    parameter [8:0] GDDR6_PAGE_ID = 9'd0,   // GDDR6 Channel page ID
     parameter TGT_DATA_WIDTH = 256,         // Target data width (256-bit AXI)
     parameter AXI_ADDR_WIDTH = 42,          // AXI address width (42-bit for GDDR6)
     parameter int NUM_TILES = 8             // Number of parallel compute tiles (2-24)
@@ -168,8 +168,21 @@ import gemm_pkg::*;
     logic [8:0]    dc_disp_rd_addr;      // 9-bit: dispatcher_bram is 512 deep
     logic          dc_disp_rd_en;
 
+    // DISPATCH control signals (declared early for use in port connections)
+    logic          dc_disp_start;       // From dispatcher_control to compute_engine
+
     // Multi-tile DISPATCH control (per-tile write enables)
-    logic [23:0]   dc_tile_wr_en;        // Per-tile write enable array [0:23]
+    // dc_tile_wr_en removed (no longer needed with direct FETCH to row_bram)
+
+    // MLP internal signals (declared early for use in always_ff blocks)
+    logic [255:0] mlp_result_data;     // 16 × FP16 results
+    logic         mlp_result_valid;    // Result valid pulse
+    logic         mlp_tile_done;       // Tile done signal
+    logic         mlp_disp_done;       // DISPATCH done signal
+    logic [3:0]   mlp_ce_state;        // CE state for debug
+    logic [15:0]  mlp_result_count;    // Result count for debug
+    logic [8:0]   mlp_wr_addr_cnt;     // 256-bit result write address counter
+    logic [7:0]   debug_cycle_cnt;     // Debug cycle counter
 
     // Debug signals
     logic [3:0]  mc_state;
@@ -284,8 +297,7 @@ import gemm_pkg::*;
     dispatcher_control #(
         .MAN_WIDTH          (TGT_DATA_WIDTH),
         .EXP_WIDTH          (8),
-        .DISP_BRAM_DEPTH    (512),
-        .TILE_BRAM_DEPTH    (512),
+        .BRAM_DEPTH         (512),
         .AXI_ADDR_WIDTH     (AXI_ADDR_WIDTH),
         .GDDR6_PAGE_ID      (GDDR6_PAGE_ID)
     ) u_dispatcher_control (
@@ -310,22 +322,26 @@ import gemm_pkg::*;
         .i_disp_broadcast   (mc_dc_disp_broadcast),
         .o_disp_done        (dc_mc_disp_done),
 
-        // Tile BRAM Write Ports
-        .o_tile_man_left_wr_addr   (dc_tile_man_left_wr_addr),
-        .o_tile_man_left_wr_en     (dc_tile_man_left_wr_en),
-        .o_tile_man_left_wr_data   (dc_tile_man_left_wr_data),
+        // row_bram Write Ports (renamed from tile_*)
+        .o_man_left_wr_addr   (dc_tile_man_left_wr_addr),
+        .o_man_left_wr_en     (dc_tile_man_left_wr_en),
+        .o_man_left_wr_data   (dc_tile_man_left_wr_data),
 
-        .o_tile_man_right_wr_addr  (dc_tile_man_right_wr_addr),
-        .o_tile_man_right_wr_en    (dc_tile_man_right_wr_en),
-        .o_tile_man_right_wr_data  (dc_tile_man_right_wr_data),
+        .o_man_right_wr_addr  (dc_tile_man_right_wr_addr),
+        .o_man_right_wr_en    (dc_tile_man_right_wr_en),
+        .o_man_right_wr_data  (dc_tile_man_right_wr_data),
 
-        .o_tile_exp_left_wr_addr   (dc_tile_left_exp_wr_addr),
-        .o_tile_exp_left_wr_en     (dc_tile_left_exp_wr_en),
-        .o_tile_exp_left_wr_data   (dc_tile_left_exp_wr_data),
+        .o_exp_left_wr_addr   (dc_tile_left_exp_wr_addr),
+        .o_exp_left_wr_en     (dc_tile_left_exp_wr_en),
+        .o_exp_left_wr_data   (dc_tile_left_exp_wr_data),
 
-        .o_tile_exp_right_wr_addr  (dc_tile_right_exp_wr_addr),
-        .o_tile_exp_right_wr_en    (dc_tile_right_exp_wr_en),
-        .o_tile_exp_right_wr_data  (dc_tile_right_exp_wr_data),
+        .o_exp_right_wr_addr  (dc_tile_right_exp_wr_addr),
+        .o_exp_right_wr_en    (dc_tile_right_exp_wr_en),
+        .o_exp_right_wr_data  (dc_tile_right_exp_wr_data),
+        
+        // DISPATCH start signal (to compute_engine)
+        .o_disp_start         (dc_disp_start),
+        .i_disp_done_ce       (mlp_disp_done),
 
         // AXI GDDR6 Interface
         .axi_ddr_if         (nap_axi),
@@ -336,12 +352,9 @@ import gemm_pkg::*;
         .o_disp_wr_addr     (),  // Unused
         .o_disp_wr_en       (),  // Unused
 
-        // DISPATCH copy read control
+        // DISPATCH copy read control (debug only)
         .o_disp_rd_addr     (dc_disp_rd_addr),
         .o_disp_rd_en       (dc_disp_rd_en),
-
-        // Multi-tile write enable array
-        .o_tile_wr_en       (dc_tile_wr_en),
         
         // Probe outputs
         .o_probe_disp_data  (o_probe_disp_data),
@@ -360,16 +373,6 @@ import gemm_pkg::*;
         $display("[ENGINE_TOP] @%0t MLP MODE: Instantiating compute_engine_mlp", $time);
     end
     `endif
-
-    // MLP internal signals
-    logic [255:0] mlp_result_data;     // 16 × FP16 results
-    logic         mlp_result_valid;    // Result valid pulse
-    logic         mlp_tile_done;       // Tile done signal
-    logic [3:0]   mlp_ce_state;        // CE state for debug
-    logic [15:0]  mlp_result_count;    // Result count for debug
-
-    // 256-bit result write address counter
-    logic [8:0]   mlp_wr_addr_cnt;
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
@@ -395,6 +398,9 @@ import gemm_pkg::*;
         // Master Control Interface (TILE command)
         .i_tile_en                    (mc_ce_tile_en[0]),
         .i_tile_start                 (mc_ce_tile_start[0]),
+        .i_disp_start                 (dc_disp_start),       // NEW: DISPATCH triggers ST_FILL
+        .i_disp_ugd_vec_size          (mc_dc_disp_ugd_vec_size),  // V for DISPATCH
+        .i_disp_right_ugd_len         (mc_dc_disp_man_nv_cnt / mc_dc_disp_ugd_vec_size),  // C for DISPATCH
         .i_tile_left_addr             (mc_ce_tile_left_addr),
         .i_tile_right_addr            (mc_ce_tile_right_addr),
         .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
@@ -405,26 +411,28 @@ import gemm_pkg::*;
         .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
         .i_mc_tile_en                 (mc_ce_tile_en),
         .o_tile_done                  (mlp_tile_done),
+        .o_disp_done                  (mlp_disp_done),       // NEW: DISPATCH done signal
 
         // row_bram Write Interface (4 parallel ports)
+        // Direct from fetcher (no tile_wr_en gating needed)
         // Left mantissa (activations)
         .i_man_left_wr_addr      (dc_tile_man_left_wr_addr),
-        .i_man_left_wr_en        (dc_tile_man_left_wr_en && dc_tile_wr_en[0]),
+        .i_man_left_wr_en        (dc_tile_man_left_wr_en),
         .i_man_left_wr_data      (dc_tile_man_left_wr_data),
 
         // Right mantissa (weights)
         .i_man_right_wr_addr     (dc_tile_man_right_wr_addr),
-        .i_man_right_wr_en       (dc_tile_man_right_wr_en && dc_tile_wr_en[0]),
+        .i_man_right_wr_en       (dc_tile_man_right_wr_en),
         .i_man_right_wr_data     (dc_tile_man_right_wr_data),
 
         // Left exponent (activations)
         .i_exp_left_wr_addr      (dc_tile_left_exp_wr_addr),
-        .i_exp_left_wr_en        (dc_tile_left_exp_wr_en && dc_tile_wr_en[0]),
+        .i_exp_left_wr_en        (dc_tile_left_exp_wr_en),
         .i_exp_left_wr_data      (dc_tile_left_exp_wr_data),
 
         // Right exponent (weights)
         .i_exp_right_wr_addr     (dc_tile_right_exp_wr_addr),
-        .i_exp_right_wr_en       (dc_tile_right_exp_wr_en && dc_tile_wr_en[0]),
+        .i_exp_right_wr_en       (dc_tile_right_exp_wr_en),
         .i_exp_right_wr_data     (dc_tile_right_exp_wr_data),
 
         // Result → Direct 256-bit output (bypasses FIFO)
@@ -449,27 +457,19 @@ import gemm_pkg::*;
     // MLP mode: ce_mc_tile_done is directly from MLP compute engine
     // (Simplified from multi-tile array to single signal)
 
-    logic [7:0] debug_cycle_cnt = 0;
     always_ff @(posedge i_clk) begin
         if (~i_reset_n) begin
-            debug_cycle_cnt <= 0;
+            debug_cycle_cnt <= 8'd0;
         end else begin
             `ifdef SIMULATION
             if ((dc_tile_man_left_wr_en || dc_tile_man_right_wr_en ||
                  dc_tile_left_exp_wr_en || dc_tile_right_exp_wr_en) && debug_cycle_cnt < 10) begin
                 debug_cycle_cnt <= debug_cycle_cnt + 1;
 
-                $display("[ENG_WR_EN] @%0t cycle=%0d, dc_tile_wr_en=0x%06x",
-                         $time, debug_cycle_cnt, dc_tile_wr_en);
-
-                for (int i = 0; i < NUM_TILES; i++) begin
-                    $display("[ENG_WR_EN] @%0t   tile[%0d]: wr_en_bit=%0b, man_left=%0b->%0b, man_right=%0b->%0b, exp_left=%0b->%0b, exp_right=%0b->%0b",
-                             $time, i, dc_tile_wr_en[i],
-                             dc_tile_man_left_wr_en, dc_tile_man_left_wr_en && dc_tile_wr_en[i],
-                             dc_tile_man_right_wr_en, dc_tile_man_right_wr_en && dc_tile_wr_en[i],
-                             dc_tile_left_exp_wr_en, dc_tile_left_exp_wr_en && dc_tile_wr_en[i],
-                             dc_tile_right_exp_wr_en, dc_tile_right_exp_wr_en && dc_tile_wr_en[i]);
-                end
+                $display("[ENG_WR_EN] @%0t cycle=%0d, man_left=%0b, man_right=%0b, exp_left=%0b, exp_right=%0b",
+                         $time, debug_cycle_cnt,
+                         dc_tile_man_left_wr_en, dc_tile_man_right_wr_en,
+                         dc_tile_left_exp_wr_en, dc_tile_right_exp_wr_en);
             end
             `endif
 

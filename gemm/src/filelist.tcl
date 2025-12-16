@@ -23,8 +23,7 @@ cmd_fifo.sv
 csr_to_fifo_bridge.sv
 master_control.sv
 # Elastix GEMM Engine - Memory Hierarchy
-dispatcher_bram.sv
-dispatcher.sv
+# NOTE: dispatcher_bram.sv and dispatcher.sv removed (direct FETCH to row_bram)
 dispatcher_control.sv
 dma_bram_bridge.sv
 fetcher.sv

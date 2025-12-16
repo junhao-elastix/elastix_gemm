@@ -52,6 +52,9 @@ module compute_engine_mlp #(
     // =========================================================================
     input  logic                     i_tile_en,              // Static enable (configuration)
     input  logic                     i_tile_start,           // Dynamic pulse (start computing!)
+    input  logic                     i_disp_start,           // Pulse from DISPATCH RIGHT (trigger ST_FILL)
+    input  logic [7:0]               i_disp_ugd_vec_size,    // V for DISPATCH (ugd_vec_size parameter)
+    input  logic [7:0]               i_disp_right_ugd_len,   // C for DISPATCH (man_nv_cnt / ugd_vec_size)
     input  logic [15:0]              i_tile_left_addr,       // Left matrix start address (unused)
     input  logic [15:0]              i_tile_right_addr,      // Right matrix start address (unused)
     input  logic [7:0]               i_tile_left_ugd_len,    // B: Number of activation batches
@@ -62,6 +65,7 @@ module compute_engine_mlp #(
     input  logic                     i_tile_main_loop_over_left, // Loop order (unused)
     input  logic [23:0]              i_mc_tile_en,           // Per-tile enable mask (unused)
     output logic                     o_tile_done,
+    output logic                     o_disp_done,            // DISPATCH operation complete
 
     // =========================================================================
     // row_bram Write Interface (4 parallel ports)
@@ -166,10 +170,14 @@ module compute_engine_mlp #(
     // For C=16: 1 group, C=32: 2 groups, C=64: 4 groups, C=128: 8 groups
     logic [3:0] num_col_groups;      // Max 8 groups (C=128)
     logic [3:0] col_group_cnt;       // Current column group being processed
+    
+    // Active parameters (from TILE or DISPATCH command)
+    logic [7:0] active_vec_len;      // V: from TILE or DISPATCH
+    logic [7:0] active_right_ugd_len; // C: from TILE or DISPATCH
 
     // Calculate number of column groups (C / 16, assumes C divisible by 16)
     always_comb begin
-        num_col_groups = i_tile_right_ugd_len[7:4];  // Equivalent to C / 16
+        num_col_groups = active_right_ugd_len[7:4];  // Equivalent to C / 16
         if (num_col_groups == 0) num_col_groups = 4'd1;  // Minimum 1 group
     end
 
@@ -206,6 +214,7 @@ module compute_engine_mlp #(
     // Fill control
     logic fill_start;
     logic fill_done;
+    logic fill_dispatch_only;  // Track if ST_FILL was triggered by DISPATCH (no compute after)
 
     // =========================================================================
     // Compute Controller FSM
@@ -257,31 +266,63 @@ module compute_engine_mlp #(
             fill_start <= 1'b0;
             compute_start <= 1'b0;
             col_group_cnt <= 4'd0;
+            fill_dispatch_only <= 1'b0;
+            active_vec_len <= 8'd0;
+            active_right_ugd_len <= 8'd0;
         end else begin
             fill_start <= 1'b0;
             compute_start <= 1'b0;
 
             case (top_state_reg)
                 ST_IDLE: begin
+                    // Two paths into ST_FILL:
+                    // 1. MATMUL command (i_tile_start): ST_FILL → ST_COMPUTE (full flow)
+                    // 2. DISPATCH RIGHT (i_disp_start): ST_FILL → ST_DONE (weight load only)
                     if (i_tile_en && i_tile_start) begin
                         top_state_reg <= ST_FILL;
                         fill_start <= 1'b1;
                         col_group_cnt <= 4'd0;  // Start with first column group
+                        fill_dispatch_only <= 1'b0;  // Full MATMUL flow
+                        // Latch TILE parameters
+                        active_vec_len <= i_tile_vec_len;
+                        active_right_ugd_len <= i_tile_right_ugd_len;
                         `ifdef SIMULATION
                         $display("[CE_MLP%0d] @%0t ST_IDLE: tile_start received, B=%0d, C=%0d, V=%0d, num_groups=%0d",
                                  TILE_ID, $time, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len, num_col_groups);
+                        `endif
+                    end else if (i_disp_start) begin
+                        top_state_reg <= ST_FILL;
+                        fill_start <= 1'b1;
+                        col_group_cnt <= 4'd0;  // Start with first column group
+                        fill_dispatch_only <= 1'b1;  // DISPATCH only (no compute)
+                        // Latch DISPATCH parameters
+                        active_vec_len <= i_disp_ugd_vec_size;
+                        active_right_ugd_len <= i_disp_right_ugd_len;
+                        `ifdef SIMULATION
+                        $display("[CE_MLP%0d] @%0t ST_IDLE: disp_start received (DISPATCH RIGHT), V=%0d, C=%0d, num_groups=%0d",
+                                 TILE_ID, $time, i_disp_ugd_vec_size, i_disp_right_ugd_len, num_col_groups);
                         `endif
                     end
                 end
 
                 ST_FILL: begin
                     if (fill_done) begin
-                        top_state_reg <= ST_COMPUTE;
-                        compute_start <= 1'b1;
-                        `ifdef SIMULATION
-                        $display("[CE_MLP%0d] @%0t ST_FILL: fill_done for group %0d, starting compute",
-                                 TILE_ID, $time, col_group_cnt);
-                        `endif
+                        if (fill_dispatch_only) begin
+                            // DISPATCH path: Go directly to DONE (weights loaded, no compute)
+                            top_state_reg <= ST_DONE;
+                            `ifdef SIMULATION
+                            $display("[CE_MLP%0d] @%0t ST_FILL: fill_done for DISPATCH, going to DONE",
+                                     TILE_ID, $time);
+                            `endif
+                        end else begin
+                            // MATMUL path: Continue to compute
+                            top_state_reg <= ST_COMPUTE;
+                            compute_start <= 1'b1;
+                            `ifdef SIMULATION
+                            $display("[CE_MLP%0d] @%0t ST_FILL: fill_done for group %0d, starting compute",
+                                     TILE_ID, $time, col_group_cnt);
+                            `endif
+                        end
                     end
                 end
 
@@ -315,7 +356,11 @@ module compute_engine_mlp #(
         end
     end
 
-    assign o_tile_done = (top_state_reg == ST_DONE);
+    // o_tile_done: Pulse when MATMUL completes (full flow)
+    assign o_tile_done = (top_state_reg == ST_DONE) && !fill_dispatch_only;
+    
+    // o_disp_done: Pulse when DISPATCH completes (weight load only)
+    assign o_disp_done = (top_state_reg == ST_DONE) && fill_dispatch_only;
 
     // =========================================================================
     // row_bram Instance
@@ -416,7 +461,7 @@ module compute_engine_mlp #(
 
             FILL_NEXT: begin
                 if (fill_col_cnt == (NUM_COLUMNS - 1) &&
-                    fill_nv_cnt == (i_tile_vec_len - 1)) begin
+                    fill_nv_cnt == (active_vec_len - 1)) begin
                     fill_state_next = FILL_DONE;
                 end else begin
                     fill_state_next = FILL_READ;
@@ -449,7 +494,7 @@ module compute_engine_mlp #(
                 end
 
                 FILL_NEXT: begin
-                    if (fill_nv_cnt == (i_tile_vec_len - 1)) begin
+                    if (fill_nv_cnt == (active_vec_len - 1)) begin
                         fill_nv_cnt  <= '0;
                         fill_col_cnt <= fill_col_cnt + 4'd1;
                     end else begin
@@ -480,8 +525,8 @@ module compute_engine_mlp #(
 
     // Calculate: ((col_group_cnt * 16) + fill_col_cnt) * vec_len + fill_nv_cnt
     // = (col_group_cnt * 16 * vec_len) + (fill_col_cnt * vec_len) + fill_nv_cnt
-    assign fill_nv_idx_full = ({col_group_cnt, 4'd0} * i_tile_vec_len) +  // group offset: col_group_cnt * 16 * V
-                              (fill_col_cnt * i_tile_vec_len) +           // column offset within group
+    assign fill_nv_idx_full = ({col_group_cnt, 4'd0} * active_vec_len) +  // group offset: col_group_cnt * 16 * V
+                              (fill_col_cnt * active_vec_len) +           // column offset within group
                               fill_nv_cnt;                                 // NV within column
     assign fill_nv_idx = fill_nv_idx_full[6:0];
 
@@ -560,7 +605,7 @@ module compute_engine_mlp #(
             end
 
             COMP_NEXT: begin
-                if (comp_nv_cnt == (i_tile_vec_len - 1)) begin
+                if (comp_nv_cnt == (active_vec_len - 1)) begin
                     comp_ctrl_state_next = COMP_WAIT_FINISH;
                 end else begin
                     comp_ctrl_state_next = COMP_READ;
@@ -625,7 +670,7 @@ module compute_engine_mlp #(
     // =========================================================================
     logic [13:0] comp_nv_idx_full;
     logic [6:0]  comp_nv_idx;
-    assign comp_nv_idx_full = (comp_batch_cnt * i_tile_vec_len) + comp_nv_cnt;
+    assign comp_nv_idx_full = (comp_batch_cnt * active_vec_len) + comp_nv_cnt;
     assign comp_nv_idx = comp_nv_idx_full[6:0];
 
     always_comb begin
@@ -644,7 +689,7 @@ module compute_engine_mlp #(
         if (comp_ctrl_state_reg == COMP_SEND) begin
             act_valid = 1'b1;
             new_dot = (comp_nv_cnt == '0);
-            last_nv = (comp_nv_cnt == (i_tile_vec_len - 1));  // Last NV of this batch
+            last_nv = (comp_nv_cnt == (active_vec_len - 1));  // Last NV of this batch
         end
     end
 
