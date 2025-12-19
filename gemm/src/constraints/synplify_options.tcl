@@ -48,13 +48,14 @@ set_option -auto_fsm_extract 1
 set_option -fsm_explorer 1
 
 # Reduce retiming iterations to speed up synthesis
-set_option -retiming_iteration_limit 3
+set_option -retiming 1
+set_option -retiming_iteration_limit 25
 
 # Enable pipeline optimization for better timing closure
 set_option -pipeline 1
 
 # Set fanout limits to reduce optimization complexity
-set_option -maxfan 50
+set_option -maxfan 500
 
 # Enable arithmetic optimization for faster builds
 set_option -arithmetic_optimization 1

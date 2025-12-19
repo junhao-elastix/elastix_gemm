@@ -16,10 +16,10 @@ set_project_option top_module elastix_gemm_top
 # # -------------------------------------------------------------------------
 
 # # Reduce P&R effort for faster builds (compromise: speed vs. optimal results) 
-# set_impl_option pnr_effort_level high
+set_impl_option pnr_effort_level high
 
 # # Enable aggressive placement strategy for faster convergence
-# set_impl_option pnr_placement_effort medium
+set_impl_option pnr_placement_effort high
 
 # # Reduce routing iterations to speed up P&R
 # set_impl_option pnr_routing_iterations 3
@@ -29,7 +29,7 @@ set_project_option top_module elastix_gemm_top
 # set_impl_option pnr_timing_optimization_iterations 2
 
 # # Enable parallel processing for faster builds
-# set_impl_option pnr_parallel_jobs 4
+set_impl_option pnr_parallel_jobs 4
 
 # # Reduce post-route optimization for faster bitstream generation
 # set_impl_option pnr_post_route_opt_effort medium

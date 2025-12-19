@@ -1,25 +1,15 @@
 // ------------------------------------------------------------------
 // Testbench for compute_engine_mlp.sv
 //
-// Purpose: Verify MLP compute engine with direct path architecture
-// Tests:
-//  - Various B/C/V configurations where C is divisible by 16
-//  - Golden reference validation against hex files
+// Purpose: Verify MLP compute engine with golden reference validation
 //
-// Key Features:
-//  - Simulates DISPATCH operation (writes data to row_bram write ports)
-//  - Four parallel write paths (mantissa + exponent, left + right)
-//  - FP16 result validation against golden references
-//  - Golden reference loading from hex files
-//
-// MLP Compute Engine:
-//  - Fixed 16 columns per compute cycle
-//  - Supports C = 16, 32, 64, 128 via column group iteration
-//  - 256-bit result output (16 × FP16 per batch)
-//  - Internal exponent conversion: GFP8E5 (bias=15) → GFP8E8 (bias=133)
+// Test Coverage:
+//   - Single-dispatch tests (C <= 16, single column group)
+//   - Multi-dispatch stress tests (C > 16, multiple column groups)
 //
 // Architecture:
-//  testbench BRAM models → [DISPATCH] → DUT row_bram → [TILE] → results
+//   hex files → TB BRAM models → [write_row_bram] → DUT row_bram
+//   → [cmd_dispatch_right] → MLP BRAM → [cmd_tile] → FP16 results
 //
 // Author: Compute Engine Testing
 // Date: Dec 2025
@@ -29,672 +19,429 @@
 
 module tb_compute_engine_mlp;
 
-    // Clock and reset
+    // =========================================================================
+    // Parameters
+    // =========================================================================
+    localparam int CLK_PERIOD_NS    = 10;       // 100MHz clock
+    localparam int TIMEOUT_NS       = 2000000000; // 2s timeout
+    localparam int ABS_TOLERANCE    = 32;       // FP16 LSB tolerance
+    localparam int NUM_COLUMNS      = 16;       // Hardware columns per group
+    localparam string HEX_PATH      = "../../../hex/";
+
+    // =========================================================================
+    // Test Configuration
+    // =========================================================================
+    typedef enum {
+        TEST_SINGLE_DISPATCH,   // Standard: one FETCH+DISPATCH, one TILE
+        TEST_MULTI_DISPATCH     // Stress: multiple FETCH+DISPATCH, one TILE
+    } test_type_e;
+
+    typedef struct {
+        int         B;              // Batch dimension
+        int         C;              // Column dimension
+        int         V;              // Vector dimension (NVs per dot product)
+        string      name;           // Test name for display/golden file
+        test_type_e test_type;      // Single or multi-dispatch
+        int         dispatches_per_group; // For multi-dispatch: how many per group
+    } test_config_t;
+
+    // =========================================================================
+    // Test Suite Definition
+    // =========================================================================
+    test_config_t test_suite[] = '{
+        // Test 1: Simple single-dispatch (1 column group)
+        '{B: 4, C: 4,  V: 4,  name: "B4_C4_V4",
+          test_type: TEST_SINGLE_DISPATCH, dispatches_per_group: 1},
+
+        // Test 2: 16-dispatch stress test (4 column groups, 4 dispatches each)
+        '{B: 4, C: 64, V: 32, name: "B4_C64_V32_multi_dispatch",
+          test_type: TEST_MULTI_DISPATCH, dispatches_per_group: 4}
+    };
+
+    // =========================================================================
+    // Clock and Reset
+    // =========================================================================
     logic clk;
     logic reset_n;
 
-    // TILE command interface (per SINGLE_ROW_REFERENCE.md)
-    logic        tile_en;           // Static enable (configuration)
-    logic        tile_start;        // Dynamic pulse (start computing!)
-    logic [15:0] left_addr;         // 16 bits: Left matrix start address
-    logic [15:0] right_addr;        // 16 bits: Right matrix start address
-    logic [7:0]  left_ugd_len;      // 8 bits: Left UGD vectors (Batch dimension)
-    logic [7:0]  right_ugd_len;     // 8 bits: Right UGD vectors (Column dimension)
-    logic [7:0]  vec_len;           // 8 bits: UGD vector size (Vector count)
-    logic        left_man_4b;       // 1 bit: Left mantissa width (0=8b, 1=4b)
-    logic        right_man_4b;      // 1 bit: Right mantissa width (0=8b, 1=4b)
-    logic        main_loop_over_left; // 1 bit: Main loop dimension selector
-    logic [23:0] mc_tile_en;        // Per-tile enable mask
+    // =========================================================================
+    // DUT Interface Signals
+    // =========================================================================
+    // TILE command interface
+    logic        tile_en;
+    logic        tile_start;
+    logic [15:0] tile_left_addr;
+    logic [15:0] tile_right_addr;
+    logic [7:0]  tile_left_ugd_len;
+    logic [7:0]  tile_right_ugd_len;
+    logic [7:0]  tile_vec_len;
+    logic        tile_left_man_4b;
+    logic        tile_right_man_4b;
+    logic        tile_main_loop_over_left;
+    logic [23:0] tile_mc_en;
     logic        tile_done;
 
     // DISPATCH command interface
-    logic        disp_start;        // Dispatch start pulse
-    logic [7:0]  disp_ugd_vec_size; // V for DISPATCH
-    logic [7:0]  disp_right_ugd_len; // C for DISPATCH
-    logic [15:0] disp_right_addr;   // Write base address for DISPATCH (tile_addr)
-    logic [4:0]  disp_col_start;    // Starting column for distribution
-    logic        disp_right;        // 0=LEFT (ignore), 1=RIGHT (process weights)
+    logic        disp_start;
+    logic [7:0]  disp_ugd_vec_size;
+    logic [7:0]  disp_right_ugd_len;
+    logic [15:0] disp_tile_addr;
+    logic [4:0]  disp_col_start;
+    logic        disp_right;
     logic        disp_done;
 
-    // row_bram Write Interface (simulating DISPATCH operation)
-    // Four parallel write ports - all can write in same cycle
-    logic [8:0]    man_left_wr_addr;
-    logic [255:0]  man_left_wr_data;
-    logic          man_left_wr_en;
+    // row_bram write interface (4 parallel ports)
+    logic [8:0]   wr_man_left_addr,  wr_man_right_addr;
+    logic [255:0] wr_man_left_data,  wr_man_right_data;
+    logic         wr_man_left_en,    wr_man_right_en;
+    logic [8:0]   wr_exp_left_addr,  wr_exp_right_addr;
+    logic [7:0]   wr_exp_left_data,  wr_exp_right_data;
+    logic         wr_exp_left_en,    wr_exp_right_en;
 
-    logic [8:0]    man_right_wr_addr;
-    logic [255:0]  man_right_wr_data;
-    logic          man_right_wr_en;
-
-    logic [8:0]    left_exp_wr_addr;
-    logic [7:0]    left_exp_wr_data;
-    logic          left_exp_wr_en;
-
-    logic [8:0]    right_exp_wr_addr;
-    logic [7:0]    right_exp_wr_data;
-    logic          right_exp_wr_en;
-
-    // Result interface (256-bit = 16 × FP16)
-    logic [255:0] result_data_wide;  // MLP outputs 16 × FP16
-    logic [15:0]  result_data;       // First FP16 for quick checking
-    logic         result_valid_wide; // MLP result valid
-    logic         result_valid;      // Alias for result_valid_wide
-    logic        result_full;
-    logic        result_afull;
+    // Result interface
+    logic [255:0] result_data;
+    logic         result_valid;
+    logic         result_full;
+    logic         result_afull;
 
     // Debug interface
     logic [3:0]  ce_state;
-    logic [15:0] result_count;
+    logic [15:0] ce_result_count;
 
-    // Test control
-    integer test_num;
-    logic test_passed;
-    integer results_collected;
-    integer tests_run;
-    integer tests_skipped;
+    // =========================================================================
+    // Testbench Storage
+    // =========================================================================
+    // BRAM models (staging area before writing to DUT)
+    logic [255:0] tb_man_left  [0:511];
+    logic [255:0] tb_man_right [0:511];
+    logic [7:0]   tb_exp_left  [0:511];
+    logic [7:0]   tb_exp_right [0:511];
 
-    // BRAM models (mantissa storage)
-    logic [255:0] bram_left_mantissa [0:2047];
-    logic [255:0] bram_right_mantissa [0:2047];
+    // Result collection
+    logic [15:0] results_fp16 [0:16383];
+    logic [15:0] golden_fp16  [0:16383];
+    int          results_collected;
 
-    // Exponent models (separate from mantissa)
-    // NOTE: Exponents stored in GFP8E5 format (bias=15)
-    // RTL compute_engine_mlp.sv converts to GFP8E8 (bias=133) internally
-    logic [7:0] bram_left_exponent [0:511];
-    logic [7:0] bram_right_exponent [0:511];
+    // Test status
+    int     tests_run;
+    int     tests_passed;
+    logic   current_test_ok;
 
-    // Result collection (FP16 values)
-    logic [15:0] results_fp16 [0:16383];  // Up to 128×128 results
-    logic [15:0] golden_fp16 [0:16383];   // Golden reference
-
-    // ===================================================================
-    // Test Configuration Structure
-    // ===================================================================
-    typedef struct {
-        int B;
-        int C;
-        int V;
-        string name;
-    } test_config_t;
-
-    test_config_t test_configs[] = '{
-        // Basic test
-        '{B: 4, C: 4,  V: 4,  name: "B4_C4_V4"},
-        // 16-dispatch stress test: 16 × C=4 V=32 → C=64 total (4 column groups)
-        // Tests all 4 column groups with 16 right dispatches
-        '{B: 4, C: 64, V: 32, name: "B4_C64_V32_multi_dispatch"}
-    };
-
-    // ===================================================================
-    // DUT Instantiation - MLP Compute Engine
-    // ===================================================================
+    // =========================================================================
+    // DUT Instantiation
+    // =========================================================================
     compute_engine_mlp #(
-        .TILE_ID(0),
-        .MAN_WIDTH(256),
-        .EXP_WIDTH(8),
-        .BRAM_DEPTH(512),
-        .NUM_COLUMNS(16),
-        .NUM_MLPS(8)
+        .TILE_ID     (0),
+        .MAN_WIDTH   (256),
+        .EXP_WIDTH   (8),
+        .BRAM_DEPTH  (512),
+        .NUM_COLUMNS (16),
+        .NUM_MLPS    (8)
     ) dut (
-        .i_clk                  (clk),
-        .i_reset_n              (reset_n),
+        .i_clk                      (clk),
+        .i_reset_n                  (reset_n),
+
+        // DISPATCH command
+        .i_disp_start               (disp_start),
+        .i_disp_man_nv_cnt          (disp_right_ugd_len * disp_ugd_vec_size),
+        .i_disp_ugd_vec_size        (disp_ugd_vec_size),
+        .i_disp_tile_addr           (disp_tile_addr),
+        .i_disp_man_4b              (1'b0),
+        .i_disp_col_en              (24'h00_FFFF),
+        .i_disp_col_start           (disp_col_start),
+        .i_disp_right               (disp_right),
+        .i_disp_broadcast           (1'b0),
+        .o_disp_done                (disp_done),
 
         // TILE command
-        .i_tile_en              (tile_en),
-        .i_tile_start           (tile_start),
-        .i_disp_start           (disp_start),
-        .i_disp_man_nv_cnt      (disp_right_ugd_len * disp_ugd_vec_size),  // Total NVs = C * V
-        .i_disp_ugd_vec_size    (disp_ugd_vec_size),
-        .i_disp_tile_addr       (disp_right_addr),
-        .i_disp_man_4b          (1'b0),
-        // DISPATCH distribution (MLP mode): default to "all columns enabled, start at 0, distribute"
-        .i_disp_col_en          (24'h00_FFFF),
-        .i_disp_col_start       (disp_col_start),
-        .i_disp_right           (disp_right),           // 1=RIGHT (process weights)
-        .i_disp_broadcast       (1'b0),
-        .i_tile_left_addr       (left_addr),
-        .i_tile_right_addr      (right_addr),
-        .i_tile_left_ugd_len    (left_ugd_len),
-        .i_tile_right_ugd_len   (right_ugd_len),
-        .i_tile_vec_len         (vec_len),
-        .i_tile_left_man_4b     (left_man_4b),
-        .i_tile_right_man_4b    (right_man_4b),
-        .i_tile_main_loop_over_left (main_loop_over_left),
-        .i_mc_tile_en           (mc_tile_en),
-        .o_tile_done            (tile_done),
-        .o_disp_done            (disp_done),
+        .i_tile_en                  (tile_en),
+        .i_tile_start               (tile_start),
+        .i_tile_left_addr           (tile_left_addr),
+        .i_tile_right_addr          (tile_right_addr),
+        .i_tile_left_ugd_len        (tile_left_ugd_len),
+        .i_tile_right_ugd_len       (tile_right_ugd_len),
+        .i_tile_vec_len             (tile_vec_len),
+        .i_tile_left_man_4b         (tile_left_man_4b),
+        .i_tile_right_man_4b        (tile_right_man_4b),
+        .i_tile_main_loop_over_left (tile_main_loop_over_left),
+        .i_mc_tile_en               (tile_mc_en),
+        .o_tile_done                (tile_done),
 
-        // Write Interface
-        .i_man_left_wr_addr     (man_left_wr_addr),
-        .i_man_left_wr_data     (man_left_wr_data),
-        .i_man_left_wr_en       (man_left_wr_en),
+        // row_bram write ports
+        .i_man_left_wr_addr         (wr_man_left_addr),
+        .i_man_left_wr_data         (wr_man_left_data),
+        .i_man_left_wr_en           (wr_man_left_en),
+        .i_man_right_wr_addr        (wr_man_right_addr),
+        .i_man_right_wr_data        (wr_man_right_data),
+        .i_man_right_wr_en          (wr_man_right_en),
+        .i_exp_left_wr_addr         (wr_exp_left_addr),
+        .i_exp_left_wr_data         (wr_exp_left_data),
+        .i_exp_left_wr_en           (wr_exp_left_en),
+        .i_exp_right_wr_addr        (wr_exp_right_addr),
+        .i_exp_right_wr_data        (wr_exp_right_data),
+        .i_exp_right_wr_en          (wr_exp_right_en),
 
-        .i_man_right_wr_addr    (man_right_wr_addr),
-        .i_man_right_wr_data    (man_right_wr_data),
-        .i_man_right_wr_en      (man_right_wr_en),
-
-        .i_exp_left_wr_addr     (left_exp_wr_addr),
-        .i_exp_left_wr_data     (left_exp_wr_data),
-        .i_exp_left_wr_en       (left_exp_wr_en),
-
-        .i_exp_right_wr_addr    (right_exp_wr_addr),
-        .i_exp_right_wr_data    (right_exp_wr_data),
-        .i_exp_right_wr_en      (right_exp_wr_en),
-
-        // Result interface (256-bit = 16 × FP16)
-        .o_result_data          (result_data_wide),
-        .o_result_valid         (result_valid_wide),
-        .i_result_full          (result_full),
-        .i_result_afull         (result_afull),
+        // Result interface
+        .o_result_data              (result_data),
+        .o_result_valid             (result_valid),
+        .i_result_full              (result_full),
+        .i_result_afull             (result_afull),
 
         // Debug
-        .o_ce_state             (ce_state),
-        .o_result_count         (result_count)
+        .o_ce_state                 (ce_state),
+        .o_result_count             (ce_result_count)
     );
 
-    // ===================================================================
-    // Clock Generation
-    // ===================================================================
-    initial begin
-        clk = 0;
-        forever #5 clk = ~clk;  // 100MHz clock
-    end
-
-    // ===================================================================
-    // Write Enable Initialization
-    // ===================================================================
-    initial begin
-        man_left_wr_en = 1'b0;
-        man_right_wr_en = 1'b0;
-        left_exp_wr_en = 1'b0;
-        right_exp_wr_en = 1'b0;
-    end
-
-    // ===================================================================
-    // Result FIFO Backpressure Model (simple, no backpressure)
-    // ===================================================================
-    assign result_full = 1'b0;
+    // No backpressure
+    assign result_full  = 1'b0;
     assign result_afull = 1'b0;
 
-    // ===================================================================
-    // Result Collection (256-bit → 16 × 16-bit)
-    // When result_valid_wide pulses, extract all 16 FP16 values
-    // ===================================================================
-    always @(posedge clk) begin
-        if (result_valid_wide && !result_full) begin
-            // Extract all 16 FP16 values from the 256-bit result
+    // =========================================================================
+    // Clock Generation
+    // =========================================================================
+    initial begin
+        clk = 0;
+        forever #(CLK_PERIOD_NS/2) clk = ~clk;
+    end
+
+    // =========================================================================
+    // Result Collection (always running)
+    // =========================================================================
+    always_ff @(posedge clk) begin
+        if (result_valid && !result_full) begin
             for (int i = 0; i < 16; i++) begin
-                results_fp16[results_collected + i] = result_data_wide[i*16 +: 16];
+                results_fp16[results_collected + i] = result_data[i*16 +: 16];
             end
-            $display("  [%0t] Result pulse: 16 FP16 values starting at index %0d, first=0x%04x",
-                     $time, results_collected, result_data_wide[15:0]);
+            $display("  [%0t] Result pulse %0d: first=0x%04x",
+                     $time, results_collected/16, result_data[15:0]);
             results_collected = results_collected + 16;
         end
     end
 
-    // For compatibility, derive single-value signals
-    assign result_data = result_data_wide[15:0];
-    assign result_valid = result_valid_wide;
-
-    // ===================================================================
-    // Helper Task: Initialize BRAM with Simple Pattern
-    // ===================================================================
-    task init_bram_simple();
-        $display("  Initializing BRAM with simple pattern (all 1s)...");
-
-        // Exponents (all 15 = bias for GFP8E5)
-        // Note: RTL converts to E8 format internally
-        for (int i = 0; i < 512; i++) begin
-            bram_left_exponent[i] = 8'd15;
-            bram_right_exponent[i] = 8'd15;
-        end
-
-        // Mantissas (all 1s)
-        for (int i = 0; i < 2048; i++) begin
-            bram_left_mantissa[i] = {32{8'sd1}};
-            bram_right_mantissa[i] = {32{8'sd1}};
-        end
-    endtask
-
-    // ===================================================================
-    // Helper Task: Simulate DISPATCH - Write Data to row_bram
-    // ===================================================================
-    task dispatch_to_tile_bram(input integer num_lines);
-        integer i;
-
-        $display("  Dispatching %0d lines to row_bram (base addr 0)...", num_lines);
-
-        // Write data in parallel (mantissa + exponent, left + right)
-        // Four parallel writes per cycle, simulating DISPATCH operation
-        for (i = 0; i < num_lines; i++) begin
-            @(posedge clk);
-
-            // Left mantissa write
-            man_left_wr_addr <= i[8:0];
-            man_left_wr_data <= bram_left_mantissa[i];
-            man_left_wr_en <= 1'b1;
-
-            // Right mantissa write
-            man_right_wr_addr <= i[8:0];
-            man_right_wr_data <= bram_right_mantissa[i];
-            man_right_wr_en <= 1'b1;
-
-            // Left exponent write (raw GFP8E5 - RTL converts internally)
-            left_exp_wr_addr <= i[8:0];
-            left_exp_wr_data <= bram_left_exponent[i];
-            left_exp_wr_en <= 1'b1;
-
-            // Right exponent write (raw GFP8E5 - RTL converts internally)
-            right_exp_wr_addr <= i[8:0];
-            right_exp_wr_data <= bram_right_exponent[i];
-            right_exp_wr_en <= 1'b1;
-        end
-
-        // Disable all write enables
-        @(posedge clk);
-        man_left_wr_en <= 1'b0;
-        man_right_wr_en <= 1'b0;
-        left_exp_wr_en <= 1'b0;
-        right_exp_wr_en <= 1'b0;
-
-        $display("  DISPATCH complete: %0d lines written", num_lines);
-    endtask
-
-    // ===================================================================
-    // Helper Task: Simulate FETCH (load data into row_bram)
-    // In real hardware, FETCH loads data from DDR into row_bram.
-    // This task simulates that by directly writing hex data to row_bram.
-    // ===================================================================
-    task simulate_fetch_to_row_bram(
-        input integer num_lines
+    // =========================================================================
+    // File I/O: Parse Hex Line (32 space-separated bytes)
+    // =========================================================================
+    function automatic int parse_hex_line(
+        input string line_str,
+        output logic [7:0] bytes[32]
     );
-        integer i;
+        return $sscanf(line_str,
+            "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+            bytes[0],  bytes[1],  bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
+            bytes[8],  bytes[9],  bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+            bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
+            bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31]);
+    endfunction
 
-        $display("  FETCH: Loading %0d lines to row_bram (left+right at offset 0)...", num_lines);
-
-        // Write data in parallel (mantissa + exponent, left + right)
-        // Always write to offset 0 - DISPATCH reads from offset 0 per spec
-        for (i = 0; i < num_lines; i++) begin
-            @(posedge clk);
-
-            // Left mantissa write
-            man_left_wr_addr <= i;
-            man_left_wr_data <= bram_left_mantissa[i];
-            man_left_wr_en <= 1'b1;
-
-            // Right mantissa write
-            man_right_wr_addr <= i;
-            man_right_wr_data <= bram_right_mantissa[i];
-            man_right_wr_en <= 1'b1;
-
-            // Left exponent write
-            left_exp_wr_addr <= i;
-            left_exp_wr_data <= bram_left_exponent[i];
-            left_exp_wr_en <= 1'b1;
-
-            // Right exponent write
-            right_exp_wr_addr <= i;
-            right_exp_wr_data <= bram_right_exponent[i];
-            right_exp_wr_en <= 1'b1;
-        end
-
-        // Disable all write enables
-        @(posedge clk);
-        man_left_wr_en <= 1'b0;
-        man_right_wr_en <= 1'b0;
-        left_exp_wr_en <= 1'b0;
-        right_exp_wr_en <= 1'b0;
-
-        $display("  FETCH complete: %0d lines loaded to row_bram", num_lines);
-    endtask
-
-    // ===================================================================
-    // Helper Task: DISPATCH RIGHT (row_bram → MLP BRAM weight load)
-    // Moves weight data from row_bram (right side) to MLP BRAM.
-    // In MLP-mode, TILE is compute-only and assumes weights are pre-loaded.
-    // ===================================================================
-    task automatic simulate_dispatch_right(
-        input logic [7:0]  c,
-        input logic [7:0]  v,
-        input logic [15:0] tile_addr,
-        input logic [4:0]  col_start
+    // =========================================================================
+    // File I/O: Load Matrix from Hex File
+    // Format: Lines 0-15 = packed exponents, Lines 16-527 = mantissas
+    // =========================================================================
+    task automatic load_matrix_hex(
+        input  string       filename,
+        output logic [255:0] man_out[512],
+        output logic [7:0]   exp_out[512]
     );
-        $display("  DISPATCH RIGHT: C=%0d, V=%0d, tile_addr=%0d, col_start=%0d (row_bram[0] → MLP BRAM[%0d])", 
-                 c, v, tile_addr, col_start, tile_addr);
-        @(posedge clk);
-        disp_right_ugd_len <= c;
-        disp_ugd_vec_size  <= v;
-        disp_right_addr    <= tile_addr;
-        disp_col_start     <= col_start;
-        disp_right         <= 1'b1;  // This is DISPATCH RIGHT (weights)
-        disp_start         <= 1'b1;
-        @(posedge clk);
-        disp_start         <= 1'b0;
-        
-        // Wait one cycle for disp_done to be cleared by RTL (NBA timing)
-        @(posedge clk);
-
-        // Wait for DISPATCH done
-        while (!disp_done) @(posedge clk);
-        // Deasserting disp_done is DUT-controlled; add a small gap for safety
-        repeat (2) @(posedge clk);
-        disp_right         <= 1'b0;  // Reset after dispatch
-        $display("  DISPATCH RIGHT complete");
-    endtask
-
-    // ===================================================================
-    // Helper Task: FETCH + DISPATCH pair
-    // This is the canonical sequence: FETCH loads data, DISPATCH distributes it.
-    // ===================================================================
-    task automatic fetch_dispatch_pair(
-        input integer num_lines,
-        input logic [7:0] c,
-        input logic [7:0] v,
-        input logic [15:0] tile_addr,
-        input logic [4:0]  col_start
-    );
-        $display("  === FETCH + DISPATCH pair ===");
-        simulate_fetch_to_row_bram(num_lines);
-        simulate_dispatch_right(c, v, tile_addr, col_start);
-        $display("  === FETCH + DISPATCH complete ===");
-    endtask
-
-    // ===================================================================
-    // Helper Task: Load BRAM from Hex Files
-    // Exponents are stored in GFP8E5 format - RTL converts to E8 internally
-    // ===================================================================
-    task load_bram_from_hex();
-        integer fd_left, fd_right;
+        int fd, line_idx;
         string line_str;
-        integer line_idx, byte_idx, exp_idx;
-        logic [7:0] hex_bytes[0:31];
-        integer scan_result;
+        logic [7:0] bytes[32];
 
-        $display("  Loading BRAM from hex files...");
-
-        // Load left matrix
-        fd_left = $fopen("../../../hex/left.hex", "r");
-        if (fd_left == 0) begin
-            $display("  ERROR: Cannot open ../../../hex/left.hex");
-            return;
-        end
-
-        line_idx = 0;
-        while (!$feof(fd_left) && line_idx < 528) begin
-            if ($fgets(line_str, fd_left)) begin
-                // Parse 32 space-separated hex bytes
-                scan_result = $sscanf(line_str,
-                    "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
-                    hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
-                    hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
-                    hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
-                    hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
-                    hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
-                    hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
-                    hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
-                    hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
-
-                if (scan_result == 32) begin
-                    // Lines 0-15: Exponents (store raw GFP8E5)
-                    if (line_idx < 16) begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            exp_idx = line_idx * 32 + byte_idx;
-                            // Store raw E5 format - RTL converts to E8 internally
-                            bram_left_exponent[exp_idx] = hex_bytes[byte_idx];
-                        end
-                    end
-                    // Lines 16-527: Mantissas (stored at BRAM addresses 0-511)
-                    else begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            bram_left_mantissa[line_idx - 16][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
-                        end
-                    end
-                end
-                line_idx++;
-            end
-        end
-        $fclose(fd_left);
-        $display("  Loaded %0d lines from left.hex", line_idx);
-
-        // Load right matrix
-        fd_right = $fopen("../../../hex/right.hex", "r");
-        if (fd_right == 0) begin
-            $display("  ERROR: Cannot open ../../../hex/right.hex");
-            return;
-        end
-
-        line_idx = 0;
-        while (!$feof(fd_right) && line_idx < 528) begin
-            if ($fgets(line_str, fd_right)) begin
-                scan_result = $sscanf(line_str,
-                    "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
-                    hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
-                    hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
-                    hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
-                    hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
-                    hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
-                    hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
-                    hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
-                    hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
-
-                if (scan_result == 32) begin
-                    if (line_idx < 16) begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            exp_idx = line_idx * 32 + byte_idx;
-                            // Store raw E5 format - RTL converts to E8 internally
-                            bram_right_exponent[exp_idx] = hex_bytes[byte_idx];
-                        end
-                    end
-                    else begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            bram_right_mantissa[line_idx - 16][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
-                        end
-                    end
-                end
-                line_idx++;
-            end
-        end
-        $fclose(fd_right);
-        $display("  Loaded %0d lines from right.hex", line_idx);
-    endtask
-
-    // ===================================================================
-    // Helper Task: Load Specific Right Matrix File (for multi-dispatch)
-    // ===================================================================
-    task load_right_matrix_file(input integer file_idx);
-        integer fd_right;
-        string line_str, filename;
-        integer line_idx, byte_idx, exp_idx;
-        logic [7:0] hex_bytes[0:31];
-        integer scan_result;
-
-        filename = $sformatf("../../../hex/right_%0d.hex", file_idx);
-        $display("  Loading right matrix from %s...", filename);
-
-        fd_right = $fopen(filename, "r");
-        if (fd_right == 0) begin
+        fd = $fopen(filename, "r");
+        if (fd == 0) begin
             $display("  ERROR: Cannot open %s", filename);
             return;
         end
 
         line_idx = 0;
-        while (!$feof(fd_right) && line_idx < 528) begin
-            if ($fgets(line_str, fd_right)) begin
-                scan_result = $sscanf(line_str,
-                    "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
-                    hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
-                    hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
-                    hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
-                    hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
-                    hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
-                    hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
-                    hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
-                    hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
-
-                if (scan_result == 32) begin
-                    if (line_idx < 16) begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            exp_idx = line_idx * 32 + byte_idx;
-                            bram_right_exponent[exp_idx] = hex_bytes[byte_idx];
-                        end
+        while (!$feof(fd) && line_idx < 528) begin
+            if ($fgets(line_str, fd) && parse_hex_line(line_str, bytes) == 32) begin
+                if (line_idx < 16) begin
+                    // Lines 0-15: Packed exponents (32 per line)
+                    for (int b = 0; b < 32; b++) begin
+                        exp_out[line_idx * 32 + b] = bytes[b];
                     end
-                    else begin
-                        for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
-                            bram_right_mantissa[line_idx - 16][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
-                        end
+                end else begin
+                    // Lines 16-527: Mantissas (pack 32 bytes into 256-bit)
+                    for (int b = 0; b < 32; b++) begin
+                        man_out[line_idx - 16][b*8 +: 8] = bytes[b];
                     end
                 end
                 line_idx++;
             end
         end
-        $fclose(fd_right);
+        $fclose(fd);
         $display("  Loaded %0d lines from %s", line_idx, filename);
     endtask
 
-    // ===================================================================
-    // Helper Task: Load Golden Reference
-    // ===================================================================
-    task load_golden_reference(input string filename, input integer expected_count);
-        integer file_handle;
-        integer scan_result;
-        integer idx;
+    // =========================================================================
+    // File I/O: Load Golden Reference (one FP16 hex value per line)
+    // =========================================================================
+    task automatic load_golden_hex(
+        input  string filename,
+        input  int    expected_count,
+        input  int    offset
+    );
+        int fd, idx, scan_result;
+        logic [15:0] val;
 
-        $display("  Loading golden reference: %s", filename);
-
-        file_handle = $fopen(filename, "r");
-        if (file_handle == 0) begin
-            $display("  ERROR: Cannot open golden file: %s", filename);
-            test_passed = 0;
+        fd = $fopen(filename, "r");
+        if (fd == 0) begin
+            $display("  ERROR: Cannot open golden file %s", filename);
+            current_test_ok = 0;
             return;
         end
 
         idx = 0;
-        while (!$feof(file_handle) && idx < expected_count) begin
-            scan_result = $fscanf(file_handle, "%h\n", golden_fp16[idx]);
-            if (scan_result == 1) idx++;
+        while (!$feof(fd) && idx < expected_count) begin
+            scan_result = $fscanf(fd, "%h\n", val);
+            if (scan_result == 1) begin
+                golden_fp16[offset + idx] = val;
+                idx++;
+            end
         end
-        $fclose(file_handle);
+        $fclose(fd);
 
-        $display("  Loaded %0d golden FP16 values", idx);
-
-        if (idx != expected_count) begin
-            $display("  WARNING: Expected %0d values, got %0d", expected_count, idx);
-        end
+        if (idx != expected_count)
+            $display("  WARNING: Expected %0d golden values, got %0d", expected_count, idx);
     endtask
 
-    // ===================================================================
-    // Helper Task: Send TILE Command
-    // ===================================================================
-    task send_tile_command(
-        input logic [7:0] b,
-        input logic [7:0] c,
-        input logic [7:0] v
+    // =========================================================================
+    // Data Movement: Write TB BRAM to DUT row_bram
+    // =========================================================================
+    task automatic write_row_bram(input int num_lines);
+        $display("  Writing %0d lines to row_bram...", num_lines);
+
+        for (int i = 0; i < num_lines; i++) begin
+            @(posedge clk);
+            // Left side
+            wr_man_left_addr <= i[8:0];
+            wr_man_left_data <= tb_man_left[i];
+            wr_man_left_en   <= 1'b1;
+            wr_exp_left_addr <= i[8:0];
+            wr_exp_left_data <= tb_exp_left[i];
+            wr_exp_left_en   <= 1'b1;
+            // Right side
+            wr_man_right_addr <= i[8:0];
+            wr_man_right_data <= tb_man_right[i];
+            wr_man_right_en   <= 1'b1;
+            wr_exp_right_addr <= i[8:0];
+            wr_exp_right_data <= tb_exp_right[i];
+            wr_exp_right_en   <= 1'b1;
+        end
+
+        @(posedge clk);
+        wr_man_left_en  <= 1'b0;
+        wr_man_right_en <= 1'b0;
+        wr_exp_left_en  <= 1'b0;
+        wr_exp_right_en <= 1'b0;
+    endtask
+
+    // =========================================================================
+    // Command: DISPATCH RIGHT (row_bram → MLP BRAM)
+    // =========================================================================
+    task automatic cmd_dispatch_right(
+        input logic [7:0]  c,           // Number of columns in this dispatch
+        input logic [7:0]  v,           // NVs per column
+        input logic [15:0] tile_addr,   // Write base address in MLP BRAM
+        input logic [4:0]  col_start    // Starting column for distribution
     );
-        $display("  Sending TILE command: B=%0d, C=%0d, V=%0d", b, c, v);
+        $display("  DISPATCH RIGHT: C=%0d, V=%0d, tile_addr=%0d, col_start=%0d",
+                 c, v, tile_addr, col_start);
+
         @(posedge clk);
-        // Setup command parameters (tile_en stays HIGH as static enable)
-        tile_en <= 1'b1;          // Static enable - keep HIGH
-        left_addr <= 16'd0;
-        right_addr <= 16'd0;
-        left_ugd_len <= b;        // dim_b (Batch dimension)
-        right_ugd_len <= c;       // dim_c (Column dimension)
-        vec_len <= v;             // dim_v (Vector size)
-        left_man_4b <= 1'b0;
-        right_man_4b <= 1'b0;
-        main_loop_over_left <= 1'b0;
-        mc_tile_en <= 24'h000001; // Single tile enabled (tile 0)
+        disp_right_ugd_len <= c;
+        disp_ugd_vec_size  <= v;
+        disp_tile_addr     <= tile_addr;
+        disp_col_start     <= col_start;
+        disp_right         <= 1'b1;
+        disp_start         <= 1'b1;
+
         @(posedge clk);
-        // Pulse tile_start to trigger computation
-        tile_start <= 1'b1;
-        @(posedge clk);
-        tile_start <= 1'b0;
+        disp_start <= 1'b0;
+
+        // Wait for done
+        @(posedge clk);  // Allow disp_done to clear
+        while (!disp_done) @(posedge clk);
+        repeat (2) @(posedge clk);
+        disp_right <= 1'b0;
     endtask
 
-    // ===================================================================
-    // Helper Task: Send TILE Command with Base Addresses
-    // ===================================================================
-    task send_tile_command_with_addr(
+    // =========================================================================
+    // Command: TILE (Compute MATMUL)
+    // =========================================================================
+    task automatic cmd_tile(
         input logic [7:0]  b,
         input logic [7:0]  c,
         input logic [7:0]  v,
-        input logic [15:0] addr_left,
-        input logic [15:0] addr_right
+        input logic [15:0] left_addr  = 16'd0,
+        input logic [15:0] right_addr = 16'd0
     );
-        $display("  Sending TILE command: B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d",
-                 b, c, v, addr_left, addr_right);
+        $display("  TILE: B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d",
+                 b, c, v, left_addr, right_addr);
+
         @(posedge clk);
-        // Setup command parameters
-        tile_en <= 1'b1;
-        left_addr <= addr_left;
-        right_addr <= addr_right;
-        left_ugd_len <= b;
-        right_ugd_len <= c;
-        vec_len <= v;
-        left_man_4b <= 1'b0;
-        right_man_4b <= 1'b0;
-        main_loop_over_left <= 1'b0;
-        mc_tile_en <= 24'h000001;
+        tile_en                 <= 1'b1;
+        tile_left_addr          <= left_addr;
+        tile_right_addr         <= right_addr;
+        tile_left_ugd_len       <= b;
+        tile_right_ugd_len      <= c;
+        tile_vec_len            <= v;
+        tile_left_man_4b        <= 1'b0;
+        tile_right_man_4b       <= 1'b0;
+        tile_main_loop_over_left <= 1'b0;
+        tile_mc_en              <= 24'h000001;
+
         @(posedge clk);
-        // Pulse tile_start
         tile_start <= 1'b1;
         @(posedge clk);
         tile_start <= 1'b0;
     endtask
 
-    // ===================================================================
-    // Helper Task: Wait for TILE Done
-    // ===================================================================
-    task wait_tile_done(input integer timeout_cycles);
-        integer cycle_count;
-        cycle_count = 0;
+    // =========================================================================
+    // Command: Wait for TILE completion
+    // =========================================================================
+    task automatic wait_tile_done(input int timeout_cycles);
+        int cycles = 0;
 
-        $display("  Waiting for TILE completion...");
-        while (!tile_done && cycle_count < timeout_cycles) begin
+        while (!tile_done && cycles < timeout_cycles) begin
             @(posedge clk);
-            cycle_count++;
+            cycles++;
         end
 
         if (tile_done) begin
-            $display("  TILE completed in %0d cycles", cycle_count);
+            $display("  TILE completed in %0d cycles", cycles);
         end else begin
             $display("  ERROR: TILE timeout after %0d cycles", timeout_cycles);
-            test_passed = 0;
+            current_test_ok = 0;
         end
 
-        // Wait additional cycles for final results
-        repeat(10) @(posedge clk);
+        repeat (10) @(posedge clk);  // Allow final results to propagate
     endtask
 
-    // ===================================================================
-    // Helper Task: Validate FP16 Results with Reordering for C>16
-    // Hardware outputs: Batch-major (all groups for batch 0, then batch 1, ...)
-    //   Output order: [b0g0, b0g1, b0g2, b0g3, b1g0, b1g1, ...] (C inner, B outer)
-    // Golden expects: Batch-major (batch 0 all cols, batch 1 all cols, ...)
-    // ===================================================================
-    task validate_fp16_results_bcv(input integer B, input integer C, input integer V);
-        integer expected_count;
-        integer expected_hw_count;
-        integer num_col_groups;
-        integer mismatches;
-        integer exact_matches;
-        integer close_matches;
-        integer diff;
-        integer golden_idx, batch_idx, col_idx, group_idx, col_within_group, pulse_idx, hw_idx;
+    // =========================================================================
+    // Validation: Compare results against golden reference
+    // =========================================================================
+    task automatic validate_results(
+        input int B,
+        input int C,
+        input int V
+    );
+        int expected_count, expected_hw_count, num_groups;
+        int mismatches, exact_matches, close_matches;
+        int batch_idx, col_idx, group_idx, col_in_group, pulse_idx, hw_idx, diff;
         logic [15:0] hw_val, golden_val;
-        // Match software test tolerance (32 LSB - relaxed)
-        localparam int ABS_TOL = 32;    // 32 LSB tolerance (relaxed for testing)
 
         expected_count = B * C;
-        num_col_groups = (C + 15) / 16;  // Ceiling division
-        expected_hw_count = B * num_col_groups * 16; // Hardware always outputs 16 cols per group
+        num_groups = (C + 15) / 16;
+        expected_hw_count = B * num_groups * 16;
 
-        $display("  Validating %0d FP16 results (B=%0d, C=%0d, groups=%0d, tolerance=%0d LSB)...",
-                 expected_count, B, C, num_col_groups, ABS_TOL);
+        $display("  Validating %0d results (B=%0d, C=%0d, groups=%0d, tol=%0d LSB)...",
+                 expected_count, B, C, num_groups, ABS_TOLERANCE);
 
         if (results_collected != expected_hw_count) begin
-            $display("  [FAIL] Expected %0d HW results (B*groups*16), got %0d",
+            $display("  [FAIL] Expected %0d HW results, got %0d",
                      expected_hw_count, results_collected);
-            test_passed = 0;
+            current_test_ok = 0;
             return;
         end
 
@@ -702,27 +449,18 @@ module tb_compute_engine_mlp;
         exact_matches = 0;
         close_matches = 0;
 
-        // Compare with reordering for C>16
-        // NEW: Hardware outputs batch-major (all groups for batch0, then batch1, ...)
-        // This matches golden file order: batch0 cols 0..C-1, batch1 cols 0..C-1, ...
-        for (golden_idx = 0; golden_idx < expected_count; golden_idx++) begin
+        for (int golden_idx = 0; golden_idx < expected_count; golden_idx++) begin
             golden_val = golden_fp16[golden_idx];
+            batch_idx  = golden_idx / C;
+            col_idx    = golden_idx % C;
 
-            // Map golden index (batch-major, C columns per batch) to hardware output index.
-            // Hardware always outputs 16 columns per group (even when C < 16), so for single-group
-            // cases we must stride by 16 per batch.
-            batch_idx = golden_idx / C;
-            col_idx   = golden_idx % C;
-
-            if (num_col_groups > 1) begin
-                // Multi-group: batch-major pulses (all groups for batch0, then batch1, ...)
-                // NEW: pulse_idx = batch * num_groups + group (was: group * B + batch)
-                group_idx        = col_idx / 16;
-                col_within_group = col_idx % 16;
-                pulse_idx        = batch_idx * num_col_groups + group_idx;
-                hw_idx           = pulse_idx * 16 + col_within_group;
+            // Map golden index to hardware output index
+            if (num_groups > 1) begin
+                group_idx    = col_idx / 16;
+                col_in_group = col_idx % 16;
+                pulse_idx    = batch_idx * num_groups + group_idx;
+                hw_idx       = pulse_idx * 16 + col_in_group;
             end else begin
-                // Single group: one pulse per batch, 16 columns per pulse
                 hw_idx = batch_idx * 16 + col_idx;
             end
 
@@ -731,220 +469,243 @@ module tb_compute_engine_mlp;
 
             if (diff == 0) begin
                 exact_matches++;
-            end else if (diff <= ABS_TOL) begin
+            end else if (diff <= ABS_TOLERANCE) begin
                 close_matches++;
             end else begin
-                // Mismatch - show first 10
-                if (mismatches < 10) begin
-                    $display("    MISMATCH[%0d→hw%0d]: hw=0x%04x golden=0x%04x diff=%0d LSB",
+                if (mismatches < 10)
+                    $display("    MISMATCH[%0d→hw%0d]: hw=0x%04x golden=0x%04x diff=%0d",
                              golden_idx, hw_idx, hw_val, golden_val, diff);
-                end
                 mismatches++;
             end
         end
 
-        $display("  Validation: %0d/%0d within tolerance (%0d exact, %0d within %0d LSB)",
-                 exact_matches + close_matches, expected_count, exact_matches, close_matches, ABS_TOL);
+        $display("  Validation: %0d/%0d within tolerance (%0d exact, %0d close)",
+                 exact_matches + close_matches, expected_count, exact_matches, close_matches);
 
         if (mismatches == 0) begin
             $display("  [PASS] All results within tolerance!\n");
         end else begin
-            $display("  [FAIL] %0d mismatches (diff > %0d LSB)\n", mismatches, ABS_TOL);
-            test_passed = 0;
+            $display("  [FAIL] %0d mismatches (diff > %0d LSB)\n", mismatches, ABS_TOLERANCE);
+            current_test_ok = 0;
         end
     endtask
 
-    // ===================================================================
-    // Test Stimulus
-    // ===================================================================
-    initial begin
-        // Initialize
-        reset_n = 0;
-        tile_en = 0;
-        tile_start = 0;
-        disp_start = 0;
-        disp_ugd_vec_size = 8'd0;
-        disp_right_ugd_len = 8'd0;
-        disp_right_addr = 16'd0;
-        disp_col_start = 5'd0;
-        disp_right = 0;
-        left_addr = 16'd0;
-        right_addr = 16'd0;
-        left_ugd_len = 8'd0;
-        right_ugd_len = 8'd0;
-        vec_len = 8'd0;
-        left_man_4b = 1'b0;
-        right_man_4b = 1'b0;
-        main_loop_over_left = 1'b0;
-        mc_tile_en = 24'h000001;  // Single tile enabled
-        test_num = 0;
-        test_passed = 1;
+    // =========================================================================
+    // Test Execution: Single-Dispatch Test
+    // =========================================================================
+    task automatic run_single_dispatch_test(input test_config_t cfg);
+        int num_lines;
+        string golden_file;
+
+        // Load golden reference
+        golden_file = $sformatf("%sgolden_%s.hex", HEX_PATH, cfg.name);
+        load_golden_hex(golden_file, cfg.B * cfg.C, 0);
+
+        // Calculate lines to transfer: C * V * 4 (4 lines per NV)
+        num_lines = cfg.C * cfg.V * 4;
+
+        // FETCH: Load hex data to TB BRAM, write to DUT row_bram
+        write_row_bram(num_lines);
+
+        // DISPATCH RIGHT: Move weights from row_bram to MLP BRAM
+        cmd_dispatch_right(cfg.C, cfg.V, 16'd0, 5'd0);
+
+        // TILE: Execute MATMUL
+        cmd_tile(cfg.B, cfg.C, cfg.V);
+
+        // Wait and validate
+        wait_tile_done(500000);
+        validate_results(cfg.B, cfg.C, cfg.V);
+    endtask
+
+    // =========================================================================
+    // Test Execution: Multi-Dispatch Test
+    // =========================================================================
+    task automatic run_multi_dispatch_test(input test_config_t cfg);
+        int num_groups, dispatches_total, cols_per_dispatch;
+        int group_idx, col_start_val, tile_addr_val;
+        int num_lines, d, b, c_idx, idx, global_col;
+        int fd, scan_result;
+        string right_file, golden_file;
+        logic [15:0] seg_golden[16];
+
+        num_groups = (cfg.C + 15) / 16;
+        dispatches_total = num_groups * cfg.dispatches_per_group;
+        cols_per_dispatch = 16 / cfg.dispatches_per_group;
+
+        $display("  Multi-dispatch: %0d dispatches (%0d groups × %0d per group)",
+                 dispatches_total, num_groups, cfg.dispatches_per_group);
+
+        // Load golden references (one per dispatch, then assemble)
+        for (d = 0; d < dispatches_total; d++) begin
+            golden_file = $sformatf("%sgolden_B%0d_C%0d_V%0d_%0d.hex",
+                                    HEX_PATH, cfg.B, cols_per_dispatch, cfg.V, d);
+
+            fd = $fopen(golden_file, "r");
+            if (fd == 0) begin
+                $display("  ERROR: Cannot open %s", golden_file);
+                current_test_ok = 0;
+                return;
+            end
+
+            // Read this dispatch's golden values
+            idx = 0;
+            while (!$feof(fd) && idx < cfg.B * cols_per_dispatch) begin
+                scan_result = $fscanf(fd, "%h\n", seg_golden[idx]);
+                if (scan_result == 1) idx++;
+            end
+            $fclose(fd);
+
+            // Map to full golden array (batch-major order)
+            for (b = 0; b < cfg.B; b++) begin
+                for (c_idx = 0; c_idx < cols_per_dispatch; c_idx++) begin
+                    global_col = d * cols_per_dispatch + c_idx;
+                    golden_fp16[b * cfg.C + global_col] = seg_golden[b * cols_per_dispatch + c_idx];
+                end
+            end
+        end
+        $display("  Loaded %0d golden files (%0d total results)", dispatches_total, cfg.B * cfg.C);
+
+        // Execute dispatch sequence
+        for (d = 0; d < dispatches_total; d++) begin
+            group_idx     = d / cfg.dispatches_per_group;
+            col_start_val = (d % cfg.dispatches_per_group) * cols_per_dispatch;
+            tile_addr_val = group_idx * cfg.V * 8;
+
+            $display("  Dispatch %0d/%0d: col_start=%0d, tile_addr=%0d (group %0d)",
+                     d + 1, dispatches_total, col_start_val, tile_addr_val, group_idx);
+
+            // Load right matrix for this dispatch
+            right_file = $sformatf("%sright_%0d.hex", HEX_PATH, d);
+            load_matrix_hex(right_file, tb_man_right, tb_exp_right);
+
+            // Write to row_bram and dispatch
+            num_lines = cols_per_dispatch * cfg.V * 4;
+            write_row_bram(num_lines);
+            cmd_dispatch_right(cols_per_dispatch, cfg.V, tile_addr_val[15:0], col_start_val[4:0]);
+        end
+
+        $display("  All %0d dispatches complete", dispatches_total);
+
+        // TILE: Execute full MATMUL
+        cmd_tile(cfg.B, cfg.C, cfg.V);
+
+        // Wait and validate
+        wait_tile_done(500000);
+        validate_results(cfg.B, cfg.C, cfg.V);
+    endtask
+
+    // =========================================================================
+    // Signal Initialization
+    // =========================================================================
+    task automatic init_signals();
+        reset_n          = 0;
+        tile_en          = 0;
+        tile_start       = 0;
+        tile_left_addr   = 0;
+        tile_right_addr  = 0;
+        tile_left_ugd_len = 0;
+        tile_right_ugd_len = 0;
+        tile_vec_len     = 0;
+        tile_left_man_4b = 0;
+        tile_right_man_4b = 0;
+        tile_main_loop_over_left = 0;
+        tile_mc_en       = 24'h000001;
+
+        disp_start       = 0;
+        disp_ugd_vec_size = 0;
+        disp_right_ugd_len = 0;
+        disp_tile_addr   = 0;
+        disp_col_start   = 0;
+        disp_right       = 0;
+
+        wr_man_left_en   = 0;
+        wr_man_right_en  = 0;
+        wr_exp_left_en   = 0;
+        wr_exp_right_en  = 0;
+
+        tests_run        = 0;
+        tests_passed     = 0;
         results_collected = 0;
-        tests_run = 0;
-        tests_skipped = 0;
+        current_test_ok  = 1;
 
-        // Initialize BRAM
-        for (int i = 0; i < 2048; i++) begin
-            bram_left_mantissa[i] = 256'd0;
-            bram_right_mantissa[i] = 256'd0;
-        end
+        // Clear TB BRAM
         for (int i = 0; i < 512; i++) begin
-            bram_left_exponent[i] = 8'd0;
-            bram_right_exponent[i] = 8'd0;
+            tb_man_left[i]  = 256'd0;
+            tb_man_right[i] = 256'd0;
+            tb_exp_left[i]  = 8'd0;
+            tb_exp_right[i] = 8'd0;
         end
+    endtask
 
-        // Reset
-        repeat(5) @(posedge clk);
+    // =========================================================================
+    // Main Test Sequence
+    // =========================================================================
+    initial begin
+        init_signals();
+
+        // Reset sequence
+        repeat (5) @(posedge clk);
         reset_n = 1;
-        repeat(2) @(posedge clk);
+        repeat (2) @(posedge clk);
 
         $display("\n========================================");
         $display("Compute Engine MLP Testbench");
-        $display("Tests: MLP mode (TILE compute-only; DISPATCH RIGHT loads weights)");
         $display("========================================\n");
 
-        // Load BRAM once (same data for all tests)
-        load_bram_from_hex();
+        // Load left matrix once (shared across tests)
+        $display("Loading left matrix (shared)...");
+        load_matrix_hex({HEX_PATH, "left.hex"}, tb_man_left, tb_exp_left);
 
-        // ===============================================================
-        // Run All Tests
-        // ===============================================================
+        // Load default right matrix
+        load_matrix_hex({HEX_PATH, "right.hex"}, tb_man_right, tb_exp_right);
+
+        // Run test suite
         begin
-            int B_cfg, C_cfg, V_cfg;
-            int num_col_groups, expected_results;
-            string name_cfg, golden_file;
-            
-            foreach (test_configs[i]) begin
-                test_num = i + 1;
-                
-                B_cfg = test_configs[i].B;
-                C_cfg = test_configs[i].C;
-                V_cfg = test_configs[i].V;
-                name_cfg = test_configs[i].name;
-                num_col_groups = (C_cfg + 15) / 16;
-                expected_results = B_cfg * C_cfg;
-                
-                $display("\n[TEST %0d] %s (B×C×V = %0d×%0d×%0d, groups=%0d, results=%0d)",
-                         test_num, name_cfg, B_cfg, C_cfg, V_cfg, num_col_groups, expected_results);
-                
-                // Load golden reference
-                if (name_cfg == "B4_C64_V32_multi_dispatch") begin
-                    // 16-dispatch stress test: 16 × C=4 V=32 → B4_C64_V32
-                    // Load 16 individual golden files (golden_B4_C4_V32_0.hex through golden_B4_C4_V32_15.hex)
-                    logic [15:0] golden_seg [0:15];  // Each file has 16 results (B4×C4)
-                    integer file_seg, scan_seg, idx_seg, disp_idx;
-                    string golden_seg_file;
-                    integer load_ok;
-                    
-                    load_ok = 1;
-                    for (disp_idx = 0; disp_idx < 16 && load_ok; disp_idx++) begin
-                        golden_seg_file = $sformatf("../../../hex/golden_B4_C4_V32_%0d.hex", disp_idx);
-                        file_seg = $fopen(golden_seg_file, "r");
-                        if (file_seg == 0) begin
-                            $display("  ERROR: Cannot open %s", golden_seg_file);
-                            test_passed = 0;
-                            load_ok = 0;
-                        end else begin
-                            idx_seg = 0;
-                            while (!$feof(file_seg) && idx_seg < 16) begin
-                                scan_seg = $fscanf(file_seg, "%h\n", golden_seg[idx_seg]);
-                                if (scan_seg == 1) idx_seg++;
-                            end
-                            $fclose(file_seg);
-                            
-                            // Map this dispatch's results to the full golden array
-                            // Dispatch idx corresponds to columns [disp_idx*4 .. disp_idx*4+3]
-                            // golden_seg contains [batch0 cols, batch1 cols, batch2 cols, batch3 cols]
-                            // where each batch has 4 column values
-                            for (int b = 0; b < 4; b++) begin
-                                for (int c = 0; c < 4; c++) begin
-                                    // Golden array order: batch-major, cols within batch
-                                    // golden_fp16[b * 64 + col] where col = disp_idx * 4 + c
-                                    golden_fp16[b * 64 + disp_idx * 4 + c] = golden_seg[b * 4 + c];
-                                end
-                            end
-                        end
-                    end
-                    if (load_ok)
-                        $display("  Loaded 16 golden files for B4_C64_V32_multi_dispatch (256 total results)");
-                end else begin
-                    golden_file = $sformatf("../../../hex/golden_%s.hex", name_cfg);
-                    load_golden_reference(golden_file, expected_results);
-                end
-                results_collected = 0;
+            test_config_t cfg;
+            int num_groups;
 
-                // FETCH + DISPATCH: load weights to row_bram, distribute to MLP BRAM
-                if (name_cfg == "B4_C64_V32_multi_dispatch") begin
-                    // 16-dispatch stress test: 16 × C=4 V=32 → C=64 total (4 column groups)
-                    // col_start wraps at 16, tile_addr controls which column group
-                    // tile_addr offset = group * V * 8 = group * 32 * 8 = group * 256
-                    $display("  === 16-Dispatch Stress Test: 16 × C=4 V=32 → C=64 total (4 column groups) ===");
-                    
-                    // 16 DISPATCH RIGHT operations, each with C=4, V=32
-                    // 4 dispatches per group, col_start cycles through 0, 4, 8, 12
-                    // tile_addr increments by V*8=256 for each group
-                    for (int disp_idx = 0; disp_idx < 16; disp_idx++) begin
-                        int group_idx;
-                        int col_start_val;
-                        int tile_addr_val;
-                        int logical_col_start;
-                        
-                        group_idx = disp_idx / 4;           // 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3
-                        col_start_val = (disp_idx % 4) * 4; // 0, 4, 8, 12, 0, 4, 8, 12, ...
-                        tile_addr_val = group_idx * V_cfg * 8;  // 0, 0, 0, 0, 256, 256, 256, 256, 512, ...
-                        logical_col_start = group_idx * 16 + col_start_val;
-                        
-                        $display("  Dispatch %0d: C=4, V=32, col_start=%0d, tile_addr=%0d → logical cols %0d-%0d (group %0d)",
-                                 disp_idx + 1, col_start_val, tile_addr_val, 
-                                 logical_col_start, logical_col_start + 3, group_idx);
-                        // Load the correct right matrix for this dispatch
-                        load_right_matrix_file(disp_idx);
-                        // num_lines = C * V * 4 = 4 * 32 * 4 = 512 lines per dispatch
-                        fetch_dispatch_pair(4 * V_cfg * 4, 8'd4, V_cfg, tile_addr_val[15:0], col_start_val[4:0]);
-                    end
-                    
-                    $display("  === All 16 dispatches complete ===");
-                    
-                    // TILE: B=4, C=64, V=32 → computes all 64 columns across 4 column groups
-                    $display("  TILE: B=4, C=64, V=32 (computes 64 columns, 4 column groups)");
-                    send_tile_command_with_addr(B_cfg, C_cfg, V_cfg, 16'd0, 16'd0);
-                end else begin
-                    // Default: single dispatch + TILE
-                    fetch_dispatch_pair(C_cfg * V_cfg * 4, C_cfg, V_cfg, 16'd0, 5'd0);
-                    // TILE: compute with left_addr=0, right_addr=0
-                    send_tile_command_with_addr(B_cfg, C_cfg, V_cfg, 16'd0, 16'd0);
-                end
-                
-                // Wait for TILE and validate
-                wait_tile_done(500000);
-                // Validate results
-                validate_fp16_results_bcv(B_cfg, C_cfg, V_cfg);
+            foreach (test_suite[i]) begin
+                cfg = test_suite[i];
+                num_groups = (cfg.C + 15) / 16;
+
+                $display("\n[TEST %0d] %s (B×C×V = %0d×%0d×%0d, groups=%0d)",
+                         i + 1, cfg.name, cfg.B, cfg.C, cfg.V, num_groups);
+
+                results_collected = 0;
+                current_test_ok = 1;
+
+                case (cfg.test_type)
+                    TEST_SINGLE_DISPATCH: run_single_dispatch_test(cfg);
+                    TEST_MULTI_DISPATCH:  run_multi_dispatch_test(cfg);
+                endcase
+
                 tests_run++;
+                if (current_test_ok) tests_passed++;
             end
         end
 
-        // ===============================================================
-        // Test Summary
-        // ===============================================================
+        // Summary
         $display("========================================");
         $display("TEST SUMMARY");
         $display("========================================");
-        $display("Tests run: %0d", tests_run);
-        if (test_passed) begin
+        $display("Tests run:    %0d", tests_run);
+        $display("Tests passed: %0d", tests_passed);
+        if (tests_passed == tests_run) begin
             $display("STATUS: ALL TESTS PASSED");
         end else begin
-            $display("STATUS: SOME TESTS FAILED");
+            $display("STATUS: %0d TEST(S) FAILED", tests_run - tests_passed);
         end
         $display("========================================\n");
 
         $finish;
     end
 
-    // ===================================================================
-    // Timeout
-    // ===================================================================
+    // =========================================================================
+    // Timeout Watchdog
+    // =========================================================================
     initial begin
-        #2000000000;  // 2s timeout (16-dispatch stress test with V=32)
+        #TIMEOUT_NS;
         $display("ERROR: Testbench timeout!");
         $finish;
     end
