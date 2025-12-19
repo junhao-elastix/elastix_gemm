@@ -117,17 +117,22 @@ module comp_mlp_dispatch #(
     logic [7:0]  disp_nv_row_p1;        // Pipelined nv_row
     logic [3:0]  disp_col_sel_p1;       // Pipelined column select
     logic [6:0]  disp_wt_nv_idx_p1;     // Pipelined NV index
+    logic [15:0] nv_row_offset_p1;      // Pipelined: nv_row * V * 8 (pre-computed)
     
     // Latched values during 4-cycle load
     logic [3:0]  col_sel_reg;
     logic [6:0]  wt_nv_idx_reg;
     logic [7:0]  disp_ugd_vec_size_reg;  // Latched V
     logic [9:0]  disp_tile_addr_reg;     // Latched tile_addr
-    
+
+    // TIMING FIX: Pre-computed stride values (V * 8) - breaks multiplication from critical path
+    logic [12:0] v_stride_reg;           // V * 8, registered for timing
+    logic [12:0] tile_plus_stride_reg;   // tile_addr + (V * 8), pre-computed
+
     // Per-column write address pointers (accumulate across dispatches)
     // Each column tracks its current write address base
     logic [9:0]  col_wr_ptr [0:NUM_COLUMNS-1];
-    
+
     // Effective write base address for current column
     logic [9:0]  wt_base_addr_eff;
 
@@ -138,15 +143,20 @@ module comp_mlp_dispatch #(
     // - Reset to 0 on TILE command
     // - Accumulate across multiple DISPATCH commands
     // - Update when finishing V NVs to a column (advance by V*8 addresses)
-    
+    //
+    // TIMING FIX: Use pipelined disp_nv_in_batch_p1 and pre-computed v_stride_reg
+    // to break critical path from modulo/multiplication to col_wr_ptr
+
     logic [3:0] prev_col_sel;  // Track previous column to detect column changes
-    
+
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             for (int i = 0; i < NUM_COLUMNS; i++) begin
                 col_wr_ptr[i] <= 10'd0;
             end
             prev_col_sel <= 4'd0;
+            v_stride_reg <= 13'd0;
+            tile_plus_stride_reg <= 13'd0;
         end else if (i_tile_start) begin
             // Reset all write pointers on TILE command
             for (int i = 0; i < NUM_COLUMNS; i++) begin
@@ -160,30 +170,34 @@ module comp_mlp_dispatch #(
                 col_wr_ptr[i] <= 10'd0;
             end
             prev_col_sel <= 4'd0;
+            // Pre-compute stride values for timing (V * 8)
+            v_stride_reg <= {5'b0, i_disp_ugd_vec_size} << 3;  // V * 8
+            tile_plus_stride_reg <= {3'b0, i_disp_tile_addr} + ({5'b0, i_disp_ugd_vec_size} << 3);
         end else begin
             // Update write pointer when we finish writing V NVs to a column
             // This happens when we move to a new column (detected by col_sel changing)
+            // TIMING FIX: Use PIPELINED disp_nv_in_batch_p1 (registered last cycle)
             if (disp_state_reg == DISP_NEXT) begin
                 // Check if we just finished V NVs to the previous column
-                // If disp_nv_in_batch == 0, we're starting a new column (previous column finished V NVs)
-                if (disp_nv_in_batch == 8'd0 && disp_src_nv_cnt > 0) begin
+                // Use PIPELINED value - this was computed for the CURRENT NV in previous cycle
+                if (disp_nv_in_batch_p1 == 8'd0 && disp_src_nv_cnt > 0) begin
                     // Previous column finished V NVs, update its pointer
-                    // Get the base address that was used for that column and advance by V*8
+                    // Use PRE-COMPUTED stride instead of multiplication
                     if (col_wr_ptr[prev_col_sel] > 10'd0) begin
-                        col_wr_ptr[prev_col_sel] <= col_wr_ptr[prev_col_sel] + (disp_ugd_vec_size_reg * 10'd8);
+                        col_wr_ptr[prev_col_sel] <= col_wr_ptr[prev_col_sel] + v_stride_reg[9:0];
                     end else begin
-                        col_wr_ptr[prev_col_sel] <= disp_tile_addr_reg + (disp_ugd_vec_size_reg * 10'd8);
+                        col_wr_ptr[prev_col_sel] <= tile_plus_stride_reg[9:0];
                     end
                 end
                 // Update prev_col_sel for next iteration
                 prev_col_sel <= col_sel_reg;
             end else if (disp_state_reg == DISP_DONE) begin
                 // At end of dispatch, update pointer for the last column
-                // Calculate the base that was used for the last column and advance by V*8
+                // Use PRE-COMPUTED stride instead of multiplication
                 if (col_wr_ptr[col_sel_reg] > 10'd0) begin
-                    col_wr_ptr[col_sel_reg] <= col_wr_ptr[col_sel_reg] + (disp_ugd_vec_size_reg * 10'd8);
+                    col_wr_ptr[col_sel_reg] <= col_wr_ptr[col_sel_reg] + v_stride_reg[9:0];
                 end else begin
-                    col_wr_ptr[col_sel_reg] <= disp_tile_addr_reg + (disp_ugd_vec_size_reg * 10'd8);
+                    col_wr_ptr[col_sel_reg] <= tile_plus_stride_reg[9:0];
                 end
             end
         end
@@ -202,26 +216,34 @@ module comp_mlp_dispatch #(
     //
     // TIMING FIX: Use pipelined values (disp_nv_row_p1, disp_col_sel_p1) in DISP_READ state
     // to break the critical path from division/modulo to BRAM.
-    logic [7:0] disp_nv_row_reg;  // Latched nv_row for address calculation
+    // ADDITIONAL FIX: nv_row_offset_p1 is pre-computed and REGISTERED in previous cycle
+    // to eliminate multiplication from critical path completely.
+    logic [7:0]  disp_nv_row_reg;       // Latched nv_row for address calculation
+    logic [15:0] nv_row_offset_reg;     // Latched offset for DISP_LOAD
+
     always_ff @(posedge i_clk) begin
         if (disp_state_reg == DISP_READ) begin
-            disp_nv_row_reg <= disp_nv_row_p1;  // Use pipelined value
+            disp_nv_row_reg <= disp_nv_row_p1;        // Use pipelined value
+            nv_row_offset_reg <= nv_row_offset_p1;    // Use pipelined offset (already registered)
         end
     end
 
     always_comb begin
         // Use accumulated pointer if it exists, otherwise use tile_addr
         // This ensures continuity across multiple dispatches
-        // In DISP_READ state, use PIPELINED values (computed previous cycle)
+        // In DISP_READ state, use PIPELINED values (computed and registered previous cycle)
         // In DISP_LOAD state, use col_sel_reg (the column currently being written)
         logic [3:0] col_for_addr;
         logic [7:0] nv_row_for_addr;
+        logic [15:0] nv_row_offset_for_addr;
         if (disp_state_reg == DISP_READ) begin
-            col_for_addr = disp_col_sel_p1;      // PIPELINED - timing fix
-            nv_row_for_addr = disp_nv_row_p1;    // PIPELINED - timing fix
+            col_for_addr = disp_col_sel_p1;           // PIPELINED - timing fix
+            nv_row_for_addr = disp_nv_row_p1;         // PIPELINED - timing fix
+            nv_row_offset_for_addr = nv_row_offset_p1; // PIPELINED offset (registered)
         end else begin
             col_for_addr = col_sel_reg;
-            nv_row_for_addr = disp_nv_row_reg;  // Use latched nv_row
+            nv_row_for_addr = disp_nv_row_reg;        // Use latched nv_row
+            nv_row_offset_for_addr = nv_row_offset_reg; // Use latched offset
         end
 
         // CRITICAL: When nv_row > 0, we're in a new column group (logical columns >= 16).
@@ -229,8 +251,8 @@ module comp_mlp_dispatch #(
         // col_wr_ptr is only valid within the same column group (nv_row = 0).
         if (nv_row_for_addr > 8'd0) begin
             // New column group: use tile_addr + column group offset
-            // Column group offset = nv_row * V * 8 (matches TILE's rd_base_addr_eff calculation)
-            wt_base_addr_eff = disp_tile_addr_reg + (nv_row_for_addr * disp_ugd_vec_size_reg * 10'd8);
+            // TIMING FIX: Use PIPELINED offset - no multiplication on critical path
+            wt_base_addr_eff = disp_tile_addr_reg + nv_row_offset_for_addr[9:0];
         end else if (col_wr_ptr[col_for_addr] > 10'd0) begin
             // Same column group (nv_row = 0): use accumulated pointer for multi-dispatch continuity
             wt_base_addr_eff = col_wr_ptr[col_for_addr];
@@ -254,9 +276,25 @@ module comp_mlp_dispatch #(
     logic [7:0]  disp_nv_row_next;      // Row for next NV
     logic [7:0]  col_start_plus_batch_next;
 
+    // TIMING FIX: Incremental update signals (avoid division on critical path)
+    // These are computed from PIPELINED values (_p1) using comparisons instead of division
+    logic        batch_idx_will_incr;    // True when next NV starts new batch (nv_in_batch wraps)
+    logic        logical_col_will_wrap;  // True when next NV wraps to column 0 (nv_row increments)
+    logic [7:0]  v_minus_1;              // V - 1, pre-computed for comparison
+
     always_comb begin
         // All columns enabled in MLP mode
         disp_num_enabled = NUM_COLUMNS[4:0];
+
+        // TIMING FIX: Pre-compute V-1 for comparison (avoids subtraction on critical path)
+        v_minus_1 = disp_ugd_vec_size_reg - 8'd1;
+
+        // TIMING FIX: Incremental update signals using PIPELINED values (_p1)
+        // These use comparisons instead of division, breaking the critical path
+        // batch_idx increments when we've processed V NVs to current column (nv_in_batch wraps)
+        batch_idx_will_incr = (disp_ugd_vec_size_reg != 8'd0) && (disp_nv_in_batch_p1 == v_minus_1);
+        // logical_col wraps when batch_idx increments AND we're at column 15
+        logical_col_will_wrap = batch_idx_will_incr && (disp_logical_col_p1 == 5'd15);
 
         // Calculate batch and NV within batch for CURRENT NV
         disp_batch_idx   = (disp_ugd_vec_size_reg == 8'd0) ? 8'd0 : (disp_src_nv_cnt / disp_ugd_vec_size_reg);
@@ -359,6 +397,7 @@ module comp_mlp_dispatch #(
             disp_nv_row_p1 <= 8'd0;
             disp_col_sel_p1 <= 4'd0;
             disp_wt_nv_idx_p1 <= 7'd0;
+            nv_row_offset_p1 <= 16'd0;
         end else begin
             disp_state_reg <= disp_state_next;
 
@@ -370,13 +409,26 @@ module comp_mlp_dispatch #(
                         // Latch command parameters
                         disp_ugd_vec_size_reg <= i_disp_ugd_vec_size;
                         disp_tile_addr_reg <= i_disp_tile_addr;
-                        // Pre-compute pipeline values for src_nv_cnt=0
-                        disp_batch_idx_p1 <= disp_batch_idx;
-                        disp_nv_in_batch_p1 <= disp_nv_in_batch;
-                        disp_logical_col_p1 <= disp_logical_col;
-                        disp_nv_row_p1 <= disp_nv_row;
-                        disp_col_sel_p1 <= disp_col_sel_next;
-                        disp_wt_nv_idx_p1 <= disp_wt_nv_idx_next;
+                        // =================================================================
+                        // TIMING FIX: Hard-code initial values for src_nv_cnt=0
+                        // Since src_nv_cnt=0 in DISP_IDLE:
+                        //   batch_idx = 0/V = 0
+                        //   nv_in_batch = 0%V = 0
+                        //   logical_col = col_start % 16 = col_start[3:0] (NUM_COLUMNS=16)
+                        //   nv_row = col_start / 16 = col_start >> 4
+                        // This COMPLETELY avoids division on initialization path!
+                        // =================================================================
+                        disp_batch_idx_p1 <= 8'd0;                      // 0/V = 0
+                        disp_nv_in_batch_p1 <= 8'd0;                    // 0%V = 0
+                        disp_logical_col_p1 <= {1'b0, i_disp_col_start[3:0]};  // col_start % 16
+                        disp_nv_row_p1 <= {4'b0, i_disp_col_start[4:4]};       // col_start / 16 (for 5-bit col_start)
+                        disp_col_sel_p1 <= i_disp_col_start[3:0];       // Same as logical_col
+                        disp_wt_nv_idx_p1 <= 7'd0;                      // Same as nv_in_batch
+                        // nv_row_offset = nv_row * V * 8
+                        // Since nv_row = col_start >> 4, use bit manipulation:
+                        // nv_row_offset = (col_start >> 4) * V * 8 = (col_start[4] ? 1 : 0) * V * 8
+                        // For 5-bit col_start, col_start[4] indicates if we're in column group 1
+                        nv_row_offset_p1 <= i_disp_col_start[4] ? ({5'b0, i_disp_ugd_vec_size} << 3) : 16'd0;
                     end
                 end
 
@@ -398,14 +450,39 @@ module comp_mlp_dispatch #(
                     wt_cycle_cnt <= 2'd0;
                     if (disp_src_nv_cnt != (i_disp_man_nv_cnt - 1)) begin
                         disp_src_nv_cnt <= disp_src_nv_cnt + 8'd1;
-                        // Pre-compute pipeline values for NEXT src_nv_cnt using LOOKAHEAD values
-                        // These will be ready when we enter DISP_READ for the next NV
-                        disp_batch_idx_p1 <= disp_batch_idx_next;
-                        disp_nv_in_batch_p1 <= disp_nv_in_batch_next;
-                        disp_logical_col_p1 <= disp_logical_col_next;
-                        disp_nv_row_p1 <= disp_nv_row_next;
-                        disp_col_sel_p1 <= disp_logical_col_next[3:0];
-                        disp_wt_nv_idx_p1 <= disp_nv_in_batch_next[6:0];
+                        // =================================================================
+                        // TIMING FIX: Use INCREMENTAL logic instead of division-based lookahead
+                        // The incremental signals (batch_idx_will_incr, logical_col_will_wrap)
+                        // are computed from pipelined values using comparisons, not divisions.
+                        // This breaks the critical path through the division operations.
+                        // =================================================================
+
+                        // nv_in_batch: wraps to 0 when batch completes, else increment
+                        disp_nv_in_batch_p1 <= batch_idx_will_incr ? 8'd0 : (disp_nv_in_batch_p1 + 8'd1);
+
+                        // batch_idx: increment when we've processed V NVs (batch completes)
+                        disp_batch_idx_p1 <= batch_idx_will_incr ? (disp_batch_idx_p1 + 8'd1) : disp_batch_idx_p1;
+
+                        // logical_col: wrap to 0 when at col 15 and batch completes, else incr on batch complete
+                        if (logical_col_will_wrap) begin
+                            disp_logical_col_p1 <= 5'd0;
+                            disp_col_sel_p1 <= 4'd0;
+                        end else if (batch_idx_will_incr) begin
+                            disp_logical_col_p1 <= disp_logical_col_p1 + 5'd1;
+                            disp_col_sel_p1 <= disp_col_sel_p1 + 4'd1;
+                        end
+                        // else: stay same
+
+                        // nv_row: increment when logical_col wraps (new column group)
+                        if (logical_col_will_wrap) begin
+                            disp_nv_row_p1 <= disp_nv_row_p1 + 8'd1;
+                            // Also update nv_row_offset incrementally
+                            nv_row_offset_p1 <= nv_row_offset_p1 + v_stride_reg;
+                        end
+                        // else: stay same
+
+                        // wt_nv_idx: same as nv_in_batch (the NV index within the column)
+                        disp_wt_nv_idx_p1 <= batch_idx_will_incr ? 7'd0 : (disp_wt_nv_idx_p1 + 7'd1);
                     end
                 end
 
