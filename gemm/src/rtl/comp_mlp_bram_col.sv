@@ -18,7 +18,7 @@
 `endif
 
 
-module mlp_bram_col #(
+module comp_mlp_bram_col #(
     // How many MLPs to stack in this column
     parameter integer NUM_MLPS = 8,
     parameter logic dump_waves = 0
@@ -48,7 +48,7 @@ module mlp_bram_col #(
 );
 
 
-// LRAM virtual port mapping for expb (per mlp_bram.sv comments):
+// LRAM virtual port mapping for expb (per comp_mlp_bram.sv comments):
 // lram_wraddr[5:0] = expb[7:2]
 // lram_rdaddr[5:4] = expb[1:0]
 // lram_rdaddr[3:0] = ce[11:8] (not used here, set to 0)
@@ -69,7 +69,7 @@ logic [71:0] multb_h[NUM_MLPS-1:0];        // Forward cascade B, higher
 logic [71:0] multa_l[NUM_MLPS-1:0];        // Forward cascade A, lower
 logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
- mlp_bram #(
+ comp_mlp_bram #(
     // Select DIN_A[71:0] for both A ports at column base
     .mux_sel_multa_l(2'b00),
     .mux_sel_multa_h(3'b000),
@@ -115,7 +115,7 @@ logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
   for (genvar i = 1; i < NUM_MLPS; i = i + 1) begin : mlp_gen
 
-    mlp_bram #(
+    comp_mlp_bram #(
         // Select cascade input for A ports
         .mux_sel_multa_l(2'b11),
         .mux_sel_multa_h(3'b111),
@@ -162,8 +162,8 @@ logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
 initial begin
     if (dump_waves) begin
-        $dumpfile("mlp_bram_col.vcd");
-        $dumpvars(0, mlp_bram_col);
+        $dumpfile("comp_mlp_bram_col.vcd");
+        $dumpvars(0, comp_mlp_bram_col);
    end
 end
 

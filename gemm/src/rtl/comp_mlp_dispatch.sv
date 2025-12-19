@@ -1,0 +1,458 @@
+// ------------------------------------------------------------------
+// MLP Dispatch Controller
+//
+// Purpose: Handles DISPATCH RIGHT operations (row_bram → MLP BRAM weight_bram)
+// Architecture:
+//   - Manages weight loading from row_bram to MLP BRAM columns
+//   - Supports round-robin distribution with col_start parameter
+//   - Tracks accumulated write address pointers per column
+//   - Resets write pointers on TILE command
+//
+// Weight Loading Mechanism:
+//   - Each 256-bit line from row_bram → split into 4 pieces (64-bit each)
+//   - Each 64-bit piece → one of 4 parallel MLP BRAM stacks
+//   - 1 Native Vector (NV) = 4 lines in row_bram = 128 GFP8 numbers
+//   - Maps 1 line to 1 line in weight_bram per logical column
+//   - Takes 4 cycles to fill 1 NV in one column across all 4 stacks
+//   - Fills V NVs (V*4 lines total) to a logical column before moving to next
+//
+// Address Management:
+//   - tile_addr: Starting write address in MLP BRAM for this DISPATCH
+//   - col_start: Starting logical column for round-robin distribution
+//   - Per-column write pointers accumulate across multiple DISPATCH commands
+//   - Write pointers reset to 0 when TILE command is issued
+//   - When wrapping at column 16, write address continues accumulating
+//
+// Distribution Example:
+//   - C=4, V=4: Columns 0-3 get V0-3 each (16 lines per column)
+//   - Next dispatch C=18, V=4: Starts from logical column 4 (col_start=4)
+//   - When wrapping at column 16, write address pointer continues at line 16
+//
+// Author: Refactored for proper address accumulation
+// Date: Dec 18 2025
+// ------------------------------------------------------------------
+
+`timescale 1ps / 1ps
+`default_nettype none
+
+module comp_mlp_dispatch #(
+    parameter int NUM_COLUMNS = 16  // Number of MLP columns (fixed at 16)
+) (
+    input  logic                     i_clk,
+    input  logic                     i_reset_n,
+
+    // =========================================================================
+    // Command Interface
+    // =========================================================================
+    input  logic                     i_disp_start,           // Pulse to start DISPATCH
+    output logic                     o_disp_done,            // DISPATCH operation complete
+    
+    input  logic                     i_tile_start,           // TILE command pulse (resets write pointers)
+
+    // =========================================================================
+    // DISPATCH Command Parameters
+    // =========================================================================
+    input  logic [7:0]               i_disp_man_nv_cnt,      // Total NVs to dispatch
+    input  logic [7:0]               i_disp_ugd_vec_size,    // V: NVs per UGD vector (per column)
+    input  logic [9:0]               i_disp_tile_addr,        // Starting write address in MLP BRAM
+    input  logic [4:0]               i_disp_col_start,        // Starting logical column for distribution
+    input  logic                     i_disp_broadcast,       // 1=broadcast, 0=distribute (distribute only for right)
+
+    // =========================================================================
+    // row_bram Read Interface
+    // =========================================================================
+    output logic [6:0]               o_nv_right_rd_idx,      // row_bram read address (NV index)
+    input  logic [255:0]             i_nv_right_man [0:3],  // 128 mantissas as 4 groups of 256 bits
+    input  logic [31:0]               i_nv_right_exp,         // 4 exponents (8-bit each)
+
+    // =========================================================================
+    // MLP BRAM Write Interface (to comp_mlp_bram_col_wrapper)
+    // =========================================================================
+    output logic                     o_wt_valid,             // Weight data valid (latch trigger)
+    input  logic                     i_wt_ready,             // Ready to accept weight data
+    output logic [255:0]             o_nv_right_man [0:3],  // Weight mantissas to wrapper
+    output logic [31:0]              o_nv_right_exp,          // Weight exponents to wrapper
+    output logic [3:0]               o_col_sel,               // Target column (0-15)
+    output logic [6:0]               o_wt_nv_idx,            // NV index within column
+    output logic [1:0]               o_wt_cycle_cnt,         // Current cycle within 4-cycle load (0-3)
+    output logic                     o_wt_loading,           // Currently loading (active during 4-cycle write)
+    output logic [9:0]               o_wt_base_addr           // Effective write base address for this column
+);
+
+    // =========================================================================
+    // State Machine Definition
+    // =========================================================================
+    typedef enum logic [2:0] {
+        DISP_IDLE     = 3'b000,
+        DISP_READ     = 3'b001,  // Read from row_bram
+        DISP_LOAD     = 3'b010,  // 4-cycle weight loading into MLP BRAM
+        DISP_NEXT     = 3'b011,  // Prepare for next NV
+        DISP_DONE     = 3'b100
+    } disp_state_t;
+
+    disp_state_t disp_state_reg, disp_state_next;
+
+    // =========================================================================
+    // Internal Signals
+    // =========================================================================
+    // Dispatch counters
+    logic [7:0]  disp_src_nv_cnt;      // Sequential source NV index (0..man_nv_cnt-1)
+    logic [1:0]  wt_cycle_cnt;         // Weight loading cycle counter (0-3)
+    
+    // Distribution calculation
+    logic [4:0]  disp_num_enabled;      // Number of enabled columns (always 16 for MLP mode)
+    logic [7:0]  disp_batch_idx;         // Batch index = src_nv / vec_len
+    logic [7:0]  disp_nv_in_batch;      // NV index within batch = src_nv % vec_len
+    logic [4:0]  disp_start_logical;    // col_start % num_enabled
+    logic [4:0]  disp_logical_col;      // (start + batch) % num_enabled
+    logic [7:0]  disp_nv_row;           // (start + batch) / num_enabled
+    logic [3:0]  disp_col_sel_next;     // Physical column index (0-15)
+    logic [6:0]  disp_wt_nv_idx_next;   // Destination NV index within column
+    
+    // Latched values during 4-cycle load
+    logic [3:0]  col_sel_reg;
+    logic [6:0]  wt_nv_idx_reg;
+    logic [7:0]  disp_ugd_vec_size_reg;  // Latched V
+    logic [9:0]  disp_tile_addr_reg;     // Latched tile_addr
+    
+    // Per-column write address pointers (accumulate across dispatches)
+    // Each column tracks its current write address base
+    logic [9:0]  col_wr_ptr [0:NUM_COLUMNS-1];
+    
+    // Effective write base address for current column
+    logic [9:0]  wt_base_addr_eff;
+
+    // =========================================================================
+    // Per-Column Write Pointer Management
+    // =========================================================================
+    // Track the current write address base for each column
+    // - Reset to 0 on TILE command
+    // - Accumulate across multiple DISPATCH commands
+    // - Update when finishing V NVs to a column (advance by V*8 addresses)
+    
+    logic [3:0] prev_col_sel;  // Track previous column to detect column changes
+    
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            for (int i = 0; i < NUM_COLUMNS; i++) begin
+                col_wr_ptr[i] <= 10'd0;
+            end
+            prev_col_sel <= 4'd0;
+        end else if (i_tile_start) begin
+            // Reset all write pointers on TILE command
+            for (int i = 0; i < NUM_COLUMNS; i++) begin
+                col_wr_ptr[i] <= 10'd0;
+            end
+            prev_col_sel <= 4'd0;
+        end else begin
+            // Update write pointer when we finish writing V NVs to a column
+            // This happens when we move to a new column (detected by col_sel changing)
+            if (disp_state_reg == DISP_NEXT) begin
+                // Check if we just finished V NVs to the previous column
+                // If disp_nv_in_batch == 0, we're starting a new column (previous column finished V NVs)
+                if (disp_nv_in_batch == 8'd0 && disp_src_nv_cnt > 0) begin
+                    // Previous column finished V NVs, update its pointer
+                    // Get the base address that was used for that column and advance by V*8
+                    if (col_wr_ptr[prev_col_sel] > 10'd0) begin
+                        col_wr_ptr[prev_col_sel] <= col_wr_ptr[prev_col_sel] + (disp_ugd_vec_size_reg * 10'd8);
+                    end else begin
+                        col_wr_ptr[prev_col_sel] <= disp_tile_addr_reg + (disp_ugd_vec_size_reg * 10'd8);
+                    end
+                end
+                // Update prev_col_sel for next iteration
+                prev_col_sel <= col_sel_reg;
+            end else if (disp_state_reg == DISP_DONE) begin
+                // At end of dispatch, update pointer for the last column
+                // Calculate the base that was used for the last column and advance by V*8
+                if (col_wr_ptr[col_sel_reg] > 10'd0) begin
+                    col_wr_ptr[col_sel_reg] <= col_wr_ptr[col_sel_reg] + (disp_ugd_vec_size_reg * 10'd8);
+                end else begin
+                    col_wr_ptr[col_sel_reg] <= disp_tile_addr_reg + (disp_ugd_vec_size_reg * 10'd8);
+                end
+            end
+        end
+    end
+
+    // Calculate effective write base address for current column
+    // Strategy:
+    // - tile_addr is the starting address for THIS dispatch
+    // - If a column already has accumulated data (col_wr_ptr[col] > 0), use that
+    // - Otherwise, use tile_addr + (nv_row * V * 8) to account for column groups
+    // - After writing V NVs to a column, update col_wr_ptr[col] = base + (V*8)
+    // NOTE: Use col_sel_reg (current column being written) not disp_col_sel_next (next column)
+    // CRITICAL: When C > 16, logical columns wrap to physical columns 0-15, but nv_row > 0
+    //   indicates we're in a different column group. We must write to a different address offset.
+    //   This ensures group 0 writes to address 0, group 1 writes to address (V*8), etc.
+    logic [7:0] disp_nv_row_reg;  // Latched nv_row for address calculation
+    always_ff @(posedge i_clk) begin
+        if (disp_state_reg == DISP_READ) begin
+            disp_nv_row_reg <= disp_nv_row;
+        end
+    end
+    
+    always_comb begin
+        // Use accumulated pointer if it exists, otherwise use tile_addr
+        // This ensures continuity across multiple dispatches
+        // In DISP_READ state, col_sel_reg hasn't been latched yet, so use disp_col_sel_next
+        // In DISP_LOAD state, use col_sel_reg (the column currently being written)
+        logic [3:0] col_for_addr;
+        logic [7:0] nv_row_for_addr;
+        if (disp_state_reg == DISP_READ) begin
+            col_for_addr = disp_col_sel_next;
+            nv_row_for_addr = disp_nv_row;
+        end else begin
+            col_for_addr = col_sel_reg;
+            nv_row_for_addr = disp_nv_row_reg;  // Use latched nv_row
+        end
+        
+        // CRITICAL: When nv_row > 0, we're in a new column group (logical columns >= 16).
+        // In this case, we must write to a different address offset, regardless of col_wr_ptr.
+        // col_wr_ptr is only valid within the same column group (nv_row = 0).
+        if (nv_row_for_addr > 8'd0) begin
+            // New column group: use tile_addr + column group offset
+            // Column group offset = nv_row * V * 8 (matches TILE's rd_base_addr_eff calculation)
+            wt_base_addr_eff = disp_tile_addr_reg + (nv_row_for_addr * disp_ugd_vec_size_reg * 10'd8);
+        end else if (col_wr_ptr[col_for_addr] > 10'd0) begin
+            // Same column group (nv_row = 0): use accumulated pointer for multi-dispatch continuity
+            wt_base_addr_eff = col_wr_ptr[col_for_addr];
+        end else begin
+            // First dispatch to this column in group 0: use tile_addr
+            wt_base_addr_eff = disp_tile_addr_reg;
+        end
+    end
+
+    // =========================================================================
+    // Distribution Calculation
+    // =========================================================================
+    // Need wider signals for nv_row calculation when col_start can be > 16
+    logic [7:0] col_start_plus_batch;  // Full column index (col_start + batch)
+    
+    always_comb begin
+        // All columns enabled in MLP mode
+        disp_num_enabled = NUM_COLUMNS[4:0];
+        
+        // Calculate batch and NV within batch
+        disp_batch_idx   = (disp_ugd_vec_size_reg == 8'd0) ? 8'd0 : (disp_src_nv_cnt / disp_ugd_vec_size_reg);
+        disp_nv_in_batch = (disp_ugd_vec_size_reg == 8'd0) ? 8'd0 : (disp_src_nv_cnt % disp_ugd_vec_size_reg);
+        
+        // Calculate logical column (physical column 0-15)
+        // disp_start_logical: Starting physical column within group 0-15
+        disp_start_logical = i_disp_col_start % disp_num_enabled;
+        disp_logical_col   = (disp_start_logical + disp_batch_idx) % disp_num_enabled;
+        
+        // Calculate nv_row (column group) using FULL col_start value, not modulo
+        // This preserves information about which column group we started in
+        // e.g., col_start=30 + batch_idx=0 = 30, nv_row = 30/16 = 1 (correct!)
+        //       col_start=30 + batch_idx=2 = 32, nv_row = 32/16 = 2 (correct!)
+        col_start_plus_batch = {3'b0, i_disp_col_start} + disp_batch_idx;
+        disp_nv_row          = col_start_plus_batch / disp_num_enabled;
+        
+        // Physical column index (0-15)
+        disp_col_sel_next = disp_logical_col[3:0];
+        
+        // Destination NV index within column
+        // CRITICAL: For column groups (nv_row > 0), reset nv_idx to 0 for the new group.
+        // This ensures group 0 uses nv_idx 0-3, group 1 uses nv_idx 0-3 (not 4-7).
+        // The base address offset (nv_row * V * 8) already accounts for the group separation.
+        disp_wt_nv_idx_next = disp_nv_in_batch;  // Reset per column group, base address handles group offset
+    end
+
+    // =========================================================================
+    // State Machine: State Transition Logic
+    // =========================================================================
+    always_comb begin
+        disp_state_next = disp_state_reg;
+
+        case (disp_state_reg)
+            DISP_IDLE: begin
+                if (i_disp_start) begin
+                    disp_state_next = DISP_READ;
+                end
+            end
+
+            DISP_READ: begin
+                // Wait one cycle for row_bram read, then start loading if ready
+                if (i_wt_ready) begin
+                    disp_state_next = DISP_LOAD;
+                end
+            end
+
+            DISP_LOAD: begin
+                // Stay in DISP_LOAD for 4 cycles (one NV)
+                if (wt_cycle_cnt == 2'd3) begin
+                    disp_state_next = DISP_NEXT;
+                end
+            end
+
+            DISP_NEXT: begin
+                if (disp_src_nv_cnt == (i_disp_man_nv_cnt - 1)) begin
+                    disp_state_next = DISP_DONE;
+                end else begin
+                    disp_state_next = DISP_READ;
+                end
+            end
+
+            DISP_DONE: begin
+                disp_state_next = DISP_IDLE;
+            end
+
+            default: begin
+                disp_state_next = DISP_IDLE;
+            end
+        endcase
+    end
+
+    // =========================================================================
+    // State Machine: Sequential State Update
+    // =========================================================================
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            disp_state_reg <= DISP_IDLE;
+            disp_src_nv_cnt <= 8'd0;
+            wt_cycle_cnt <= 2'd0;
+            col_sel_reg <= 4'd0;
+            wt_nv_idx_reg <= 7'd0;
+            disp_ugd_vec_size_reg <= 8'd0;
+            disp_tile_addr_reg <= 10'd0;
+        end else begin
+            disp_state_reg <= disp_state_next;
+
+            case (disp_state_reg)
+                DISP_IDLE: begin
+                    disp_src_nv_cnt <= 8'd0;
+                    wt_cycle_cnt <= 2'd0;
+                    if (i_disp_start) begin
+                        // Latch command parameters
+                        disp_ugd_vec_size_reg <= i_disp_ugd_vec_size;
+                        disp_tile_addr_reg <= i_disp_tile_addr;
+                    end
+                end
+
+                DISP_READ: begin
+                    wt_cycle_cnt <= 2'd0;  // Reset cycle counter before loading
+                    // Latch distribution mapping at start of each NV
+                    if (i_wt_ready) begin
+                        col_sel_reg <= disp_col_sel_next;
+                        wt_nv_idx_reg <= disp_wt_nv_idx_next;
+                    end
+                end
+
+                DISP_LOAD: begin
+                    wt_cycle_cnt <= wt_cycle_cnt + 2'd1;  // Increment during 4-cycle load
+                end
+
+                DISP_NEXT: begin
+                    wt_cycle_cnt <= 2'd0;
+                    if (disp_src_nv_cnt != (i_disp_man_nv_cnt - 1)) begin
+                        disp_src_nv_cnt <= disp_src_nv_cnt + 8'd1;
+                    end
+                end
+
+                default: begin
+                    // No updates in other states
+                end
+            endcase
+        end
+    end
+
+    // =========================================================================
+    // Control Signal Generation
+    // =========================================================================
+    always_comb begin
+        // Default assignments
+        o_nv_right_rd_idx = 7'd0;
+        o_wt_valid        = 1'b0;
+        o_col_sel         = 4'd0;
+        o_wt_nv_idx       = 7'd0;
+        o_wt_base_addr    = 10'd0;
+
+        case (disp_state_reg)
+            DISP_IDLE: begin
+                o_nv_right_rd_idx = 7'd0;
+                o_wt_valid        = 1'b0;
+                o_col_sel         = 4'd0;
+                o_wt_nv_idx       = 7'd0;
+                o_wt_base_addr    = 10'd0;
+            end
+
+            DISP_READ: begin
+                // Read from row_bram (always from offset 0 for DISPATCH)
+                o_nv_right_rd_idx = disp_src_nv_cnt[6:0];
+                o_wt_valid        = i_wt_ready;  // Valid when ready to start loading
+                o_col_sel         = disp_col_sel_next;
+                o_wt_nv_idx       = disp_wt_nv_idx_next;
+                o_wt_base_addr    = wt_base_addr_eff;
+            end
+
+            DISP_LOAD: begin
+                // Maintain signals during 4-cycle load
+                o_nv_right_rd_idx = disp_src_nv_cnt[6:0];
+                o_wt_valid        = 1'b0;  // Valid only for one cycle to trigger latch
+                o_col_sel         = col_sel_reg;
+                o_wt_nv_idx       = wt_nv_idx_reg;
+                o_wt_base_addr    = wt_base_addr_eff;
+            end
+
+            DISP_NEXT: begin
+                // Prepare for next iteration
+                o_nv_right_rd_idx = disp_src_nv_cnt[6:0];
+                o_wt_valid        = 1'b0;
+                o_col_sel         = col_sel_reg;
+                o_wt_nv_idx       = wt_nv_idx_reg;
+                o_wt_base_addr    = wt_base_addr_eff;
+            end
+
+            DISP_DONE: begin
+                o_nv_right_rd_idx = 7'd0;
+                o_wt_valid        = 1'b0;
+                o_col_sel         = 4'd0;
+                o_wt_nv_idx       = 7'd0;
+                o_wt_base_addr    = 10'd0;
+            end
+
+            default: begin
+                o_nv_right_rd_idx = 7'd0;
+                o_wt_valid        = 1'b0;
+                o_col_sel         = 4'd0;
+                o_wt_nv_idx       = 7'd0;
+                o_wt_base_addr    = 10'd0;
+            end
+        endcase
+    end
+
+    // =========================================================================
+    // Data Path: Pass through row_bram data to wrapper
+    // =========================================================================
+    assign o_nv_right_man[0] = i_nv_right_man[0];
+    assign o_nv_right_man[1] = i_nv_right_man[1];
+    assign o_nv_right_man[2] = i_nv_right_man[2];
+    assign o_nv_right_man[3] = i_nv_right_man[3];
+    assign o_nv_right_exp     = i_nv_right_exp;
+
+    // =========================================================================
+    // Output Assignments
+    // =========================================================================
+    assign o_disp_done   = (disp_state_reg == DISP_DONE);
+    assign o_wt_cycle_cnt = wt_cycle_cnt;
+    assign o_wt_loading  = (disp_state_reg == DISP_LOAD);
+
+    // =========================================================================
+    // Debug Output
+    // =========================================================================
+    `ifdef SIMULATION
+    always @(posedge i_clk) begin
+        if (disp_state_reg == DISP_LOAD && wt_cycle_cnt == 2'd0) begin
+            $display("[COMP_MLP_DISPATCH] @%0t LOAD_START: col=%0d, nv_idx=%0d, src_nv=%0d, base_addr=%0d, tile_addr=%0d",
+                     $time, o_col_sel, o_wt_nv_idx, disp_src_nv_cnt, o_wt_base_addr, disp_tile_addr_reg);
+        end
+        if (disp_state_reg != disp_state_next) begin
+            $display("[COMP_MLP_DISPATCH] @%0t STATE: %s -> %s",
+                     $time, disp_state_reg.name(), disp_state_next.name());
+        end
+    end
+    `endif
+
+endmodule
+
+`default_nettype wire
+

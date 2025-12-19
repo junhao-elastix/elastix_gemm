@@ -170,35 +170,39 @@ module tb_memory_model_realistic
             if (VERBOSITY >= 1) $display("[MEM_MODEL_REALISTIC] Loaded %0d lines from left.hex", line_idx);
         end
 
-        // Load Block 1: Right matrix
-        fd_right = $fopen("/home/dev/Dev/elastix_gemm/hex/right.hex", "r");
-        if (fd_right != 0) begin
-            line_idx = 0;
-            while (!$feof(fd_right) && line_idx < LINES_PER_BLOCK) begin
-                if ($fgets(line_str, fd_right)) begin
-                    scan_result = $sscanf(line_str,
-                        "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
-                        hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
-                        hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
-                        hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
-                        hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
-                        hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
-                        hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
-                        hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
-                        hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
-                    if (scan_result == 32) begin
-                        for (int byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
-                            mem_array[LINES_PER_BLOCK + line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
+        // Load Blocks 1-4: Right matrices (same right.hex loaded to each block for multi-dispatch)
+        // Block 1: addr 528-1055, Block 2: addr 1056-1583, Block 3: addr 1584-2111, Block 4: addr 2112-2639
+        for (int block_idx = 1; block_idx < NUM_BLOCKS && block_idx <= 4; block_idx = block_idx + 1) begin
+            fd_right = $fopen("/home/dev/Dev/elastix_gemm/hex/right.hex", "r");
+            if (fd_right != 0) begin
+                line_idx = 0;
+                while (!$feof(fd_right) && line_idx < LINES_PER_BLOCK) begin
+                    if ($fgets(line_str, fd_right)) begin
+                        scan_result = $sscanf(line_str,
+                            "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+                            hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
+                            hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
+                            hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
+                            hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
+                            hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
+                            hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
+                            hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
+                            hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
+                        if (scan_result == 32) begin
+                            for (int byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
+                                mem_array[(block_idx * LINES_PER_BLOCK) + line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
+                            end
                         end
+                        line_idx = line_idx + 1;
                     end
-                    line_idx = line_idx + 1;
                 end
+                $fclose(fd_right);
+                if (VERBOSITY >= 1) $display("[MEM_MODEL_REALISTIC] Loaded %0d lines from right.hex to block %0d (addr %0d-%0d)",
+                                             line_idx, block_idx, block_idx*LINES_PER_BLOCK, (block_idx+1)*LINES_PER_BLOCK-1);
             end
-            $fclose(fd_right);
-            if (VERBOSITY >= 1) $display("[MEM_MODEL_REALISTIC] Loaded %0d lines from right.hex", line_idx);
         end
 
-        if (VERBOSITY >= 1) $display("[MEM_MODEL_REALISTIC] Memory initialization complete");
+        if (VERBOSITY >= 1) $display("[MEM_MODEL_REALISTIC] Memory initialization complete (%0d blocks)", NUM_BLOCKS);
     end
 
     // ===================================================================
@@ -443,6 +447,63 @@ module tb_memory_model_realistic
     // ===================================================================
     // End-of-Test Statistics
     // ===================================================================
+    // ===================================================================
+    // Public Task: Load Hex File into Memory
+    // ===================================================================
+    // Loads a hex file (32 hex values per line, 256-bit per line) into memory
+    // starting at the specified line offset.
+    // Address format: line_offset is in 256-bit line units (not bytes)
+    task automatic load_hex_file(
+        input string filename,
+        input int line_offset,
+        input int num_lines
+    );
+        integer fd;
+        string line_str;
+        integer line_idx;
+        logic [7:0] hex_bytes[0:31];
+        integer scan_result;
+        logic [255:0] line_data;
+        integer mem_addr;
+        
+        fd = $fopen(filename, "r");
+        if (fd == 0) begin
+            $display("[MEM_MODEL_REALISTIC] ERROR: Cannot open %s", filename);
+            return;
+        end
+        
+        line_idx = 0;
+        while (!$feof(fd) && line_idx < num_lines) begin
+            if ($fgets(line_str, fd)) begin
+                scan_result = $sscanf(line_str,
+                    "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+                    hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
+                    hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
+                    hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
+                    hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
+                    hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
+                    hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
+                    hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
+                    hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
+                
+                if (scan_result == 32) begin
+                    // Pack 32 bytes into 256-bit line
+                    for (int i = 0; i < 32; i++) begin
+                        line_data[i*8 +: 8] = hex_bytes[i];
+                    end
+                    mem_addr = line_offset + line_idx;
+                    if (mem_addr < NUM_BLOCKS * LINES_PER_BLOCK) begin
+                        mem_array[mem_addr] = line_data;
+                    end
+                end
+                line_idx++;
+            end
+        end
+        $fclose(fd);
+        $display("[MEM_MODEL_REALISTIC] Loaded %0d lines from %s starting at line %0d", 
+                 line_idx, filename, line_offset);
+    endtask
+
     final begin
         if (VERBOSITY >= 1) begin
             $display("[MEM_MODEL_REALISTIC] ===============================================");

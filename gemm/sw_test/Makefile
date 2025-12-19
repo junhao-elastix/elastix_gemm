@@ -20,7 +20,7 @@ VP815_API = $(DEV_ROOT)/eus/shell/devices/acx/vp815/api/vp815.cpp
 
 
 ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram
-ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full test_multi_tile test_readback test_bulk_dma
+ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm test_gemm_full test_multi_tile test_readback test_bulk_dma test_linear
 CORE_BINS = test_gemm test_multi_tile test_gemm_full
 
 # Aliases for convenience
@@ -63,6 +63,9 @@ test_multi_tile: test_multi_tile.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_readback: test_readback.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_linear: test_linear.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_dma_access: test_dma_access.cpp
@@ -130,6 +133,7 @@ help:
 	@echo "  dma_simple_example - Basic DMA round-trip validation"
 	@echo "  test_ms2_gemm_full - MS2.0 GEMM engine full integration test"
 	@echo "  test_bulk_dma      - Bulk DMA address test for FETCH parameter validation"
+	@echo "  test_linear        - Linear layer test with 16 right dispatches (B4 C64 V32)"
 	@echo ""
 
 .PHONY: all clean clean_all test_basic test_memory test_scan test_all validate help

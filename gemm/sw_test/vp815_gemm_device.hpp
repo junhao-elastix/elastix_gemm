@@ -35,7 +35,7 @@ constexpr uint8_t  OPC_READOUT        = 0xF5;
 
 // -------------------------- Memory Layout ----------------------------------
 constexpr uint64_t GDDR6_BASE_LEFT    = 0x0ULL;
-constexpr uint64_t GDDR6_BASE_RIGHT   = 0x4200ULL;
+constexpr uint64_t GDDR6_BASE_RIGHT   = 0x40000000ULL;  // 1GB offset for right matrices
 
 // ============================================================================
 // VP815GemmDevice - MS2.0 GEMM Engine Wrapper with 4-Word Command Format

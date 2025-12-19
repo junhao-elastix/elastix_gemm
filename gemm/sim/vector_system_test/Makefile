@@ -3,8 +3,8 @@
 # Tests: Complete MS2.0 pipeline with FIFO-based command/result interface
 # Updated: Dec 2025 - MLP-only mode (modular compute engine deprecated)
 
-TB = tb_engine_top
-TOP = tb_engine_top
+TB ?= tb_engine_top
+TOP ?= $(TB)
 WORK = work
 LOG_FILE = sim.log
 
@@ -36,7 +36,7 @@ GEMM_TB = ../../src/tb
 INCLUDES = +incdir+$(CE_W8A8_INC) +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)/libraries/ +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim +incdir+$(ACX_LIB_S7T)/common
 
 # Testbench sources - Always uses GDDR6 realistic memory model
-TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv tb_engine_top.sv
+TB_SOURCES = ../../src/tb/tb_memory_model_realistic.sv $(TB).sv
 
 # RTL sources (MS2.0 MLP-based architecture - Dec 2025)
 # engine_top.sv uses compute_engine_mlp with direct 256-bit output
@@ -48,19 +48,24 @@ RTL_SOURCES = \
 	$(GEMM_RTL)/cmd_fifo.sv \
 	$(GEMM_RTL)/master_control.sv \
 	$(GEMM_RTL)/fetcher.sv \
-	$(GEMM_RTL)/dispatcher.sv \
 	$(GEMM_RTL)/dispatcher_control.sv \
-	$(GEMM_RTL)/dispatcher_bram.sv \
 	$(GEMM_RTL)/result_fifo_to_simple_bram.sv \
-	$(GEMM_RTL)/row_bram.sv \
+	$(GEMM_RTL)/comp_row_bram.sv \
 	$(GEMM_RTL)/weight_bram.sv \
-	$(GEMM_RTL)/mlp_bram.sv \
-	$(GEMM_RTL)/mlp_bram_col.sv \
-	$(GEMM_RTL)/mlp_bram_col_ctrl.sv \
-	$(GEMM_RTL)/mlp_dot16_int8.sv \
-	$(GEMM_RTL)/mlp_dot16_bfp8.sv \
+	$(GEMM_RTL)/comp_mlp_bram.sv \
+	$(GEMM_RTL)/comp_mlp_bram_col.sv \
+	$(GEMM_RTL)/comp_mlp_bram_col_wrapper.sv \
+	$(GEMM_RTL)/comp_bram_fill_ctrl.sv \
+	$(GEMM_RTL)/comp_mlp_dispatch.sv \
+	$(GEMM_RTL)/comp_mlp_col_ctrl.sv \
+	$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
+	$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
 	$(GEMM_RTL)/fp24_add.sv \
 	$(GEMM_RTL)/fp24_to_fp16.sv \
+	$(GEMM_RTL)/fp_to_int.sv \
+	$(GEMM_RTL)/int_to_fp.sv \
+	$(GEMM_RTL)/int_adder_tree.sv \
+	$(GEMM_RTL)/comp_fp_adder_pipeline.sv \
 	$(GEMM_RTL)/compute_engine_mlp.sv \
 	$(GEMM_RTL)/engine_top.sv
 

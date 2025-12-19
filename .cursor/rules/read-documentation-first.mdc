@@ -1,0 +1,99 @@
+---
+alwaysApply: true
+---
+# Read Documentation First Rule
+
+## Core Principle
+
+**ALWAYS read available documentation before making changes or answering questions about the codebase.**
+
+## Required Actions
+
+### 1. Before Any Code Work
+
+Before modifying code, implementing features, or debugging issues:
+
+1. **Identify relevant documentation files** - Look for:
+   - `README.md` in relevant directories
+   - `*_REFERENCE.md` files (e.g., `SINGLE_ROW_REFERENCE.md`, `MULTI_TILE_DISPATCH_REFERENCE.md`)
+   - `CLAUDE.md` files (AI assistant context)
+   - `CHANGELOG.md` for recent changes
+   - Any other markdown files in the project
+
+2. **Read the documentation thoroughly** - Don't skim. Understand:
+   - Architecture and design decisions
+   - Data structures and formats
+   - Command interfaces and protocols
+   - Known issues and constraints
+
+3. **Cross-reference with code** - Verify documentation matches implementation
+
+### 2. When Unsure or Finding Discrepancies
+
+**ASK QUESTIONS** when:
+
+- Documentation is unclear or ambiguous
+- Documentation conflicts with code behavior
+- Multiple documents have inconsistent information
+- You're making assumptions that aren't documented
+- The documented behavior doesn't match test results
+
+**Example Questions to Ask:**
+```
+- "The documentation says X, but the code shows Y. Which is correct?"
+- "I don't understand what [term] means in this context. Can you clarify?"
+- "The SINGLE_ROW_REFERENCE.md mentions tile_bram but the code uses row_bram. Are these the same?"
+- "Is this documentation up-to-date? It references features I don't see in the code."
+```
+
+### 3. Documentation Priority
+
+When multiple sources exist, prioritize:
+
+1. **Project-specific references** (`*_REFERENCE.md`) - Authoritative design docs
+2. **README.md files** - Current status and usage
+3. **Code comments** - Implementation details
+4. **CHANGELOG.md** - Recent changes that may not be in other docs
+
+## Common Mistakes to Avoid
+
+### ❌ Making Assumptions Without Reading Docs
+```
+<!-- WRONG: Guessing based on variable names -->
+"I assume tile_bram stores tile data..."
+
+<!-- CORRECT: After reading documentation -->
+"According to SINGLE_ROW_REFERENCE.md, row_bram (inside compute engine) 
+stores NV-packed data with 128 NVs per side..."
+```
+
+### ❌ Ignoring Doc-Code Discrepancies
+```
+<!-- WRONG: Just following the code -->
+"The code does X, so that must be correct..."
+
+<!-- CORRECT: Flagging the issue -->
+"The documentation says X, but the code does Y. 
+Which behavior is intended? Should we update the doc or fix the code?"
+```
+
+### ❌ Partial Reading
+```
+<!-- WRONG: Reading only relevant-looking sections -->
+"I read the DISPATCH section..."
+
+<!-- CORRECT: Understanding full context -->
+"I read the entire SINGLE_ROW_REFERENCE.md including the examples 
+at the end which show how DISPATCH and MATMUL interact..."
+```
+
+## Enforcement
+
+This rule applies to:
+- All code modifications
+- Bug fixes and debugging
+- Feature implementations
+- Architecture questions
+- Test development
+
+**Remember**: The documentation exists for a reason. Not reading it wastes everyone's time and leads to preventable errors.

@@ -3,33 +3,61 @@
 //
 // Top-level wrapper integrating:
 //   - row_bram: L1 memory for activations (left) and weights (right)
-//   - mlp_bram_col_ctrl: MLP compute array with 16 columns
-//   - fp24_to_fp16: Output format conversion
+//   - mlp_bram_col_wrapper: MLP compute array with 16 columns (4 stacks each)
+//   - Direct FP16 output (via integer-domain adder pipeline)
 //
-// Interface designed to match compute_engine_modular.sv from gemm project
+// Command Path:
+//   - FETCH: Handled by dispatcher_control (GDDR6 → row_bram)
+//   - DISPATCH: Handled here (row_bram → MLP BRAM weight_bram)
+//   - TILE: Handled here (MATMUL computation: row_bram → MLP → results)
 //
-// Operation (triggered by i_tile_start):
-//   For each column group (C/16 groups):
-//     1. WEIGHT FILL: Load weights from row_bram right → MLP BRAMs
-//        - Column-major order: vec_len NVs per column
-//        - 16 columns × vec_len NVs per group
-//        - Group offset: group_idx * 16 * vec_len NVs
+// DISPATCH RIGHT (Right-Distribute Mode):
+//   Purpose: Load weights from row_bram into MLP BRAM weight_bram
+//   - Left-broadcast is deprecated (left activations stay in row_bram, stream to MLPs)
+//   - Right-distribute loads weights into dedicated weight_bram per column
 //
-//     2. COMPUTE: Stream activations from row_bram left → all columns
-//        - BCV Loop: B batches × 16 columns × V vectors
-//        - For each batch: broadcast V activation NVs to all 16 columns
-//        - Each batch produces 16 FP16 results (one per column)
+//   Weight Loading Mechanism:
+//   - Each 256-bit line from row_bram → split into 4 pieces (64-bit each)
+//   - Each 64-bit piece → one of 4 parallel MLP BRAM stacks
+//   - 1 Native Vector (NV) = 4 lines in row_bram = 128 GFP8 numbers
+//   - Maps 1 line to 1 line in weight_bram per logical column
+//   - Takes 4 cycles to fill 1 NV in one column across all 4 stacks
+//   - Fills V NVs (V*4 lines total) to a logical column before moving to next
 //
-//   3. OUTPUT: B × C FP16 results (B × 16 per group, C/16 groups)
+//   Distribution Example:
+//   - C=4, V=4: Columns 0-3 get V0-3 each (16 lines per column)
+//   - Next dispatch C=18, V=4: Starts from logical column 4 (col_start=4)
+//   - When wrapping at column 16, write address pointer continues at line 16
+//
+//   Address Management:
+//   - tile_addr: Starting write address in MLP BRAM for this DISPATCH
+//   - col_start: Starting logical column for round-robin distribution
+//   - Internal wr_addr_ptr: Accumulates across multiple DISPATCH commands
+//   - wr_addr_ptr is reset to 0 when TILE command is issued
+//   - Otherwise, wr_addr_ptr keeps accumulating for multi-dispatch continuity
+//
+// TILE (MATMUL Computation) - NEW SCHEDULING:
+//   Result order: B (batch) is outer loop, C (columns) is inner loop
+//   This produces results consecutive in C first, then B:
+//     [b0c0..c15, b0c16..c31, ..., b1c0..c15, b1c16..c31, ...]
+//
+//   For each batch b (0 to B-1):
+//     For each column group g (0 to num_groups-1):
+//       1. ACTIVATION: Read V NVs from row_bram for batch b
+//          (same activation data replayed for all groups within batch)
+//       2. WEIGHT READ: Read V NVs from MLP BRAM weight_bram
+//          - Address offset = g * V * 8 (10-bit units)
+//       3. COMPUTE: Dot product of activation[b] × weight[g]
+//       4. OUTPUT: 16 FP16 results for (batch b, columns g*16..g*16+15)
 //
 // BCV Dimensions:
 //   - B (i_tile_left_ugd_len): Number of activation batches
-//   - C (i_tile_right_ugd_len): Number of columns (must be divisible by 16)
+//   - C (i_tile_right_ugd_len): Number of columns (may exceed 16)
 //   - V (i_tile_vec_len): Number of NVs to accumulate per output
 //
 // Author: Generated for MLP project
 // Date: 2024
-// Updated: Dec 2025 - Added support for C > 16 via column group iteration
+// Updated: Dec 2025 - Refactored scheduling: B outer, C inner for consecutive C results
 // ------------------------------------------------------------------
 
 `timescale 1ps / 1ps
@@ -48,15 +76,26 @@ module compute_engine_mlp #(
     input  logic                     i_reset_n,
 
     // =========================================================================
-    // Master Control Interface (TILE command) - gemm-compatible
+    // Master Control Interface (DISPATCH command)
+    // =========================================================================
+    input  logic                     i_disp_start,           // Pulse from DISPATCH (trigger ST_FILL)
+    input  logic [7:0]               i_disp_man_nv_cnt,      // Total Number of NVs to DISPATCH 
+    input  logic [7:0]               i_disp_ugd_vec_size,    // Number of NVs per UGD vector
+    input  logic [15:0]              i_disp_tile_addr,       // DISPATCH: Right matrix write base address
+    input  logic                     i_disp_man_4b,          // 4-bit mantissa DISPATCH (unused)
+    input  logic [23:0]              i_disp_col_en,          // Column enable mask (for distribute/broadcast semantics)
+    input  logic [4:0]               i_disp_col_start,       // Distribution start column (for multi-dispatch continuity)
+    input  logic                     i_disp_right,           // DISPATCH side: 0=LEFT (ignore), 1=RIGHT (process)
+    input  logic                     i_disp_broadcast,      // 1=broadcast, 0=distribute
+    output logic                     o_disp_done,            // DISPATCH operation complete
+
+    // =========================================================================
+    // Master Control Interface (TILE command)
     // =========================================================================
     input  logic                     i_tile_en,              // Static enable (configuration)
     input  logic                     i_tile_start,           // Dynamic pulse (start computing!)
-    input  logic                     i_disp_start,           // Pulse from DISPATCH RIGHT (trigger ST_FILL)
-    input  logic [7:0]               i_disp_ugd_vec_size,    // V for DISPATCH (ugd_vec_size parameter)
-    input  logic [7:0]               i_disp_right_ugd_len,   // C for DISPATCH (man_nv_cnt / ugd_vec_size)
-    input  logic [15:0]              i_tile_left_addr,       // Left matrix start address (unused)
-    input  logic [15:0]              i_tile_right_addr,      // Right matrix start address (unused)
+    input  logic [15:0]              i_tile_left_addr,       // Left matrix start address (row_bram line address)
+    input  logic [15:0]              i_tile_right_addr,      // TILE: Right matrix read base address
     input  logic [7:0]               i_tile_left_ugd_len,    // B: Number of activation batches
     input  logic [7:0]               i_tile_right_ugd_len,   // C: Number of columns
     input  logic [7:0]               i_tile_vec_len,         // V: Number of NVs to accumulate
@@ -65,7 +104,6 @@ module compute_engine_mlp #(
     input  logic                     i_tile_main_loop_over_left, // Loop order (unused)
     input  logic [23:0]              i_mc_tile_en,           // Per-tile enable mask (unused)
     output logic                     o_tile_done,
-    output logic                     o_disp_done,            // DISPATCH operation complete
 
     // =========================================================================
     // row_bram Write Interface (4 parallel ports)
@@ -130,6 +168,13 @@ module compute_engine_mlp #(
     logic [31:0]          nv_left_exp;
     logic [31:0]          nv_right_exp;
 
+    // Column validity during weight fill (for supporting C not divisible by 16)
+    logic                 wt_col_valid;
+
+    // Effective weight payload presented to the wrapper (zero-filled when wt_col_valid=0)
+    logic [MAN_WIDTH-1:0] nv_right_man_eff [0:3];
+    logic [31:0]          nv_right_exp_eff;
+
     // Exponent conversion: GFP8E5 (bias=15) from external memory → GFP8E8 (bias=133) for MLP
     // Formula: exp_E8 = exp_E5 + (133 - 15) = exp_E5 + 118
     // This is always needed since external memory stores GFP8E5 format
@@ -140,6 +185,9 @@ module compute_engine_mlp #(
         end
     end
 
+    // Note: nv_right_man_eff and nv_right_exp_eff are now assigned from comp_mlp_dispatch
+    // The dispatch module handles the data path from row_bram to wrapper
+
     // row_bram NV read indices
     logic [6:0] nv_left_rd_idx;
     logic [6:0] nv_right_rd_idx;
@@ -149,11 +197,43 @@ module compute_engine_mlp #(
     logic        wt_ready;
     logic [3:0]  col_sel;
     logic [6:0]  wt_nv_idx;
+    logic [1:0]  wt_cycle_cnt;
+    logic        wt_loading;
+
+    // BRAM fill controller interface
+    logic        fill_done;
 
     logic        act_valid;
     logic        act_ready;
     logic        new_dot;
     logic        last_nv;
+
+    // Activation payload to wrapper:
+    // We need a true 2-slot (cur/next) buffer so the wrapper can latch the *next* NV payload
+    // at NV boundaries while it continues streaming without per-NV drains.
+    logic [255:0] act_cur_man [0:3];
+    logic [31:0]  act_cur_exp;
+    logic         act_cur_valid;
+    logic         act_cur_new_dot;
+    logic         act_cur_last_nv;
+
+    logic [255:0] act_next_man [0:3];
+    logic [31:0]  act_next_exp;
+    logic         act_next_valid;
+    logic         act_next_new_dot;
+    logic         act_next_last_nv;
+
+    // Scheduler drive mux: during NV-boundary ready pulses, present NEXT so wrapper can latch it.
+    logic drive_next_payload;
+    logic first_nv_sent;
+    logic refill_next_pending;
+
+    // Muxed activation payload actually presented to the wrapper
+    logic [255:0] act_payload_man [0:3];
+    logic [31:0]  act_payload_exp;
+
+    // Compute scheduler interface (now handled locally in compute_engine_mlp)
+    logic        compute_done;
 
     logic [71:0] mlp_dout [NUM_MLPS-1:0];
     logic        dout_valid;
@@ -169,75 +249,79 @@ module compute_engine_mlp #(
     // Number of column groups = ceil(C / 16)
     // For C=16: 1 group, C=32: 2 groups, C=64: 4 groups, C=128: 8 groups
     logic [3:0] num_col_groups;      // Max 8 groups (C=128)
-    logic [3:0] col_group_cnt;       // Current column group being processed
     
     // Active parameters (from TILE or DISPATCH command)
-    logic [7:0] active_vec_len;      // V: from TILE or DISPATCH
-    logic [7:0] active_right_ugd_len; // C: from TILE or DISPATCH
+    logic [7:0]  active_vec_len;        // V: from TILE or DISPATCH
+    logic [7:0]  active_right_ugd_len;  // C: from TILE or DISPATCH
+    logic [7:0]  active_left_ugd_len;   // B: from TILE
+    logic [15:0] active_left_addr;      // Left base address for row_bram reads: from TILE
+    logic [15:0] active_right_addr;     // Right base address for row_bram reads: from DISPATCH (fill) or TILE (compute)
 
-    // Calculate number of column groups (C / 16, assumes C divisible by 16)
+    // DISPATCH distribution parameters (latched on i_disp_start)
+    logic [23:0] active_disp_col_en;
+    logic [4:0]  active_disp_col_start;
+    logic        active_disp_broadcast;
+    logic [7:0]  active_disp_man_nv_cnt;
+    logic [9:0]  active_disp_wt_base_addr;  // Latched MLP BRAM write base for DISPATCH (avoid MC overwriting during WAIT_DISP)
+
+    // Calculate number of column groups = ceil(C / 16)
     always_comb begin
-        num_col_groups = active_right_ugd_len[7:4];  // Equivalent to C / 16
-        if (num_col_groups == 0) num_col_groups = 4'd1;  // Minimum 1 group
+        num_col_groups = (active_right_ugd_len + 8'd15) >> 4;
+        if (num_col_groups == 0) begin
+            num_col_groups = 4'd1;  // Minimum 1 group
+        end
     end
+
+    // =========================================================================
+    // Scheduler-driven MLP BRAM read base address
+    // =========================================================================
+    // The scheduler now controls sched_group_cnt (inner loop within batch).
+    // rd_base_addr_eff = base + group * V * 8
+    logic [3:0]  sched_group_cnt;    // Current column group (inner loop)
+    logic [9:0]  rd_base_addr_eff;
+    
+    always_comb begin
+        rd_base_addr_eff = active_right_addr[9:0] + (sched_group_cnt * active_vec_len * 10'd8);
+    end
+    
+    `ifdef SIMULATION
+    logic [9:0] rd_base_addr_eff_prev;
+    logic [7:0] sched_batch_cnt_prev;
+    logic [3:0] sched_group_cnt_prev;
+    always_ff @(posedge i_clk) begin
+        if (rd_base_addr_eff != rd_base_addr_eff_prev || 
+            sched_batch_cnt != sched_batch_cnt_prev ||
+            sched_group_cnt != sched_group_cnt_prev) begin
+            $display("[CE_MLP_SCHED] @%0t BATCH=%0d GROUP=%0d rd_base_addr_eff=%0d",
+                     $time, sched_batch_cnt, sched_group_cnt, rd_base_addr_eff);
+        end
+        rd_base_addr_eff_prev <= rd_base_addr_eff;
+        sched_batch_cnt_prev <= sched_batch_cnt;
+        sched_group_cnt_prev <= sched_group_cnt;
+    end
+    `endif
 
     // =========================================================================
     // Top-Level State Machine
     // =========================================================================
+    // NOTE (MLP mode contract):
+    // - DISPATCH RIGHT loads weights into MLP BRAM (row_bram → MLP BRAM).
+    // - TILE (MATMUL) should be compute-only: stream activations from row_bram and read weights from MLP BRAM.
     typedef enum logic [3:0] {
         ST_IDLE      = 4'd0,
-        ST_FILL      = 4'd1,   // Weight fill phase
-        ST_COMPUTE   = 4'd2,   // Compute phase
+        ST_DISP_FILL = 4'd1,   // DISPATCH RIGHT fill phase only
+        ST_COMPUTE   = 4'd2,   // Compute phase (TILE)
         ST_DONE      = 4'd3
     } top_state_t;
 
     top_state_t top_state_reg;
 
-    // =========================================================================
-    // Weight Fill Controller FSM
-    // =========================================================================
-    typedef enum logic [2:0] {
-        FILL_IDLE     = 3'b000,
-        FILL_READ     = 3'b001,
-        FILL_WAIT     = 3'b010,
-        FILL_SEND     = 3'b011,
-        FILL_NEXT     = 3'b100,
-        FILL_DONE     = 3'b101
-    } fill_state_t;
-
-    fill_state_t fill_state_reg, fill_state_next;
-
-    // Fill counters
-    logic [7:0] fill_nv_cnt;
-    logic [3:0] fill_col_cnt;
-
-    // Fill control
+    // Fill control (DISPATCH RIGHT only)
     logic fill_start;
-    logic fill_done;
-    logic fill_dispatch_only;  // Track if ST_FILL was triggered by DISPATCH (no compute after)
-
-    // =========================================================================
-    // Compute Controller FSM
-    // =========================================================================
-    typedef enum logic [2:0] {
-        COMP_IDLE        = 3'b000,
-        COMP_READ        = 3'b001,
-        COMP_WAIT        = 3'b010,
-        COMP_SEND        = 3'b011,
-        COMP_NEXT        = 3'b100,
-        COMP_WAIT_FINISH = 3'b101,
-        COMP_DONE        = 3'b110
-    } comp_ctrl_state_t;
-
-    comp_ctrl_state_t comp_ctrl_state_reg, comp_ctrl_state_next;
-
-    // Compute counters
-    logic [7:0] comp_nv_cnt;
-    logic [7:0] comp_batch_cnt;
+    logic fill_dispatch_only;  // 1 when current operation is DISPATCH RIGHT fill-only
 
     // Compute control
     logic compute_start;
-    logic compute_done;
 
     // =========================================================================
     // Result Counter
@@ -265,87 +349,76 @@ module compute_engine_mlp #(
             top_state_reg <= ST_IDLE;
             fill_start <= 1'b0;
             compute_start <= 1'b0;
-            col_group_cnt <= 4'd0;
             fill_dispatch_only <= 1'b0;
             active_vec_len <= 8'd0;
             active_right_ugd_len <= 8'd0;
+            active_left_ugd_len <= 8'd0;
+            active_left_addr <= 16'd0;
+            active_right_addr <= 16'd0;
+            active_disp_col_en <= 24'd0;
+            active_disp_col_start <= 5'd0;
+            active_disp_broadcast <= 1'b0;
+            active_disp_man_nv_cnt <= 8'd0;
+            active_disp_wt_base_addr <= 10'd0;
         end else begin
             fill_start <= 1'b0;
             compute_start <= 1'b0;
 
             case (top_state_reg)
                 ST_IDLE: begin
-                    // Two paths into ST_FILL:
-                    // 1. MATMUL command (i_tile_start): ST_FILL → ST_COMPUTE (full flow)
-                    // 2. DISPATCH RIGHT (i_disp_start): ST_FILL → ST_DONE (weight load only)
+                    // Two paths out of IDLE:
+                    // 1. TILE (MATMUL): compute-only (weights already in MLP BRAM from DISPATCH RIGHT)
+                    // 2. DISPATCH RIGHT: load weights into MLP BRAM (row_bram → MLP BRAM)
                     if (i_tile_en && i_tile_start) begin
-                        top_state_reg <= ST_FILL;
-                        fill_start <= 1'b1;
-                        col_group_cnt <= 4'd0;  // Start with first column group
+                        top_state_reg <= ST_COMPUTE;
                         fill_dispatch_only <= 1'b0;  // Full MATMUL flow
+                        compute_start <= 1'b1;
                         // Latch TILE parameters
                         active_vec_len <= i_tile_vec_len;
                         active_right_ugd_len <= i_tile_right_ugd_len;
+                        active_left_ugd_len <= i_tile_left_ugd_len;
+                        active_left_addr <= i_tile_left_addr;
+                        active_right_addr <= i_tile_right_addr;
                         `ifdef SIMULATION
-                        $display("[CE_MLP%0d] @%0t ST_IDLE: tile_start received, B=%0d, C=%0d, V=%0d, num_groups=%0d",
-                                 TILE_ID, $time, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len, num_col_groups);
+                        $display("[CE_MLP%0d] @%0t TILE START: B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d",
+                                 TILE_ID, $time, i_tile_left_ugd_len, i_tile_right_ugd_len, i_tile_vec_len,
+                                 i_tile_left_addr, i_tile_right_addr);
                         `endif
                     end else if (i_disp_start) begin
-                        top_state_reg <= ST_FILL;
-                        fill_start <= 1'b1;
-                        col_group_cnt <= 4'd0;  // Start with first column group
-                        fill_dispatch_only <= 1'b1;  // DISPATCH only (no compute)
-                        // Latch DISPATCH parameters
-                        active_vec_len <= i_disp_ugd_vec_size;
-                        active_right_ugd_len <= i_disp_right_ugd_len;
-                        `ifdef SIMULATION
-                        $display("[CE_MLP%0d] @%0t ST_IDLE: disp_start received (DISPATCH RIGHT), V=%0d, C=%0d, num_groups=%0d",
-                                 TILE_ID, $time, i_disp_ugd_vec_size, i_disp_right_ugd_len, num_col_groups);
-                        `endif
+                        // Only process DISPATCH RIGHT (weights). DISPATCH LEFT (activations) is ignored.
+                        if (i_disp_right) begin
+                            top_state_reg <= ST_DISP_FILL;
+                            fill_start <= 1'b1;
+                            fill_dispatch_only <= 1'b1;  // DISPATCH only (no compute)
+                            // Latch DISPATCH parameters
+                            active_vec_len <= i_disp_ugd_vec_size;
+                            active_right_ugd_len <= i_disp_man_nv_cnt / i_disp_ugd_vec_size;
+                            active_left_addr <= 16'd0;
+                            active_right_addr <= 16'd0;
+                            active_disp_col_en <= i_disp_col_en;
+                            active_disp_col_start <= i_disp_col_start;
+                            active_disp_broadcast <= i_disp_broadcast;
+                            active_disp_man_nv_cnt <= i_disp_man_nv_cnt;
+                            active_disp_wt_base_addr <= i_disp_tile_addr[9:0];
+                        end
+                        // DISPATCH LEFT: Ignore (activations stay in row_bram)
                     end
                 end
 
-                ST_FILL: begin
+                ST_DISP_FILL: begin
                     if (fill_done) begin
-                        if (fill_dispatch_only) begin
-                            // DISPATCH path: Go directly to DONE (weights loaded, no compute)
-                            top_state_reg <= ST_DONE;
-                            `ifdef SIMULATION
-                            $display("[CE_MLP%0d] @%0t ST_FILL: fill_done for DISPATCH, going to DONE",
-                                     TILE_ID, $time);
-                            `endif
-                        end else begin
-                            // MATMUL path: Continue to compute
-                            top_state_reg <= ST_COMPUTE;
-                            compute_start <= 1'b1;
-                            `ifdef SIMULATION
-                            $display("[CE_MLP%0d] @%0t ST_FILL: fill_done for group %0d, starting compute",
-                                     TILE_ID, $time, col_group_cnt);
-                            `endif
-                        end
+                        top_state_reg <= ST_DONE;
                     end
                 end
 
                 ST_COMPUTE: begin
                     if (compute_done) begin
-                        // Check if more column groups to process
-                        if (col_group_cnt == (num_col_groups - 1)) begin
-                            // All groups done
-                            top_state_reg <= ST_DONE;
-                            `ifdef SIMULATION
-                            $display("[CE_MLP%0d] @%0t ST_COMPUTE: all %0d groups done",
-                                     TILE_ID, $time, num_col_groups);
-                            `endif
-                        end else begin
-                            // More groups - go back to FILL for next group
-                            col_group_cnt <= col_group_cnt + 4'd1;
-                            top_state_reg <= ST_FILL;
-                            fill_start <= 1'b1;
-                            `ifdef SIMULATION
-                            $display("[CE_MLP%0d] @%0t ST_COMPUTE: group %0d done, starting group %0d",
-                                     TILE_ID, $time, col_group_cnt, col_group_cnt + 1);
-                            `endif
-                        end
+                        top_state_reg <= ST_DONE;
+                        `ifdef SIMULATION
+                        $display("[CE_MLP%0d] @%0t TILE COMPLETE: B=%0d batches × %0d groups = %0d result pulses",
+                                 TILE_ID, $time, active_left_ugd_len, num_col_groups, 
+                                 active_left_ugd_len * num_col_groups);
+                        `endif
                     end
                 end
 
@@ -359,13 +432,29 @@ module compute_engine_mlp #(
     // o_tile_done: Pulse when MATMUL completes (full flow)
     assign o_tile_done = (top_state_reg == ST_DONE) && !fill_dispatch_only;
     
-    // o_disp_done: Pulse when DISPATCH completes (weight load only)
-    assign o_disp_done = (top_state_reg == ST_DONE) && fill_dispatch_only;
+    // o_disp_done: Registered signal that stays high until next DISPATCH starts
+    logic disp_done_reg;
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            disp_done_reg <= 1'b0;
+        end else begin
+            if (i_disp_start) begin
+                if (!i_disp_right) begin
+                    disp_done_reg <= 1'b1;  // DISPATCH LEFT: done immediately
+                end else begin
+                    disp_done_reg <= 1'b0;  // DISPATCH RIGHT: clear on start
+                end
+            end else if ((top_state_reg == ST_DONE) && fill_dispatch_only) begin
+                disp_done_reg <= 1'b1;
+            end
+        end
+    end
+    assign o_disp_done = disp_done_reg;
 
     // =========================================================================
     // row_bram Instance
     // =========================================================================
-    row_bram #(
+    comp_row_bram #(
         .MAN_WIDTH(MAN_WIDTH),
         .EXP_WIDTH(EXP_WIDTH),
         .BRAM_DEPTH(BRAM_DEPTH),
@@ -402,27 +491,370 @@ module compute_engine_mlp #(
     );
 
     // =========================================================================
-    // mlp_bram_col_ctrl Instance
+    // MLP Dispatch Controller Instance (replaces comp_bram_fill_ctrl for DISPATCH)
     // =========================================================================
-    mlp_bram_col_ctrl #(
+    logic [255:0] disp_nv_right_man [0:3];
+    logic [31:0]  disp_nv_right_exp;
+    logic [9:0]   disp_wt_base_addr;
+    
+    comp_mlp_dispatch #(
+        .NUM_COLUMNS(NUM_COLUMNS)
+    ) u_mlp_dispatch (
+        .i_clk(i_clk),
+        .i_reset_n(i_reset_n),
+
+        // Command interface
+        .i_disp_start(fill_start),
+        .o_disp_done(fill_done),
+        .i_tile_start(i_tile_start),
+
+        // DISPATCH command parameters
+        .i_disp_man_nv_cnt(active_disp_man_nv_cnt),
+        .i_disp_ugd_vec_size(active_vec_len),
+        .i_disp_tile_addr(active_disp_wt_base_addr),
+        .i_disp_col_start(active_disp_col_start),
+        .i_disp_broadcast(active_disp_broadcast),
+
+        // row_bram read interface
+        .o_nv_right_rd_idx(nv_right_rd_idx),
+        .i_nv_right_man(nv_right_man),
+        .i_nv_right_exp(nv_right_exp),
+
+        // MLP BRAM write interface
+        .o_wt_valid(wt_valid),
+        .i_wt_ready(wt_ready),
+        .o_nv_right_man(disp_nv_right_man),
+        .o_nv_right_exp(disp_nv_right_exp),
+        .o_col_sel(col_sel),
+        .o_wt_nv_idx(wt_nv_idx),
+        .o_wt_cycle_cnt(wt_cycle_cnt),
+        .o_wt_loading(wt_loading),
+        .o_wt_base_addr(disp_wt_base_addr)
+    );
+    
+    // Pass through dispatch data
+    assign nv_right_man_eff[0] = disp_nv_right_man[0];
+    assign nv_right_man_eff[1] = disp_nv_right_man[1];
+    assign nv_right_man_eff[2] = disp_nv_right_man[2];
+    assign nv_right_man_eff[3] = disp_nv_right_man[3];
+    assign nv_right_exp_eff = disp_nv_right_exp;
+    assign wt_col_valid = 1'b1;
+
+    // =========================================================================
+    // MLP Activation/NV Scheduler - NEW: B outer, C inner
+    // =========================================================================
+    // For each batch (outer):
+    //   For each column group (inner):
+    //     Stream V NVs (activation replayed, weights cycle through groups)
+    //     Output 16 results
+    //
+    // Key difference from old scheduler:
+    //   - sched_batch_cnt is outer (advances after all groups done)
+    //   - sched_group_cnt is inner (cycles 0..num_col_groups-1 per batch)
+    //   - Activation read index = batch * V + nv_cnt (same for all groups in batch)
+    //   - Weight read base = group * V * 8 (changes each group)
+    
+    typedef enum logic [2:0] {
+        SCHED_IDLE        = 3'd0,
+        SCHED_PRELOAD_CUR = 3'd1,
+        SCHED_PRELOAD_NXT = 3'd2,
+        SCHED_RUN         = 3'd3,
+        SCHED_WAIT_RESULT = 3'd4
+    } sched_state_t;
+
+    sched_state_t sched_state_reg, sched_state_next;
+
+    logic        sched_running;
+    logic [7:0]  sched_batch_cnt;   // 0..B-1 (outer loop)
+    // sched_group_cnt declared above near rd_base_addr_eff
+    logic [7:0]  sched_nv_cnt;      // 0..V-1 within dot product
+    logic [15:0] sched_result_cnt;  // Total results: B * num_col_groups
+
+    // Row BRAM read index driving
+    logic [6:0]  nv_left_rd_idx_reg;
+    logic [13:0] left_base_nv_idx_full;
+    logic [13:0] idx_full_cur;
+    logic [13:0] idx_full_nxt;
+    logic [6:0]  idx_cur;
+    logic [6:0]  idx_nxt;
+    logic        load_cur;
+    logic        load_nxt;
+
+    assign nv_left_rd_idx = nv_left_rd_idx_reg;
+
+    // Compute current and next absolute NV indices
+    // Activation index = base + batch * V + nv_cnt
+    // This stays the SAME for all groups within a batch
+    always_comb begin
+        left_base_nv_idx_full = {7'd0, active_left_addr[8:2]};
+        idx_full_cur = left_base_nv_idx_full + (sched_batch_cnt * active_vec_len) + sched_nv_cnt;
+        idx_cur = idx_full_cur[6:0];
+
+        if (sched_nv_cnt == (active_vec_len - 1)) begin
+            idx_full_nxt = idx_full_cur; // unused on last NV
+        end else begin
+            idx_full_nxt = left_base_nv_idx_full + (sched_batch_cnt * active_vec_len) + (sched_nv_cnt + 8'd1);
+        end
+        idx_nxt = idx_full_nxt[6:0];
+    end
+
+    // Drive selection: present NEXT payload at NV boundaries
+    always_comb begin
+        drive_next_payload = 1'b0;
+        if (sched_state_reg == SCHED_RUN) begin
+            if (first_nv_sent && act_ready && act_cur_valid && act_next_valid && !act_cur_last_nv) begin
+                drive_next_payload = 1'b1;
+            end
+        end
+    end
+
+    // Wrapper interface signals
+    assign act_valid = (sched_state_reg == SCHED_RUN) && act_cur_valid && act_next_valid;
+    assign new_dot   = drive_next_payload ? act_next_new_dot : act_cur_new_dot;
+    assign last_nv   = drive_next_payload ? act_next_last_nv : act_cur_last_nv;
+
+    always_comb begin
+        if (drive_next_payload) begin
+            act_payload_man[0] = act_next_man[0];
+            act_payload_man[1] = act_next_man[1];
+            act_payload_man[2] = act_next_man[2];
+            act_payload_man[3] = act_next_man[3];
+            act_payload_exp    = act_next_exp;
+        end else begin
+            act_payload_man[0] = act_cur_man[0];
+            act_payload_man[1] = act_cur_man[1];
+            act_payload_man[2] = act_cur_man[2];
+            act_payload_man[3] = act_cur_man[3];
+            act_payload_exp    = act_cur_exp;
+        end
+    end
+
+    // Scheduler state transitions
+    always_comb begin
+        sched_state_next = sched_state_reg;
+        load_cur = 1'b0;
+        load_nxt = 1'b0;
+
+        case (sched_state_reg)
+            SCHED_IDLE: begin
+                if (compute_start) begin
+                    sched_state_next = SCHED_PRELOAD_CUR;
+                end
+            end
+
+            SCHED_PRELOAD_CUR: begin
+                load_cur = 1'b1;
+                sched_state_next = SCHED_PRELOAD_NXT;
+            end
+
+            SCHED_PRELOAD_NXT: begin
+                load_nxt = 1'b1;
+                sched_state_next = SCHED_RUN;
+            end
+
+            SCHED_RUN: begin
+                if (act_valid && act_ready && act_cur_last_nv) begin
+                    sched_state_next = SCHED_WAIT_RESULT;
+                end
+            end
+
+            SCHED_WAIT_RESULT: begin
+                if (dout_valid) begin
+                    // Check if we've completed all B*G results
+                    if (sched_result_cnt == (active_left_ugd_len * num_col_groups - 1)) begin
+                        sched_state_next = SCHED_IDLE;
+                    end else begin
+                        sched_state_next = SCHED_PRELOAD_CUR;
+                    end
+                end
+            end
+
+            default: begin
+                sched_state_next = SCHED_IDLE;
+            end
+        endcase
+    end
+
+    // Drive row_bram read index
+    always_comb begin
+        if (sched_state_reg == SCHED_PRELOAD_CUR) begin
+            nv_left_rd_idx_reg = idx_cur;
+        end else if (sched_state_reg == SCHED_PRELOAD_NXT) begin
+            nv_left_rd_idx_reg = (active_vec_len == 8'd1) ? idx_cur : idx_nxt;
+        end else if ((sched_state_reg == SCHED_RUN) && !act_cur_last_nv) begin
+            nv_left_rd_idx_reg = idx_nxt;
+        end else begin
+            nv_left_rd_idx_reg = idx_cur;
+        end
+    end
+
+    // Scheduler sequential logic - NEW B outer, C inner structure
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            sched_state_reg   <= SCHED_IDLE;
+            sched_running     <= 1'b0;
+            sched_batch_cnt   <= 8'd0;
+            sched_group_cnt   <= 4'd0;
+            sched_nv_cnt      <= 8'd0;
+            sched_result_cnt  <= 16'd0;
+            compute_done      <= 1'b0;
+
+            act_cur_valid     <= 1'b0;
+            act_next_valid    <= 1'b0;
+            act_cur_man[0]    <= 256'd0;
+            act_cur_man[1]    <= 256'd0;
+            act_cur_man[2]    <= 256'd0;
+            act_cur_man[3]    <= 256'd0;
+            act_cur_exp       <= 32'd0;
+            act_cur_new_dot   <= 1'b0;
+            act_cur_last_nv   <= 1'b0;
+            act_next_man[0]   <= 256'd0;
+            act_next_man[1]   <= 256'd0;
+            act_next_man[2]   <= 256'd0;
+            act_next_man[3]   <= 256'd0;
+            act_next_exp      <= 32'd0;
+            act_next_new_dot  <= 1'b0;
+            act_next_last_nv  <= 1'b0;
+            first_nv_sent     <= 1'b0;
+            refill_next_pending <= 1'b0;
+        end else begin
+            sched_state_reg <= sched_state_next;
+            compute_done    <= 1'b0;
+
+            if (compute_start) begin
+                sched_running    <= 1'b1;
+                sched_batch_cnt  <= 8'd0;
+                sched_group_cnt  <= 4'd0;
+                sched_nv_cnt     <= 8'd0;
+                sched_result_cnt <= 16'd0;
+                act_cur_valid    <= 1'b0;
+                act_next_valid   <= 1'b0;
+                first_nv_sent    <= 1'b0;
+                refill_next_pending <= 1'b0;
+            end
+
+            // Load current payload
+            if (load_cur) begin
+                act_cur_man[0]  <= nv_left_man[0];
+                act_cur_man[1]  <= nv_left_man[1];
+                act_cur_man[2]  <= nv_left_man[2];
+                act_cur_man[3]  <= nv_left_man[3];
+                act_cur_exp     <= nv_left_exp;
+                act_cur_new_dot <= (sched_nv_cnt == 8'd0);
+                act_cur_last_nv <= (sched_nv_cnt == (active_vec_len - 1));
+                act_cur_valid   <= 1'b1;
+            end
+
+            // Load next payload
+            if (load_nxt) begin
+                act_next_man[0]  <= nv_left_man[0];
+                act_next_man[1]  <= nv_left_man[1];
+                act_next_man[2]  <= nv_left_man[2];
+                act_next_man[3]  <= nv_left_man[3];
+                act_next_exp     <= nv_left_exp;
+                if (active_vec_len == 8'd1) begin
+                    act_next_new_dot <= 1'b0;
+                    act_next_last_nv <= 1'b1;
+                end else begin
+                    act_next_new_dot <= 1'b0;
+                    act_next_last_nv <= (sched_nv_cnt + 8'd1) == (active_vec_len - 1);
+                end
+                act_next_valid   <= 1'b1;
+            end
+
+            // NV consumption handshake
+            if ((sched_state_reg == SCHED_RUN) && act_valid && act_ready) begin
+                if (!first_nv_sent) begin
+                    first_nv_sent <= 1'b1;
+                end else begin
+                    if (!act_cur_last_nv) begin
+                        // Shift NEXT -> CUR
+                        act_cur_man[0]  <= act_next_man[0];
+                        act_cur_man[1]  <= act_next_man[1];
+                        act_cur_man[2]  <= act_next_man[2];
+                        act_cur_man[3]  <= act_next_man[3];
+                        act_cur_exp     <= act_next_exp;
+                        act_cur_new_dot <= act_next_new_dot;
+                        act_cur_last_nv <= act_next_last_nv;
+                        act_cur_valid   <= 1'b1;
+                        act_next_valid  <= 1'b0;
+                        refill_next_pending <= 1'b1;
+
+                        sched_nv_cnt <= sched_nv_cnt + 8'd1;
+                    end
+                end
+            end
+
+            // Refill NEXT
+            if ((sched_state_reg == SCHED_RUN) && refill_next_pending) begin
+                act_next_man[0]  <= nv_left_man[0];
+                act_next_man[1]  <= nv_left_man[1];
+                act_next_man[2]  <= nv_left_man[2];
+                act_next_man[3]  <= nv_left_man[3];
+                act_next_exp     <= nv_left_exp;
+                act_next_new_dot <= 1'b0;
+                act_next_last_nv <= (sched_nv_cnt + 8'd1) == (active_vec_len - 1);
+                act_next_valid   <= 1'b1;
+                refill_next_pending <= 1'b0;
+            end
+
+            // Result completion - NEW: group is inner, batch is outer
+            if (dout_valid) begin
+                sched_result_cnt <= sched_result_cnt + 16'd1;
+                
+                if (sched_result_cnt == (active_left_ugd_len * num_col_groups - 1)) begin
+                    // All done (B batches * G groups)
+                    compute_done  <= 1'b1;
+                    sched_running <= 1'b0;
+                end else begin
+                    // Check if we finished all groups for this batch
+                    if (sched_group_cnt == (num_col_groups - 1)) begin
+                        // Advance to next batch, reset group counter
+                        sched_batch_cnt <= sched_batch_cnt + 8'd1;
+                        sched_group_cnt <= 4'd0;
+                    end else begin
+                        // More groups in this batch
+                        sched_group_cnt <= sched_group_cnt + 4'd1;
+                    end
+                    
+                    // Reset per-dot-product state
+                    sched_nv_cnt    <= 8'd0;
+                    act_cur_valid   <= 1'b0;
+                    act_next_valid  <= 1'b0;
+                    first_nv_sent   <= 1'b0;
+                end
+            end
+        end
+    end
+
+    // =========================================================================
+    // comp_mlp_bram_col_wrapper Instance
+    // =========================================================================
+    comp_mlp_bram_col_wrapper #(
         .NUM_MLPS(NUM_MLPS)
-    ) u_mlp_bram_col_ctrl (
+    ) u_mlp_bram_col_wrapper  (
         .clk(i_clk),
         .rstn(i_reset_n),
+
+        // Base address configuration
+        .i_wt_base_addr(disp_wt_base_addr),
+        .i_rd_base_addr(rd_base_addr_eff),
 
         // Weight interface
         .i_wt_valid(wt_valid),
         .o_wt_ready(wt_ready),
-        .i_nv_right_man(nv_right_man),
-        .i_nv_right_exp(nv_right_exp),
+        .i_nv_right_man(nv_right_man_eff),
+        .i_nv_right_exp(nv_right_exp_eff),
         .i_col_sel(col_sel),
         .i_wt_nv_idx(wt_nv_idx),
+        .i_wt_cycle_cnt(wt_cycle_cnt),
+        .i_wt_loading(wt_loading),
 
         // Activation interface
         .i_act_valid(act_valid),
         .o_act_ready(act_ready),
-        .i_nv_left_man(nv_left_man),
-        .i_nv_left_exp(nv_left_exp),
+        .i_nv_left_man(act_payload_man),
+        .i_nv_left_exp(act_payload_exp),
         .i_new_dot(new_dot),
         .i_last_nv(last_nv),
 
@@ -433,280 +865,7 @@ module compute_engine_mlp #(
     );
 
     // =========================================================================
-    // Weight Fill FSM: Next State Logic
-    // =========================================================================
-    always_comb begin
-        fill_state_next = fill_state_reg;
-
-        case (fill_state_reg)
-            FILL_IDLE: begin
-                if (fill_start) begin
-                    fill_state_next = FILL_READ;
-                end
-            end
-
-            FILL_READ: begin
-                fill_state_next = FILL_WAIT;
-            end
-
-            FILL_WAIT: begin
-                if (wt_ready) begin
-                    fill_state_next = FILL_SEND;
-                end
-            end
-
-            FILL_SEND: begin
-                fill_state_next = FILL_NEXT;
-            end
-
-            FILL_NEXT: begin
-                if (fill_col_cnt == (NUM_COLUMNS - 1) &&
-                    fill_nv_cnt == (active_vec_len - 1)) begin
-                    fill_state_next = FILL_DONE;
-                end else begin
-                    fill_state_next = FILL_READ;
-                end
-            end
-
-            FILL_DONE: begin
-                fill_state_next = FILL_IDLE;
-            end
-
-            default: fill_state_next = FILL_IDLE;
-        endcase
-    end
-
-    // =========================================================================
-    // Weight Fill FSM: Registered Logic
-    // =========================================================================
-    always_ff @(posedge i_clk or negedge i_reset_n) begin
-        if (!i_reset_n) begin
-            fill_state_reg <= FILL_IDLE;
-            fill_nv_cnt    <= '0;
-            fill_col_cnt   <= '0;
-        end else begin
-            fill_state_reg <= fill_state_next;
-
-            case (fill_state_reg)
-                FILL_IDLE: begin
-                    fill_nv_cnt  <= '0;
-                    fill_col_cnt <= '0;
-                end
-
-                FILL_NEXT: begin
-                    if (fill_nv_cnt == (active_vec_len - 1)) begin
-                        fill_nv_cnt  <= '0;
-                        fill_col_cnt <= fill_col_cnt + 4'd1;
-                    end else begin
-                        fill_nv_cnt <= fill_nv_cnt + 1;
-                    end
-                end
-
-                default: ;
-            endcase
-        end
-    end
-
-    assign fill_done = (fill_state_reg == FILL_DONE);
-
-    // =========================================================================
-    // Weight Fill: Control Signal Generation
-    // =========================================================================
-    // For C > 16, we need to add the column group offset:
-    //   fill_nv_idx = ((col_group_cnt * 16) + fill_col_cnt) * vec_len + fill_nv_cnt
-    // This reads weights from the correct offset in row_bram for each group
-    //
-    // Memory layout (column-major, V NVs per column):
-    //   Group 0: Col 0 [NV 0..V-1], Col 1 [NV V..2V-1], ..., Col 15 [NV 15V..16V-1]
-    //   Group 1: Col 16 [NV 16V..17V-1], Col 17 [NV 17V..18V-1], ..., Col 31 [NV 31V..32V-1]
-    //   etc.
-    logic [13:0] fill_nv_idx_full;  // Extended to support larger indices
-    logic [6:0]  fill_nv_idx;
-
-    // Calculate: ((col_group_cnt * 16) + fill_col_cnt) * vec_len + fill_nv_cnt
-    // = (col_group_cnt * 16 * vec_len) + (fill_col_cnt * vec_len) + fill_nv_cnt
-    assign fill_nv_idx_full = ({col_group_cnt, 4'd0} * active_vec_len) +  // group offset: col_group_cnt * 16 * V
-                              (fill_col_cnt * active_vec_len) +           // column offset within group
-                              fill_nv_cnt;                                 // NV within column
-    assign fill_nv_idx = fill_nv_idx_full[6:0];
-
-    always_comb begin
-        nv_right_rd_idx = 7'd0;
-        wt_valid = 1'b0;
-        col_sel = 4'd0;
-        wt_nv_idx = 7'd0;
-
-        case (fill_state_reg)
-            FILL_READ, FILL_WAIT, FILL_SEND: begin
-                nv_right_rd_idx = fill_nv_idx;
-                col_sel = fill_col_cnt;        // Column within MLP (0-15)
-                wt_nv_idx = fill_nv_cnt[6:0];  // NV index within column (for V>1)
-            end
-            default: ;
-        endcase
-
-        if (fill_state_reg == FILL_SEND) begin
-            wt_valid = 1'b1;
-        end
-    end
-
-    // Debug: trace FILL phase data flow
-    // synthesis translate_off
-    always @(posedge i_clk) begin
-        if (fill_state_reg == FILL_SEND) begin
-            $display("[CE_MLP_FILL] @%0t SEND: col=%0d, nv_idx=%0d, rd_idx=%0d, man0[31:0]=0x%08x",
-                     $time, col_sel, wt_nv_idx, fill_nv_idx, nv_right_man[0][31:0]);
-        end
-    end
-    // synthesis translate_on
-
-    // Debug: trace COMPUTE phase FSM (for debugging 0 results)
-    // synthesis translate_off
-    logic [3:0] comp_ctrl_state_prev;
-    always @(posedge i_clk) begin
-        comp_ctrl_state_prev <= comp_ctrl_state_reg;
-        if (comp_ctrl_state_reg != comp_ctrl_state_prev) begin
-            $display("[CE_MLP_COMP] @%0t state=%0d->%0d, batch=%0d, nv=%0d, act_ready=%b, compute_start=%b",
-                     $time, comp_ctrl_state_prev, comp_ctrl_state_reg, comp_batch_cnt, comp_nv_cnt, act_ready, compute_start);
-        end
-        if (comp_ctrl_state_reg == COMP_WAIT && !act_ready) begin
-            // Only print once per 1000 cycles to avoid flooding
-            if ($time % 10000 == 0)
-                $display("[CE_MLP_COMP] @%0t WAITING for act_ready (act_ready=%b)", $time, act_ready);
-        end
-    end
-    // synthesis translate_on
-
-    // =========================================================================
-    // Compute Controller FSM: Next State Logic
-    // =========================================================================
-    always_comb begin
-        comp_ctrl_state_next = comp_ctrl_state_reg;
-
-        case (comp_ctrl_state_reg)
-            COMP_IDLE: begin
-                if (compute_start) begin
-                    comp_ctrl_state_next = COMP_READ;
-                end
-            end
-
-            COMP_READ: begin
-                comp_ctrl_state_next = COMP_WAIT;
-            end
-
-            COMP_WAIT: begin
-                if (act_ready) begin
-                    comp_ctrl_state_next = COMP_SEND;
-                end
-            end
-
-            COMP_SEND: begin
-                comp_ctrl_state_next = COMP_NEXT;
-            end
-
-            COMP_NEXT: begin
-                if (comp_nv_cnt == (active_vec_len - 1)) begin
-                    comp_ctrl_state_next = COMP_WAIT_FINISH;
-                end else begin
-                    comp_ctrl_state_next = COMP_READ;
-                end
-            end
-
-            COMP_WAIT_FINISH: begin
-                if (act_ready) begin
-                    if (comp_batch_cnt == (i_tile_left_ugd_len - 1)) begin
-                        comp_ctrl_state_next = COMP_DONE;
-                    end else begin
-                        comp_ctrl_state_next = COMP_READ;
-                    end
-                end
-            end
-
-            COMP_DONE: begin
-                comp_ctrl_state_next = COMP_IDLE;
-            end
-
-            default: comp_ctrl_state_next = COMP_IDLE;
-        endcase
-    end
-
-    // =========================================================================
-    // Compute Controller FSM: Registered Logic
-    // =========================================================================
-    always_ff @(posedge i_clk or negedge i_reset_n) begin
-        if (!i_reset_n) begin
-            comp_ctrl_state_reg <= COMP_IDLE;
-            comp_nv_cnt         <= '0;
-            comp_batch_cnt      <= '0;
-        end else begin
-            comp_ctrl_state_reg <= comp_ctrl_state_next;
-
-            case (comp_ctrl_state_reg)
-                COMP_IDLE: begin
-                    comp_nv_cnt    <= '0;
-                    comp_batch_cnt <= '0;
-                end
-
-                COMP_NEXT: begin
-                    comp_nv_cnt <= comp_nv_cnt + 1;
-                end
-
-                COMP_WAIT_FINISH: begin
-                    if (act_ready && (comp_batch_cnt != (i_tile_left_ugd_len - 1))) begin
-                        comp_batch_cnt <= comp_batch_cnt + 1;
-                        comp_nv_cnt    <= '0;
-                    end
-                end
-
-                default: ;
-            endcase
-        end
-    end
-
-    assign compute_done = (comp_ctrl_state_reg == COMP_DONE);
-
-    // =========================================================================
-    // Compute Controller: Control Signal Generation
-    // =========================================================================
-    logic [13:0] comp_nv_idx_full;
-    logic [6:0]  comp_nv_idx;
-    assign comp_nv_idx_full = (comp_batch_cnt * active_vec_len) + comp_nv_cnt;
-    assign comp_nv_idx = comp_nv_idx_full[6:0];
-
-    always_comb begin
-        nv_left_rd_idx = 7'd0;
-        act_valid = 1'b0;
-        new_dot = 1'b0;
-        last_nv = 1'b0;
-
-        case (comp_ctrl_state_reg)
-            COMP_READ, COMP_WAIT, COMP_SEND: begin
-                nv_left_rd_idx = comp_nv_idx;
-            end
-            default: ;
-        endcase
-
-        if (comp_ctrl_state_reg == COMP_SEND) begin
-            act_valid = 1'b1;
-            new_dot = (comp_nv_cnt == '0);
-            last_nv = (comp_nv_cnt == (active_vec_len - 1));  // Last NV of this batch
-        end
-    end
-
-    // =========================================================================
     // Result Extraction: FP16 directly from MLP outputs
-    // mlp_bram_col_ctrl now outputs FP16 (not FP24!) via integer-domain adder
-    // Each MLP produces 72 bits = 2 columns × 16-bit FP16 + status + padding
-    //
-    // New mlp_bram_col_ctrl output format (with integer-domain adder):
-    //   - dout[15:0]  = Bank 0 result (FP16)
-    //   - dout[31:16] = Bank 1 result (FP16)
-    //   - dout[55:32] = status bits (24 bits)
-    //   - dout[71:56] = padding (unused)
-    //
-    // Weight loading bank mapping remains same:
-    //   - Even column weights → Bank 1 → dout[31:16]
-    //   - Odd column weights → Bank 0 → dout[15:0]
     // =========================================================================
     genvar col;
     generate
@@ -715,30 +874,19 @@ module compute_engine_mlp #(
             localparam IS_ODD = col % 2;
 
             if (IS_ODD == 0) begin : even_col
-                // Even columns: extract from bank0 (dout[15:0])
                 assign fp16_results[col] = mlp_dout[MLP_IDX][15:0];
             end else begin : odd_col
-                // Odd columns: extract from bank1 (dout[31:16])
                 assign fp16_results[col] = mlp_dout[MLP_IDX][31:16];
             end
         end
     endgenerate
 
-    // FP16 results are directly available - no conversion stage needed!
-    // Valid signal comes directly from mlp_bram_col_ctrl output
     assign fp16_valid = dout_valid;
 
     // =========================================================================
     // Output Assembly: Pack 16 FP16 into 256-bit vector
-    // Gate result_valid to only be active during compute phase
-    //
-    // NOTE: The pipeline has multiple stages of latency:
-    //   - mlp_bram_col_ctrl integer-domain adder: 4 cycles
-    //   - output register: +1 cycle
-    // We need to extend in_compute_phase for these extra cycles so results
-    // that are in-flight when ST_COMPUTE ends are still captured.
     // =========================================================================
-    localparam PIPELINE_LATENCY_CYCLES = 4;  // Extra cycles to keep window open
+    localparam PIPELINE_LATENCY_CYCLES = 4;
 
     logic in_compute_now;
     logic [PIPELINE_LATENCY_CYCLES-1:0] compute_phase_history;
@@ -746,7 +894,6 @@ module compute_engine_mlp #(
 
     assign in_compute_now = (top_state_reg == ST_COMPUTE);
 
-    // Shift register to track recent compute phase
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             compute_phase_history <= '0;
@@ -755,7 +902,6 @@ module compute_engine_mlp #(
         end
     end
 
-    // Stay in compute phase window if currently in ST_COMPUTE OR was recently in it
     assign in_compute_phase = in_compute_now | (|compute_phase_history);
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
@@ -763,7 +909,6 @@ module compute_engine_mlp #(
             o_result_data <= 256'd0;
             o_result_valid <= 1'b0;
         end else begin
-            // Only output results during compute phase (extended window for pipeline)
             if (fp16_valid && in_compute_phase) begin
                 o_result_data <= {
                     fp16_results[15], fp16_results[14], fp16_results[13], fp16_results[12],
@@ -782,7 +927,6 @@ module compute_engine_mlp #(
     // Probe Registers - Capture pipeline stages for debugging
     // =========================================================================
     
-    // Probe 1: Row BRAM write data (first 16 bits when data written)
     logic [15:0] probe_rowbram_data_reg;
     logic        probe_rowbram_valid_reg;
     
@@ -803,7 +947,6 @@ module compute_engine_mlp #(
     assign o_probe_rowbram_data = probe_rowbram_data_reg;
     assign o_probe_rowbram_valid = probe_rowbram_valid_reg;
     
-    // Probe 2: FP24 output (first result when valid)
     logic [23:0] probe_fp24_data_reg;
     logic        probe_fp24_valid_reg;
     
@@ -814,7 +957,6 @@ module compute_engine_mlp #(
         end else begin
             probe_fp24_valid_reg <= dout_valid;
             if (dout_valid) begin
-                // mlp_dout now contains FP16 at [15:0], pad to 24 bits for probe
                 probe_fp24_data_reg <= {8'h0, mlp_dout[0][15:0]};
             end
         end
@@ -823,7 +965,6 @@ module compute_engine_mlp #(
     assign o_probe_fp24_data = probe_fp24_data_reg;
     assign o_probe_fp24_valid = probe_fp24_valid_reg;
     
-    // Probe 3: FP16 output (first result when valid)
     logic [15:0] probe_fp16_data_reg;
     logic        probe_fp16_valid_reg;
     

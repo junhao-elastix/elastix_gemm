@@ -26,7 +26,7 @@
 `timescale 1ps / 1ps
 `default_nettype none
 
-module row_bram #(
+module comp_row_bram #(
     parameter MAN_WIDTH = 256,          // Mantissa line width
     parameter EXP_WIDTH = 8,            // Exponent width
     parameter BRAM_DEPTH = 512,

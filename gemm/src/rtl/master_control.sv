@@ -54,6 +54,18 @@ import gemm_pkg::*;
     output logic                          o_dc_disp_broadcast,    // Distribution mode (0=distribute, 1=broadcast)
     input  logic                          i_dc_disp_done,
 
+    // Compute Engine Interface (DISPATCH command - direct routing)
+    output logic                         o_ce_disp_start,         // DISPATCH start pulse
+    output logic [15:0]                  o_ce_disp_tile_addr,     // Tile destination address
+    output logic [7:0]                   o_ce_disp_man_nv_cnt,   // Total NVs to dispatch
+    output logic [7:0]                   o_ce_disp_ugd_vec_size,  // NVs per UGD vector
+    output logic                         o_ce_disp_man_4b,        // Mantissa width (0=8-bit, 1=4-bit)
+    output logic [23:0]                  o_ce_disp_col_en,        // Column enable mask
+    output logic [4:0]                   o_ce_disp_col_start,     // Distribution start column
+    output logic                         o_ce_disp_right,         // Dispatch side (0=left, 1=right)
+    output logic                         o_ce_disp_broadcast,     // Distribution mode (0=distribute, 1=broadcast)
+    input  logic                         i_ce_disp_done,          // DISPATCH done signal from compute engine
+
     // Compute Engine Interface (TILE command)
     output logic [23:0]                   o_ce_tile_en,           // Per-tile enable (24 tiles max) - STATIC
     output logic [23:0]                   o_ce_tile_start,        // Per-tile start pulse - DYNAMIC
@@ -133,7 +145,8 @@ import gemm_pkg::*;
     // Control signal registers
     logic cmd_fifo_ren_reg;
     logic dc_fetch_en_reg;
-    logic dc_disp_en_reg;
+    logic dc_disp_en_reg;              // Legacy: still used for dispatcher_control (FETCH only)
+    logic ce_disp_start_reg;           // DISPATCH start pulse to compute engine
     logic [23:0] ce_tile_en_reg;       // Per-tile enable (gated by col_en)
     logic [23:0] ce_col_en_reg;        // Column enable mask from MATMUL command
     logic ce_tile_params_set;  // Delayed enable for proper address setup
@@ -227,12 +240,12 @@ import gemm_pkg::*;
                     e_cmd_op_readout:   state_next = ST_EXEC_READOUT;
                     default:            state_next = ST_IDLE; // Error case
                 endcase
-                `ifdef SIMULATION
-                $display("[MC_DECODE] @%0t cmd_op=0x%02x, next_state=%0d", $time, cmd_op_reg, state_next);
-                if (cmd_op_reg == e_cmd_op_readout) begin
-                    $display("[MC_DECODE] @%0t READOUT detected! Transitioning to ST_EXEC_READOUT", $time);
-                end
-                `endif
+                // `ifdef SIMULATION
+                // $display("[MC_DECODE] @%0t cmd_op=0x%02x, next_state=%0d", $time, cmd_op_reg, state_next);
+                // if (cmd_op_reg == e_cmd_op_readout) begin
+                //     $display("[MC_DECODE] @%0t READOUT detected! Transitioning to ST_EXEC_READOUT", $time);
+                // end
+                // `endif
             end
 
             ST_EXEC_FETCH: begin
@@ -254,20 +267,20 @@ import gemm_pkg::*;
             end
 
             ST_EXEC_DISP: begin
-                // DISPATCH triggers copy operation: dispatcher_bram → tile_bram
+                // DISPATCH triggers copy operation: row_bram → mlp_bram
                 // MS2.0 ASYNC MODEL: Trigger and return immediately (no blocking!)
-                // Only execute if dispatcher is idle
-                if (i_dc_state == 4'd0) begin
+                // Only execute if compute engine is idle
+                if (i_ce_state == 4'd0) begin
                     state_next = ST_CMD_COMPLETE;  // Return immediately after trigger
                 end else begin
-                    state_next = ST_EXEC_DISP;  // Wait for dispatcher to be idle
+                    state_next = ST_EXEC_DISP;  // Wait for compute engine to be idle
                 end
             end
 
             ST_WAIT_DISP: begin
-                // WAIT_DISPATCH barrier: Block until dispatcher operation completes
+                // WAIT_DISPATCH barrier: Block until compute engine DISPATCH operation completes
                 // MS2.0 ASYNC MODEL: Check BOTH state and done signal
-                if (i_dc_state == 4'd0 && i_dc_disp_done) begin
+                if (i_ce_state == 4'd0 && i_ce_disp_done) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_DISP; // Keep blocking
@@ -380,6 +393,7 @@ import gemm_pkg::*;
             o_dc_fetch_len  <= '0;
             o_dc_fetch_target <= 1'b0;
             dc_disp_en_reg  <= 1'b0;
+            ce_disp_start_reg <= 1'b0;
             o_dc_disp_tile_addr  <= '0;
             o_dc_disp_man_nv_cnt  <= '0;
             o_dc_disp_ugd_vec_size <= '0;
@@ -388,6 +402,14 @@ import gemm_pkg::*;
             o_dc_disp_col_start <= '0;
             o_dc_disp_right <= 1'b0;
             o_dc_disp_broadcast <= 1'b0;
+            o_ce_disp_tile_addr  <= '0;
+            o_ce_disp_man_nv_cnt  <= '0;
+            o_ce_disp_ugd_vec_size <= '0;
+            o_ce_disp_man_4b <= 1'b0;
+            o_ce_disp_col_en <= '0;
+            o_ce_disp_col_start <= '0;
+            o_ce_disp_right <= 1'b0;
+            o_ce_disp_broadcast <= 1'b0;
         end else begin
             // Clear enables when transitioning out of EXEC states
             if (state_reg == ST_EXEC_FETCH && state_next != ST_EXEC_FETCH) begin
@@ -404,8 +426,12 @@ import gemm_pkg::*;
                     dc_fetch_en_reg <= 1'b0;
                 end
             end
-            // MS2.0 ASYNC MODEL: Clear dc_disp_en in CMD_COMPLETE state
+            // MS2.0 ASYNC MODEL: Clear ce_disp_start in CMD_COMPLETE state
             // This creates falling edge for next DISPATCH command
+            if (state_reg == ST_CMD_COMPLETE && ce_disp_start_reg) begin
+                ce_disp_start_reg <= 1'b0;
+            end
+            // Legacy: Clear dc_disp_en (no longer used for DISPATCH, but keep for compatibility)
             if (state_reg == ST_CMD_COMPLETE && dc_disp_en_reg) begin
                 dc_disp_en_reg <= 1'b0;
             end
@@ -430,18 +456,20 @@ import gemm_pkg::*;
                     cmd_disp_s disp_cmd;
                     disp_cmd = {payload_word3_reg[31:0], payload_word2_reg, payload_word1_reg};
 
-                    // ASYNC FIX: Always set enable in EXEC_DISP
-                    // Clear happens in CMD_COMPLETE to avoid same-cycle conflict
-                    dc_disp_en_reg <= 1'b1;
+                    // Route DISPATCH directly to compute engine (bypass dispatcher_control)
+                    // Set start pulse for compute engine
+                    ce_disp_start_reg <= 1'b1;
+                    // NOTE: dc_disp_en_reg is NOT set - DISPATCH no longer goes through dispatcher_control
 
-                    o_dc_disp_tile_addr  <= disp_cmd.tile_addr;
-                    o_dc_disp_man_nv_cnt <= disp_cmd.man_nv_cnt;
-                    o_dc_disp_ugd_vec_size <= disp_cmd.ugd_vec_size;
-                    o_dc_disp_man_4b     <= disp_cmd.man_4b;
-                    o_dc_disp_col_en     <= disp_cmd.col_en;
-                    o_dc_disp_col_start  <= disp_cmd.col_start;
-                    o_dc_disp_right      <= disp_cmd.disp_right;
-                    o_dc_disp_broadcast  <= disp_cmd.broadcast;
+                    // Assign DISPATCH parameters to compute engine interface
+                    o_ce_disp_tile_addr  <= disp_cmd.tile_addr;
+                    o_ce_disp_man_nv_cnt <= disp_cmd.man_nv_cnt;
+                    o_ce_disp_ugd_vec_size <= disp_cmd.ugd_vec_size;
+                    o_ce_disp_man_4b     <= disp_cmd.man_4b;
+                    o_ce_disp_col_en     <= disp_cmd.col_en;
+                    o_ce_disp_col_start  <= disp_cmd.col_start;
+                    o_ce_disp_right      <= disp_cmd.disp_right;
+                    o_ce_disp_broadcast  <= disp_cmd.broadcast;
                 end
             endcase
         end
@@ -488,10 +516,10 @@ import gemm_pkg::*;
                 tile_cmd = {payload_word3_reg, payload_word2_reg, payload_word1_reg};  // Full 96 bits
 
                 if (!ce_tile_params_set) begin
-                    `ifdef SIMULATION
-                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 1: Parsing TILE command - B=%0d, C=%0d, V=%0d, col_en=0x%06x",
-                             $time, tile_cmd.left_ugd_len, tile_cmd.right_ugd_len, tile_cmd.vec_len, tile_cmd.col_en);
-                    `endif
+                    // `ifdef SIMULATION
+                    // $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 1: Parsing TILE command - B=%0d, C=%0d, V=%0d, col_en=0x%06x",
+                    //          $time, tile_cmd.left_ugd_len, tile_cmd.right_ugd_len, tile_cmd.vec_len, tile_cmd.col_en);
+                    // `endif
                     // Assign TILE command parameters
                     o_ce_tile_left_addr         <= tile_cmd.left_addr;
                     o_ce_tile_right_addr        <= tile_cmd.right_addr;
@@ -504,10 +532,10 @@ import gemm_pkg::*;
                     ce_col_en_reg               <= tile_cmd.col_en;        // Store column enable mask
                     ce_tile_params_set <= 1'b1;  // Mark parameters as set
                 end                 else begin
-                    `ifdef SIMULATION
-                    $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 2: Asserting ce_tile_en = 0x%06x, ce_tile_start pulse",
-                             $time, ce_col_en_reg);
-                    `endif
+                    // `ifdef SIMULATION
+                    // $display("[MC_TILE] @%0t ST_EXEC_TILE Cycle 2: Asserting ce_tile_en = 0x%06x, ce_tile_start pulse",
+                    //          $time, ce_col_en_reg);
+                    // `endif
                     ce_tile_en_reg <= ce_col_en_reg;      // Set static enable mask
                     ce_tile_start_reg <= ce_col_en_reg;   // Pulse start to enabled tiles
                 end
@@ -546,10 +574,10 @@ import gemm_pkg::*;
                 readout_start_col_reg <= readout_cmd.start_col;
                 readout_rd_len_reg    <= readout_cmd.rd_len;
 
-                `ifdef SIMULATION
-                $display("[MC] @%0t ST_EXEC_READOUT: Setting readout_en_reg=1, start_col=%0d, rd_len=%0d",
-                        $time, readout_cmd.start_col, readout_cmd.rd_len);
-                `endif
+                // `ifdef SIMULATION
+                // $display("[MC] @%0t ST_EXEC_READOUT: Setting readout_en_reg=1, start_col=%0d, rd_len=%0d",
+                //         $time, readout_cmd.start_col, readout_cmd.rd_len);
+                // `endif
             end
         end
     end
@@ -632,7 +660,8 @@ import gemm_pkg::*;
     // Output Enables
     // ===================================================================
     assign o_dc_fetch_en = dc_fetch_en_reg;
-    assign o_dc_disp_en  = dc_disp_en_reg;
+    assign o_dc_disp_en  = dc_disp_en_reg;  // Legacy: no longer used for DISPATCH routing
+    assign o_ce_disp_start = ce_disp_start_reg;  // DISPATCH start pulse to compute engine
     assign o_ce_tile_en  = ce_tile_en_reg;        // Static enable mask
     assign o_ce_tile_start = ce_tile_start_reg;   // Dynamic start pulse
     assign o_readout_en  = readout_en_reg;

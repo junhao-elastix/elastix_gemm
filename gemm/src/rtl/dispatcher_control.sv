@@ -186,20 +186,20 @@ import gemm_pkg::*;
     // o_disp_done: Unified done signal
     assign o_disp_done = disp_done_reg;
     
-    `ifdef SIMULATION
-    always @(posedge i_clk) begin
-        if (i_disp_en && !disp_en_prev) begin
-            $display("[DC] @%0t DISPATCH triggered: disp_right=%0b, o_disp_start=%0b",
-                     $time, i_disp_right, o_disp_start);
-        end
-        if (disp_done_reg && !disp_right_pending) begin
-            $display("[DC] @%0t DISPATCH done: o_disp_done=%0b", $time, o_disp_done);
-        end
-        if (i_disp_done_ce) begin
-            $display("[DC] @%0t DISPATCH RIGHT done signal from CE", $time);
-        end
-    end
-    `endif
+    // `ifdef SIMULATION
+    // always @(posedge i_clk) begin
+    //     if (i_disp_en && !disp_en_prev) begin
+    //         $display("[DC] @%0t DISPATCH triggered: disp_right=%0b, o_disp_start=%0b",
+    //                  $time, i_disp_right, o_disp_start);
+    //     end
+    //     if (disp_done_reg && !disp_right_pending) begin
+    //         $display("[DC] @%0t DISPATCH done: o_disp_done=%0b", $time, o_disp_done);
+    //     end
+    //     if (i_disp_done_ce) begin
+    //         $display("[DC] @%0t DISPATCH RIGHT done signal from CE", $time);
+    //     end
+    // end
+    // `endif
 
     // ====================================================================
     // Debug Outputs

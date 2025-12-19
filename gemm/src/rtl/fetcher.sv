@@ -251,10 +251,10 @@ import gemm_pkg::*;
                     // Start of new burst: load target from FIFO and advance read pointer
                     r_target_current_burst <= r_target_fifo[r_target_rd_ptr];
                     r_target_rd_ptr <= r_target_rd_ptr + 1;
-                    `ifdef SIMULATION
-                    $display("[R_TARGET_LOAD] @%0t rd_ptr=%0d, loading target=%s for new burst",
-                             $time, r_target_rd_ptr, r_target_fifo[r_target_rd_ptr] ? "RIGHT" : "LEFT");
-                    `endif
+                    // `ifdef SIMULATION
+                    // $display("[R_TARGET_LOAD] @%0t rd_ptr=%0d, loading target=%s for new burst",
+                    //          $time, r_target_rd_ptr, r_target_fifo[r_target_rd_ptr] ? "RIGHT" : "LEFT");
+                    // `endif
                 end
 
                 // Increment beat counter (wraps at 16)
@@ -284,12 +284,12 @@ import gemm_pkg::*;
             fetch_en_prev <= 1'b0;
         end else begin
             state_reg <= state_next;
-            // Clear fetch_en_prev when FETCH completes to allow edge detection for next FETCH
-            if (state_reg == ST_FETCH_DONE) begin
-                fetch_en_prev <= 1'b0;
-            end else begin
+            // Always sample fetch_en for edge detection
+            // The falling edge (when MC clears fetch_en after FETCH_DONE) followed by
+            // a rising edge (when MC sets fetch_en for next FETCH) will trigger correctly.
+            // Previous bug: resetting fetch_en_prev in ST_FETCH_DONE created false edges
+            // when fetch_en was still high from MC.
                 fetch_en_prev <= i_fetch_en;
-            end
         end
     end
 
@@ -592,22 +592,26 @@ import gemm_pkg::*;
     // ===================================================================
     // Note: o_fetcher_state, o_wr_addr, o_wr_en removed (no longer in port list)
     
-    `ifdef SIMULATION
-    always @(posedge i_clk) begin
-        if (state_reg == ST_FETCH_ACTIVE && lines_received == 16) begin
-            $display("[FETCHER] @%0t Finished exp_packed phase, starting mantissa phase", $time);
-        end
-        if (state_reg == ST_FETCH_ACTIVE && lines_received == 528) begin
-            $display("[FETCHER] @%0t All 528 lines received, unpack_idx=%0d, settle=%0d",
-                     $time, unpack_idx_reg, settle_cycles);
-        end
-        if (state_reg == ST_FETCH_ACTIVE && unpack_idx_reg == 512) begin
-            $display("[FETCHER] @%0t Unpacking complete (512 exponents)", $time);
-        end
-        if (state_reg == ST_FETCH_DONE) begin
-            $display("[FETCHER] @%0t FETCH_DONE, returning to IDLE", $time);
-        end
-    end
-    `endif
+    // `ifdef SIMULATION
+    // always @(posedge i_clk) begin
+    //     if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
+    //         $display("[FETCHER] @%0t FETCH_START: addr=%0d (0x%08x), len=%0d, target=%s",
+    //                  $time, i_fetch_addr, i_fetch_addr, i_fetch_len, i_fetch_target ? "RIGHT" : "LEFT");
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && lines_received == 16) begin
+    //         $display("[FETCHER] @%0t Finished exp_packed phase, starting mantissa phase", $time);
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && lines_received == 528) begin
+    //         $display("[FETCHER] @%0t All 528 lines received, unpack_idx=%0d, settle=%0d",
+    //                  $time, unpack_idx_reg, settle_cycles);
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && unpack_idx_reg == 512) begin
+    //         $display("[FETCHER] @%0t Unpacking complete (512 exponents)", $time);
+    //     end
+    //     if (state_reg == ST_FETCH_DONE) begin
+    //         $display("[FETCHER] @%0t FETCH_DONE, returning to IDLE", $time);
+    //     end
+    // end
+    // `endif
 
 endmodule

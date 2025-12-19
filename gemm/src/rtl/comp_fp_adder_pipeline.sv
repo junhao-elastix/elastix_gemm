@@ -26,7 +26,7 @@
 `timescale 1ps / 1ps
 `default_nettype none
 
-module fp_adder_pipeline #(
+module comp_fp_adder_pipeline #(
     parameter int NUM_INPUTS   = 4,      // Power of 2: 2, 4, 8, 16
     parameter int FP_IN_WIDTH  = 24,     // Input: 24 (FP24) or 16 (FP16)
     parameter int FP_OUT_WIDTH = 16,     // Output: 24 (FP24) or 16 (FP16)

@@ -520,9 +520,9 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // Step 4: Select/reorder ONLY the valid B*C results in batch-major order.
-        // Hardware buffer order is group-major:
-        //   group0: batch0 cols[0..15], batch1 cols[0..15], ... batch(B-1) cols[0..15],
-        //   group1: batch0 cols[16..31], ...
+        // Hardware buffer order is batch-major (B outer, C inner):
+        //   batch0: group0 cols[0..15], group1 cols[16..31], ...
+        //   batch1: group0 cols[0..15], group1 cols[16..31], ...
         // We map (batch_idx, col_idx) -> hw_idx and skip padded columns.
         vector<uint16_t> result_fp16_valid(result_count_valid);
         for (size_t golden_idx = 0; golden_idx < result_count_valid; golden_idx++) {
@@ -530,7 +530,8 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
             int col_idx   = static_cast<int>(golden_idx % static_cast<size_t>(C));
                 int group_idx = col_idx / 16;
                 int col_within_group = col_idx % 16;
-                int pulse_idx = group_idx * B + batch_idx;
+                // Batch-major order (B outer, C inner) - matches new RTL scheduling
+                int pulse_idx = batch_idx * num_col_groups + group_idx;
                 int hw_idx = pulse_idx * 16 + col_within_group;
             result_fp16_valid[golden_idx] = hw_results_raw[static_cast<size_t>(hw_idx)];
         }

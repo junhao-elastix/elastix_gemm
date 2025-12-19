@@ -35,20 +35,23 @@ shift_reg.sv
 # Elastix GEMM Engine - MLP Compute (Active Architecture)
 engine_top.sv
 compute_engine_mlp.sv
-row_bram.sv
+comp_row_bram.sv
+comp_bram_fill_ctrl.sv
+comp_mlp_dispatch.sv
+comp_mlp_col_ctrl.sv
 weight_bram.sv
-mlp_bram.sv
-mlp_bram_col.sv
-mlp_bram_col_ctrl.sv
-mlp_dot16_bfp8.sv
-mlp_dot16_int8.sv
+comp_mlp_bram.sv
+comp_mlp_bram_col.sv
+comp_mlp_bram_col_wrapper.sv
+comp_mlp_dot16_bfp8.sv
+comp_mlp_dot16_int8.sv
 fp24_add.sv
 fp24_to_fp16.sv
 # Integer-Domain FP Adder Pipeline (for improved numerical accuracy)
 fp_to_int.sv
 int_to_fp.sv
 int_adder_tree.sv
-fp_adder_pipeline.sv
+comp_fp_adder_pipeline.sv
 # NOTE: Legacy modular compute engine archived to archive_dec15/
 # Archived modules: compute_engine_modular, gfp8_bcv_controller, 
 #   gfp8_nv_dot, gfp8_to_fp16, tile_bram, tile_result_fifo

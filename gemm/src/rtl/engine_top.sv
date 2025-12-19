@@ -115,16 +115,29 @@ import gemm_pkg::*;
     logic                                mc_dc_fetch_target; // 0=left, 1=right
     logic                                dc_mc_fetch_done;
 
+    // Legacy DISPATCH signals (no longer used, kept for compatibility)
     logic                                mc_dc_disp_en;
-    logic [15:0]                         mc_dc_disp_tile_addr;    // Expanded to 16-bit per spec
-    logic [7:0]                          mc_dc_disp_man_nv_cnt;   // NEW: Total NVs to dispatch
-    logic [7:0]                          mc_dc_disp_ugd_vec_size; // NEW: NVs per UGD vector
-    logic                                mc_dc_disp_man_4b;       // Renamed from man_4b_8b_n
-    logic [23:0]                         mc_dc_disp_col_en;       // UPDATED: 24-bit column enable mask (was 16-bit)
-    logic [4:0]                          mc_dc_disp_col_start;    // UPDATED: 5-bit distribution start (was 6-bit)
-    logic                                mc_dc_disp_right;        // NEW: Dispatch side (0=left, 1=right)
-    logic                                mc_dc_disp_broadcast;    // NEW: Broadcast mode (0=distribute, 1=broadcast)
-    logic                                dc_mc_disp_done;
+    logic [15:0]                         mc_dc_disp_tile_addr;
+    logic [7:0]                          mc_dc_disp_man_nv_cnt;
+    logic [7:0]                          mc_dc_disp_ugd_vec_size;
+    logic                                mc_dc_disp_man_4b;
+    logic [23:0]                         mc_dc_disp_col_en;
+    logic [4:0]                          mc_dc_disp_col_start;
+    logic                                mc_dc_disp_right;
+    logic                                mc_dc_disp_broadcast;
+    logic                                dc_mc_disp_done;  // Legacy: no longer used
+
+    // DISPATCH signals directly to compute engine
+    logic                                mc_ce_disp_start;
+    logic [15:0]                         mc_ce_disp_tile_addr;
+    logic [7:0]                          mc_ce_disp_man_nv_cnt;
+    logic [7:0]                          mc_ce_disp_ugd_vec_size;
+    logic                                mc_ce_disp_man_4b;
+    logic [23:0]                         mc_ce_disp_col_en;
+    logic [4:0]                          mc_ce_disp_col_start;
+    logic                                mc_ce_disp_right;
+    logic                                mc_ce_disp_broadcast;
+    logic                                ce_mc_disp_done;
 
     // Master Control -> Compute Engine
     // Master Control -> Compute Engine (spec-compliant)
@@ -178,7 +191,7 @@ import gemm_pkg::*;
     logic [255:0] mlp_result_data;     // 16 × FP16 results
     logic         mlp_result_valid;    // Result valid pulse
     logic         mlp_tile_done;       // Tile done signal
-    logic         mlp_disp_done;       // DISPATCH done signal
+    logic         mlp_disp_done;       // DISPATCH done signal (legacy, no longer used)
     logic [3:0]   mlp_ce_state;        // CE state for debug
     logic [15:0]  mlp_result_count;    // Result count for debug
     logic [8:0]   mlp_wr_addr_cnt;     // 256-bit result write address counter
@@ -258,7 +271,19 @@ import gemm_pkg::*;
         .o_dc_disp_col_start    (mc_dc_disp_col_start),
         .o_dc_disp_right        (mc_dc_disp_right),      // NEW: Dispatch side
         .o_dc_disp_broadcast    (mc_dc_disp_broadcast),
-        .i_dc_disp_done     (dc_mc_disp_done),
+        .i_dc_disp_done     (dc_mc_disp_done),  // Legacy: no longer used
+
+        // Compute Engine Interface (DISPATCH command - direct routing)
+        .o_ce_disp_start        (mc_ce_disp_start),
+        .o_ce_disp_tile_addr    (mc_ce_disp_tile_addr),
+        .o_ce_disp_man_nv_cnt   (mc_ce_disp_man_nv_cnt),
+        .o_ce_disp_ugd_vec_size (mc_ce_disp_ugd_vec_size),
+        .o_ce_disp_man_4b       (mc_ce_disp_man_4b),
+        .o_ce_disp_col_en       (mc_ce_disp_col_en),
+        .o_ce_disp_col_start    (mc_ce_disp_col_start),
+        .o_ce_disp_right        (mc_ce_disp_right),
+        .o_ce_disp_broadcast    (mc_ce_disp_broadcast),
+        .i_ce_disp_done         (ce_mc_disp_done),
 
         // Compute Engine Interface (TILE command - spec-compliant)
         .o_ce_tile_en                 (mc_ce_tile_en),          // Static enable mask
@@ -320,7 +345,7 @@ import gemm_pkg::*;
         .i_disp_col_start   (mc_dc_disp_col_start),
         .i_disp_right       (mc_dc_disp_right),
         .i_disp_broadcast   (mc_dc_disp_broadcast),
-        .o_disp_done        (dc_mc_disp_done),
+        .o_disp_done        (dc_mc_disp_done),  // Legacy: no longer used
 
         // row_bram Write Ports (renamed from tile_*)
         .o_man_left_wr_addr   (dc_tile_man_left_wr_addr),
@@ -339,9 +364,9 @@ import gemm_pkg::*;
         .o_exp_right_wr_en    (dc_tile_right_exp_wr_en),
         .o_exp_right_wr_data  (dc_tile_right_exp_wr_data),
         
-        // DISPATCH start signal (to compute_engine)
-        .o_disp_start         (dc_disp_start),
-        .i_disp_done_ce       (mlp_disp_done),
+        // DISPATCH start signal (to compute_engine) - Legacy: no longer used
+        .o_disp_start         (dc_disp_start),  // Unused: DISPATCH now goes directly from MC to CE
+        .i_disp_done_ce       (mlp_disp_done),  // Unused: DISPATCH done now goes directly from CE to MC
 
         // AXI GDDR6 Interface
         .axi_ddr_if         (nap_axi),
@@ -368,11 +393,11 @@ import gemm_pkg::*;
     // ------------------------------------------------------------------
     // MLP Compute Engine - Single tile with direct 256-bit output
     // ------------------------------------------------------------------
-    `ifdef SIMULATION
-    initial begin
-        $display("[ENGINE_TOP] @%0t MLP MODE: Instantiating compute_engine_mlp", $time);
-    end
-    `endif
+    // `ifdef SIMULATION
+    // initial begin
+    //     $display("[ENGINE_TOP] @%0t MLP MODE: Instantiating compute_engine_mlp", $time);
+    // end
+    // `endif
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
@@ -395,14 +420,23 @@ import gemm_pkg::*;
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
 
+        // Master Control Interface (DISPATCH command - direct routing)
+        .i_disp_start                 (mc_ce_disp_start),          // DISPATCH start pulse from MC
+        .i_disp_man_nv_cnt            (mc_ce_disp_man_nv_cnt),     // Total NVs (MAN NV count)
+        .i_disp_ugd_vec_size          (mc_ce_disp_ugd_vec_size),   // V for DISPATCH
+        .i_disp_tile_addr             (mc_ce_disp_tile_addr),      // DISPATCH: write base address
+        .i_disp_man_4b                (mc_ce_disp_man_4b),        // Mantissa width
+        .i_disp_col_en                (mc_ce_disp_col_en),         // Column enable mask
+        .i_disp_col_start             (mc_ce_disp_col_start),      // Distribution start column
+        .i_disp_right                 (mc_ce_disp_right),          // DISPATCH side: 0=LEFT (ignore), 1=RIGHT (process)
+        .i_disp_broadcast             (mc_ce_disp_broadcast),      // Broadcast mode
+        .o_disp_done                  (ce_mc_disp_done),          // DISPATCH done signal to MC
+
         // Master Control Interface (TILE command)
         .i_tile_en                    (mc_ce_tile_en[0]),
         .i_tile_start                 (mc_ce_tile_start[0]),
-        .i_disp_start                 (dc_disp_start),       // NEW: DISPATCH triggers ST_FILL
-        .i_disp_ugd_vec_size          (mc_dc_disp_ugd_vec_size),  // V for DISPATCH
-        .i_disp_right_ugd_len         (mc_dc_disp_man_nv_cnt / mc_dc_disp_ugd_vec_size),  // C for DISPATCH
         .i_tile_left_addr             (mc_ce_tile_left_addr),
-        .i_tile_right_addr            (mc_ce_tile_right_addr),
+        .i_tile_right_addr            (mc_ce_tile_right_addr), // TILE: Read base address
         .i_tile_left_ugd_len          (mc_ce_tile_left_ugd_len),
         .i_tile_right_ugd_len         (mc_ce_tile_right_ugd_len),
         .i_tile_vec_len               (mc_ce_tile_vec_len),
@@ -411,7 +445,6 @@ import gemm_pkg::*;
         .i_tile_main_loop_over_left   (mc_ce_tile_main_loop_over_left),
         .i_mc_tile_en                 (mc_ce_tile_en),
         .o_tile_done                  (mlp_tile_done),
-        .o_disp_done                  (mlp_disp_done),       // NEW: DISPATCH done signal
 
         // row_bram Write Interface (4 parallel ports)
         // Direct from fetcher (no tile_wr_en gating needed)
@@ -461,17 +494,17 @@ import gemm_pkg::*;
         if (~i_reset_n) begin
             debug_cycle_cnt <= 8'd0;
         end else begin
-            `ifdef SIMULATION
-            if ((dc_tile_man_left_wr_en || dc_tile_man_right_wr_en ||
-                 dc_tile_left_exp_wr_en || dc_tile_right_exp_wr_en) && debug_cycle_cnt < 10) begin
-                debug_cycle_cnt <= debug_cycle_cnt + 1;
+            // `ifdef SIMULATION
+            // if ((dc_tile_man_left_wr_en || dc_tile_man_right_wr_en ||
+            //      dc_tile_left_exp_wr_en || dc_tile_right_exp_wr_en) && debug_cycle_cnt < 10) begin
+            //     debug_cycle_cnt <= debug_cycle_cnt + 1;
 
-                $display("[ENG_WR_EN] @%0t cycle=%0d, man_left=%0b, man_right=%0b, exp_left=%0b, exp_right=%0b",
-                         $time, debug_cycle_cnt,
-                         dc_tile_man_left_wr_en, dc_tile_man_right_wr_en,
-                         dc_tile_left_exp_wr_en, dc_tile_right_exp_wr_en);
-            end
-            `endif
+            //     $display("[ENG_WR_EN] @%0t cycle=%0d, man_left=%0b, man_right=%0b, exp_left=%0b, exp_right=%0b",
+            //              $time, debug_cycle_cnt,
+            //              dc_tile_man_left_wr_en, dc_tile_man_right_wr_en,
+            //              dc_tile_left_exp_wr_en, dc_tile_right_exp_wr_en);
+            // end
+            // `endif
 
             // Reset counter if no activity for a while
             if (!dc_tile_man_left_wr_en && !dc_tile_man_right_wr_en &&

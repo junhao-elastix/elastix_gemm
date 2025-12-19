@@ -24,6 +24,13 @@
 using namespace std;
 using namespace achronix;
 
+// ============================================================================
+// Helper: Ceiling division by 16 (for column group calculation)
+// ============================================================================
+
+static inline int ceil_div16(int x) {
+    return (x + 15) / 16;
+}
 
 // ============================================================================
 // Global State
@@ -33,9 +40,18 @@ const int READBACK_THRESHOLD = 4096;  // Trigger readback threshold
 int stress_factor = 1;                 // Stress factor number of times to run the test (default 1)
 bool verbose = false;                  // Verbose mode (-v): print everything
 bool timing_only = false;              // Timing mode (-t): print timing info and summaries only
-int pendingOutputElements = 0;       // Results waiting to be read
-vector<uint16_t> result_array;       // Accumulated results from all tiles
+int pendingOutputElements_padded = 0; // Padded results waiting to be read (hardware writes in 16-wide groups)
+vector<uint16_t> result_array;       // Accumulated results from all tiles (reordered valid results)
 VP815GemmDevice* g_gemm_device = nullptr;  // Global device pointer
+
+// Structure to track pending tile outputs for proper reordering
+struct PendingTileOutput {
+    int B;
+    int C;
+    int padded_results;  // B * ceil_div16(C) * 16
+    int valid_results;   // B * C
+};
+vector<PendingTileOutput> pending_tiles;  // Track tiles waiting for readback
 
 // ============================================================================
 // Timing Statistics
@@ -63,22 +79,22 @@ struct TestConfig {
     string description;
 };
 
-// All 14 test configurations (matches generate_new.sh)
+// All 14 test configurations (single-tile operation, matches test_gemm.cpp)
 vector<TestConfig> test_configs = {
-    {1, 1, 1,     "Minimal (128 tiles)"},
-    {2, 2, 2,     "Small (32 tiles)"},
-    {4, 4, 4,     "Medium (8 tiles)"},
-    {2, 2, 64,    "High V-loop (1 tile)"},
-    {4, 4, 32,    "Balanced high-V (1 tile)"},
-    {8, 8, 16,    "Large balanced (1 tile)"},
-    {16, 16, 8,   "Maximum output (1 tile)"},
-    {1, 128, 1,   "Wide matrix (1 tile, left bottleneck)"},
-    {128, 1, 1,   "Tall matrix (1 tile, right bottleneck)"},
-    {1, 1, 128,   "Maximum V-loop (1 tile)"},
-    {2, 4, 16,    "Asymmetric (2 tiles, right bottleneck)"},
-    {4, 8, 8,     "Asymmetric medium (2 tiles, right bottleneck)"},
-    {8, 32, 2,    "Asymmetric wide (2 tiles, right bottleneck)"},
-    {16, 16, 4,   "Large symmetric (2 tiles)"},
+    {1, 1, 1,     "B1_C1_V1"},
+    {2, 2, 2,     "B2_C2_V2"},
+    {4, 4, 4,     "B4_C4_V4"},
+    {2, 2, 64,    "B2_C2_V64"},
+    {4, 4, 32,    "B4_C4_V32"},
+    {8, 8, 16,    "B8_C8_V16"},
+    {16, 16, 8,   "B16_C16_V8"},
+    {1, 128, 1,   "B1_C128_V1"},
+    {128, 1, 1,   "B128_C1_V1"},
+    {1, 1, 128,   "B1_C1_V128"},
+    {2, 4, 16,    "B2_C4_V16"},
+    {4, 8, 8,     "B4_C8_V8"},
+    {8, 32, 2,    "B8_C32_V2"},
+    {16, 16, 4,   "B16_C16_V4"},
 };
 
 // ============================================================================
@@ -134,32 +150,25 @@ bool loadGoldenHex(const string& filename, vector<uint16_t>& data) {
 // ============================================================================
 
 void readPendingOutput() {
-    if (pendingOutputElements == 0) {
+    if (pendingOutputElements_padded == 0 || pending_tiles.empty()) {
         return;
     }
 
     if (verbose) {
-        cout << "\n--- Readback: Waiting for " << pendingOutputElements << " results ---" << endl;
+        cout << "\n--- Readback: Waiting for " << pendingOutputElements_padded << " padded results ---" << endl;
     }
 
-    // Step 1: POLL until hardware catches up
+    // Step 1: POLL until hardware catches up (use PADDED count - what hardware actually writes)
     uint32_t used_entries = g_gemm_device->mmio_read32(0, 0x238) & 0x3FFF;
     int timeout = 0;
-    const int MAX_POLLS = 100000;  // 10 second timeout (100k × 100µs)
+    const int MAX_POLLS = 100000;  // 10 second timeout (100k x 100us)
 
-    while (used_entries < (uint32_t)pendingOutputElements) {
-        // Adaptive sleep: 100µs when far, 10µs when close
-        // if (used_entries < (uint32_t)pendingOutputElements / 2) {
-        //     usleep(100);  // Far from ready
-        // } else {
-        //     usleep(10);   // Almost ready
-        // }
-
+    while (used_entries < (uint32_t)pendingOutputElements_padded) {
         used_entries = g_gemm_device->mmio_read32(0, 0x238) & 0x3FFF;
 
         if (++timeout > MAX_POLLS) {
             cerr << "ERROR: TIMEOUT waiting for results!" << endl;
-            cerr << "  Expected: " << pendingOutputElements << endl;
+            cerr << "  Expected: " << pendingOutputElements_padded << " (padded)" << endl;
             cerr << "  Got: " << used_entries << endl;
             cerr << "  After: " << timeout << " polls" << endl;
             return;
@@ -171,13 +180,13 @@ void readPendingOutput() {
              << " (waited " << timeout << " polls)" << endl;
     }
 
-    // Step 2: Read exactly pendingOutputElements from circular buffer
+    // Step 2: Read exactly pendingOutputElements_padded from circular buffer
     uint32_t rd_ptr = g_gemm_device->mmio_read32(0, 0x230) & 0x1FFF;
-    uint32_t read_count = pendingOutputElements;
+    uint32_t read_count = pendingOutputElements_padded;
 
     if (verbose) {
         cout << "  Reading from circular buffer: rd_ptr=" << rd_ptr
-             << ", count=" << read_count << endl;
+             << ", padded_count=" << read_count << endl;
     }
 
     // Calculate DMA read parameters (32-byte aligned)
@@ -199,44 +208,91 @@ void readPendingOutput() {
         return;
     }
 
-    // Extract FP16 results from DMA buffer
+    // Step 3: Extract raw FP16 results from DMA buffer (hardware order)
+    vector<uint16_t> hw_results_raw(read_count);
     uint32_t skip_bytes = offset_in_first_line;
     for (uint32_t i = 0; i < read_count; i++) {
         uint32_t byte_idx = skip_bytes + (i * 2);
-        uint16_t fp16_value = (uint16_t)dma_buffer[byte_idx] |
-                              ((uint16_t)dma_buffer[byte_idx + 1] << 8);
-        result_array.push_back(fp16_value);
+        hw_results_raw[i] = (uint16_t)dma_buffer[byte_idx] |
+                            ((uint16_t)dma_buffer[byte_idx + 1] << 8);
+    }
+
+    // Step 4: Reorder results from group-major (hardware) to batch-major (golden)
+    // Process each pending tile and extract only valid (non-padded) results
+    size_t hw_offset = 0;
+    int total_valid = 0;
+    
+    for (const auto& tile : pending_tiles) {
+        int B = tile.B;
+        int C = tile.C;
+        int padded_C = ceil_div16(C) * 16;
+        size_t padded_count = static_cast<size_t>(B) * static_cast<size_t>(padded_C);
+        size_t valid_count = static_cast<size_t>(B) * static_cast<size_t>(C);
+        
+        // Reorder: hardware writes in batch-major order (B outer, C inner)
+        // Hardware order: batch0[group0, group1, ...], batch1[group0, group1, ...], ...
+        // Golden order: batch0[col0, col1, ...], batch1[col0, col1, ...], ...
+        int num_col_groups = ceil_div16(C);
+        for (size_t golden_idx = 0; golden_idx < valid_count; golden_idx++) {
+            int batch_idx = static_cast<int>(golden_idx / static_cast<size_t>(C));
+            int col_idx = static_cast<int>(golden_idx % static_cast<size_t>(C));
+            int group_idx = col_idx / 16;
+            int col_within_group = col_idx % 16;
+            // Batch-major order (B outer, C inner) - matches new RTL scheduling
+            int pulse_idx = batch_idx * num_col_groups + group_idx;
+            int hw_idx = pulse_idx * 16 + col_within_group;
+            
+            result_array.push_back(hw_results_raw[hw_offset + static_cast<size_t>(hw_idx)]);
+        }
+        
+        hw_offset += padded_count;
+        total_valid += valid_count;
     }
 
     if (verbose) {
-        cout << "  Appended " << read_count << " results to result_array" << endl;
+        cout << "  Reordered and appended " << total_valid << " valid results to result_array" << endl;
         cout << "  result_array.size() = " << result_array.size() << endl;
     }
 
-    // Step 4: Update rd_ptr (host manages circular buffer advancement)
+    // Step 5: Update rd_ptr by PADDED count (what hardware actually wrote)
     uint32_t new_rd_ptr = (rd_ptr + read_count) % 8192;
     g_gemm_device->mmio_write32(0, 0x230, new_rd_ptr);
 
     if (verbose) {
-        cout << "  Updated rd_ptr: " << rd_ptr << " → " << new_rd_ptr << endl;
+        cout << "  Updated rd_ptr: " << rd_ptr << " -> " << new_rd_ptr << endl;
     }
 
-    // Step 5: Reset pending count
-    pendingOutputElements = 0;
+    // Step 6: Reset pending state
+    pendingOutputElements_padded = 0;
+    pending_tiles.clear();
 }
 
 // ============================================================================
 // Helper: Request Output (accumulate and trigger threshold)
 // ============================================================================
 
-void requestOutput(int numResults) {
-    pendingOutputElements += numResults;
+void requestOutput(int B, int C) {
+    // Calculate padded and valid counts for this tile
+    int padded_C = ceil_div16(C) * 16;
+    int padded_results = B * padded_C;
+    int valid_results = B * C;
+    
+    // Track this tile for proper reordering during readback
+    PendingTileOutput tile_output;
+    tile_output.B = B;
+    tile_output.C = C;
+    tile_output.padded_results = padded_results;
+    tile_output.valid_results = valid_results;
+    pending_tiles.push_back(tile_output);
+    
+    pendingOutputElements_padded += padded_results;
+    
     if (verbose) {
-        cout << "  requestOutput(" << numResults << ") → pending="
-             << pendingOutputElements << endl;
+        cout << "  requestOutput(B=" << B << ", C=" << C << ") -> pending_padded="
+             << pendingOutputElements_padded << " (valid=" << valid_results << ", padded=" << padded_results << ")" << endl;
     }
 
-    if (pendingOutputElements >= READBACK_THRESHOLD) {
+    if (pendingOutputElements_padded >= READBACK_THRESHOLD) {
         if (verbose) {
             cout << "  Threshold reached (" << READBACK_THRESHOLD
                  << "), triggering readback" << endl;
@@ -318,9 +374,10 @@ int main(int argc, char* argv[]) {
         int total_expected_results = 0;
 
         for (const auto& config : test_configs) {
+            // Use SINGLE-TILE golden files (not multitile) - matches test_gemm.cpp pattern
             string golden_file = "../../hex/golden_B" + to_string(config.B) +
                                  "_C" + to_string(config.C) +
-                                 "_V" + to_string(config.V) + "_multitile.hex";
+                                 "_V" + to_string(config.V) + ".hex";
 
             vector<uint16_t> config_golden;
             if (!loadGoldenHex(golden_file, config_golden)) {
@@ -328,11 +385,8 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
-            // Calculate expected results for this config
-            int max_left_tiles = 128 / (config.B * config.V);
-            int max_right_tiles = 128 / (config.C * config.V);
-            int num_tiles = min(max_left_tiles, max_right_tiles);
-            int config_results = num_tiles * config.B * config.C;
+            // Single-tile: expected results = B * C
+            int config_results = config.B * config.C;
 
             if (config_golden.size() != (size_t)config_results) {
                 if (verbose) {
@@ -439,6 +493,17 @@ int main(int argc, char* argv[]) {
                     cout << "\n>>> Configuration: " << config.description << " <<<" << endl;
                 }
 
+                // Flush any pending results from previous config before starting new one
+                if (pendingOutputElements_padded > 0) {
+                    readPendingOutput();
+                }
+
+                // Reset circular buffer pointers for this configuration
+                // This ensures clean state between different B/C/V configs
+                gemm_device.soft_reset();
+                gemm_device.reset_cmd_id();
+                gemm_device.mmio_write32(0, 0x230, 0x00000000);  // rd_ptr = 0
+
                 // Initialize timing for this config
                 ConfigTiming timing;
                 timing.num_tiles = 0;
@@ -452,119 +517,89 @@ int main(int argc, char* argv[]) {
                 timing.C = config.C;
                 timing.V = config.V;
 
-                // Calculate tile counts
-                int max_left_tiles = 128 / (config.B * config.V);
-                int max_right_tiles = 128 / (config.C * config.V);
-                int num_tiles = min(max_left_tiles, max_right_tiles);
-                int results_per_tile = config.B * config.C;
-                timing.num_tiles = num_tiles;
+                // Single-tile operation (like test_gemm.cpp pattern)
+                timing.num_tiles = 1;
 
                 if (verbose) {
                     cout << "  B=" << config.B << ", C=" << config.C << ", V=" << config.V << endl;
-                    cout << "  num_tiles=" << num_tiles << ", results_per_tile=" << results_per_tile << endl;
+                    cout << "  Single-tile operation (like test_gemm.cpp)" << endl;
                 }
 
-                // FETCH memory block
-                if (verbose) {
-                    cout << "  FETCH Memory Block..." << endl;
-                }
+                // Calculate parameters
+                uint32_t left_lines = (left_data.size() + 31) / 32;
+                uint32_t right_lines = (right_data.size() + 31) / 32;
+                int padded_C = ceil_div16(config.C) * 16;
+                int padded_results = config.B * padded_C;
 
-                uint32_t left_lines = 528;
-                uint32_t right_lines = 528;
-
+                // FETCH matrices from GDDR6 to MLP BRAM
                 auto fetch_left_start = chrono::high_resolution_clock::now();
-                (void)gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
-                if (!gemm_device.wait_idle(5000)) {
-                    cerr << "ERROR: FETCH left timeout" << endl;
-                    return 1;
-                }
+                gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
                 auto fetch_left_end = chrono::high_resolution_clock::now();
                 timing.fetch_left_ms = chrono::duration<double, milli>(fetch_left_end - fetch_left_start).count();
 
                 auto fetch_right_start = chrono::high_resolution_clock::now();
-                (void)gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);  // fetch_right=true for RIGHT matrix
-                if (!gemm_device.wait_idle(5000)) {
-                    cerr << "ERROR: FETCH right timeout" << endl;
-                    return 1;
-                }
+                gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
                 auto fetch_right_end = chrono::high_resolution_clock::now();
                 timing.fetch_right_ms = chrono::duration<double, milli>(fetch_right_end - fetch_right_start).count();
 
-                // DISPATCH memory block
-                if (verbose) {
-                    cout << "  DISPATCH Memory Block..." << endl;
-                }
-
-                // DISPATCH left (uses BROADCAST mode)
+                // DISPATCH left matrix (broadcast mode)
                 auto dispatch_left_start = chrono::high_resolution_clock::now();
                 uint8_t disp_left_id = gemm_device.dispatch(
-                    config.B * config.V,  // man_nv_cnt = B × V Native Vectors
-                    config.V,             // ugd_vec_size = V (NVs per UGD vector)
-                    0,                    // tile_addr = 0
-                    false,                // disp_right = false (LEFT matrix)
-                    0x0001,               // col_en = enable tile 0
-                    0,                    // col_start = 0
+                    config.B * config.V,  // man_nv_cnt
+                    config.V,             // ugd_vec_size
+                    0,                    // tile_addr
+                    false,                // disp_right = false (LEFT)
+                    0x0001,               // col_en
+                    0,                    // col_start
                     true,                 // broadcast = true (LEFT uses broadcast)
-                    false                 // man_4b = false
+                    false                 // man_4b
                 );
-                (void)gemm_device.waitDispatch(disp_left_id);
+                gemm_device.waitDispatch(disp_left_id);
                 auto dispatch_left_end = chrono::high_resolution_clock::now();
                 timing.dispatch_left_ms = chrono::duration<double, milli>(dispatch_left_end - dispatch_left_start).count();
 
-                // DISPATCH right (uses DISTRIBUTE mode)
+                // DISPATCH right matrix (distribute mode)
                 auto dispatch_right_start = chrono::high_resolution_clock::now();
                 uint8_t disp_right_id = gemm_device.dispatch(
-                    config.C * config.V,  // man_nv_cnt = C × V Native Vectors
-                    config.V,             // ugd_vec_size = V (NVs per UGD vector)
-                    0,                    // tile_addr = 0
-                    true,                 // disp_right = true (RIGHT matrix)
-                    0x0001,               // col_en = enable tile 0
-                    0,                    // col_start = 0
+                    config.C * config.V,  // man_nv_cnt
+                    config.V,             // ugd_vec_size
+                    0,                    // tile_addr
+                    true,                 // disp_right = true (RIGHT)
+                    0x0001,               // col_en
+                    0,                    // col_start
                     false,                // broadcast = false (RIGHT uses distribute)
-                    false                 // man_4b = false
+                    false                 // man_4b
                 );
-                (void)gemm_device.waitDispatch(disp_right_id);
+                gemm_device.waitDispatch(disp_right_id);
                 auto dispatch_right_end = chrono::high_resolution_clock::now();
                 timing.dispatch_right_ms = chrono::duration<double, milli>(dispatch_right_end - dispatch_right_start).count();
 
-                // Execute TILE commands with batched readback
-                if (verbose) {
-                    cout << "  Executing " << num_tiles << " TILE commands..." << endl;
+                // TILE command
+                auto tile_start = chrono::high_resolution_clock::now();
+                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V,
+                                                    false, false, true, 0x0001);
+                gemm_device.waitTile(tile_id);
+
+                // READOUT command (uses padded count)
+                gemm_device.readout(0, static_cast<uint32_t>(padded_results));
+                
+                auto tile_end = chrono::high_resolution_clock::now();
+                timing.tile_total_ms = chrono::duration<double, milli>(tile_end - tile_start).count();
+
+                // Wait for completion
+                auto wait_idle_start = chrono::high_resolution_clock::now();
+                if (!gemm_device.wait_idle(5000)) {
+                    cerr << "ERROR: Config " << config.description << " timeout" << endl;
+                    return 1;
                 }
+                auto wait_idle_end = chrono::high_resolution_clock::now();
+                timing.wait_idle_ms = chrono::duration<double, milli>(wait_idle_end - wait_idle_start).count();
 
-                int left_stride = (config.B * config.V) * 4;
-                int right_stride = (config.C * config.V) * 4;
-
-                for (int tile_idx = 0; tile_idx < num_tiles; tile_idx++) {
-                    uint16_t left_addr = tile_idx * left_stride;
-                    uint16_t right_addr = tile_idx * right_stride;
-
-                    // TILE command
-                    auto tile_loop_start = chrono::high_resolution_clock::now();
-                    uint8_t tile_id = gemm_device.tile(left_addr, right_addr,
-                                                        config.B, config.C, config.V,
-                                                        false, false, true, 0x0001);
-
-                    // WAIT_TILE
-                    (void)gemm_device.waitTile(tile_id);
-                    auto tile_loop_end = chrono::high_resolution_clock::now();
-                    timing.tile_total_ms += chrono::duration<double, milli>(tile_loop_end - tile_loop_start).count();
-
-                    // Wait for this tile to complete
-                    auto wait_idle_start = chrono::high_resolution_clock::now();
-                    if (!gemm_device.wait_idle(5000)) {
-                        cerr << "ERROR: TILE " << tile_idx << " timeout" << endl;
-                        return 1;
-                    }
-                    auto wait_idle_end = chrono::high_resolution_clock::now();
-                    timing.wait_idle_ms += chrono::duration<double, milli>(wait_idle_end - wait_idle_start).count();
-
-                    // Request output (triggers readback if threshold reached)
-                    requestOutput(results_per_tile);
-                }
+                // Request output (triggers readback if threshold reached)
+                requestOutput(config.B, config.C);
                 // Report timing for this config
                 if (verbose || timing_only) {
-                    cout << "  Completed " << num_tiles << " tiles for this config" << endl;
+                    cout << "  Completed single-tile for this config" << endl;
                     cout << "  Timing:" << endl;
                     cout << "    FETCH left:       " << fixed << setprecision(3) << timing.fetch_left_ms << " ms" << endl;
                     cout << "    FETCH right:      " << fixed << setprecision(3) << timing.fetch_right_ms << " ms" << endl;
@@ -572,7 +607,7 @@ int main(int argc, char* argv[]) {
                     cout << "    DISPATCH right:   " << fixed << setprecision(3) << timing.dispatch_right_ms << " ms" << endl;
                     cout << "    TILE loop total:  " << fixed << setprecision(3) << timing.tile_total_ms << " ms" << endl;
                     cout << "    wait_idle total:  " << fixed << setprecision(3) << timing.wait_idle_ms << " ms" << endl;
-                    cout << "    Per tile avg:     " << fixed << setprecision(3) << (timing.tile_total_ms / num_tiles) << " ms" << endl;
+                    cout << "    Per tile avg:     " << fixed << setprecision(3) << timing.tile_total_ms << " ms" << endl;
                 }
 
                 // Save timing
@@ -592,9 +627,9 @@ int main(int argc, char* argv[]) {
             cout << "========================================================================" << endl;
         }
 
-        if (pendingOutputElements > 0) {
+        if (pendingOutputElements_padded > 0) {
             if (verbose) {
-                cout << "Flushing remaining " << pendingOutputElements << " results..." << endl;
+                cout << "Flushing remaining " << pendingOutputElements_padded << " padded results..." << endl;
             }
             readPendingOutput();
         } else {

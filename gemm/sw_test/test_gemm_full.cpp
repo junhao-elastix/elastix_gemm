@@ -332,6 +332,7 @@ int main(int argc, char* argv[]) {
         cout << "[Stage 2 Init] Soft reset complete (rd_ptr=0, wr_ptr=0)\n" << endl;
 
         size_t total_expected_stage2_padded = 0;
+        int total_C = 0;
 
         // Run ALL tests consecutively WITHOUT reading any results
         for (int i = 0; i < num_tests; ++i) {
@@ -375,14 +376,12 @@ int main(int argc, char* argv[]) {
                 uint8_t disp_left_id = gemm_device.dispatch(config.B * config.V, config.V, 0, false, col_en_mask, 0, true, false);
                 gemm_device.waitDispatch(disp_left_id);
                 gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
-                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 0, true, col_en_mask, 0, false, false);
+                uint8_t disp_right_id = gemm_device.dispatch(config.C * config.V, config.V, 64, true, col_en_mask, 0, false, false);
                 gemm_device.waitDispatch(disp_right_id);
-                uint8_t tile_id = gemm_device.tile(0, 0, config.B, config.C, config.V, false, false, false, col_en_mask);
+
+                uint8_t tile_id = gemm_device.tile(0, 64, config.B, config.C, config.V, false, false, false, col_en_mask);
                 gemm_device.waitTile(tile_id);
-                // if (!gemm_device.wait_idle()) {
-                //     cerr << "  ERROR: Stage 2 TILE timeout" << endl;
-                //     return 1;
-                // }
+
                 const int groups = ceil_div16(config.C);
                 const int padded_C = groups * 16;
                 const size_t padded_count = static_cast<size_t>(config.B) * static_cast<size_t>(padded_C);
@@ -453,7 +452,8 @@ int main(int argc, char* argv[]) {
                 int col_idx = static_cast<int>(golden_idx % static_cast<size_t>(config.C));
                     int group_idx = col_idx / 16;
                     int col_within_group = col_idx % 16;
-                    int pulse_idx = group_idx * config.B + batch_idx;
+                    // Batch-major order (B outer, C inner) - matches new RTL scheduling
+                    int pulse_idx = batch_idx * groups + group_idx;
                     int hw_idx = pulse_idx * 16 + col_within_group;
                 results_stage2.push_back(stage2_raw[offset_padded + static_cast<size_t>(hw_idx)]);
             }
@@ -619,7 +619,8 @@ int main(int argc, char* argv[]) {
                     int col_idx = static_cast<int>(golden_idx % static_cast<size_t>(config.C));
                         int group_idx = col_idx / 16;
                         int col_within_group = col_idx % 16;
-                        int pulse_idx = group_idx * config.B + batch_idx;
+                        // Batch-major order (B outer, C inner) - matches new RTL scheduling
+                        int pulse_idx = batch_idx * groups + group_idx;
                         int hw_idx = pulse_idx * 16 + col_within_group;
                     results_stage3.push_back(batch_raw[batch_offset_padded + static_cast<size_t>(hw_idx)]);
                 }
@@ -934,14 +935,15 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         }
 
         // Step 6: Select/reorder ONLY the valid B*C results (batch-major) from the
-        // padded group-major hardware stream.
+        // batch-major hardware stream (B outer, C inner).
         vector<uint16_t> result_fp16(result_count_valid);
         for (size_t golden_idx = 0; golden_idx < result_count_valid; golden_idx++) {
             int batch_idx = static_cast<int>(golden_idx / static_cast<size_t>(C));
             int col_idx   = static_cast<int>(golden_idx % static_cast<size_t>(C));
                 int group_idx = col_idx / 16;
                 int col_within_group = col_idx % 16;
-                int pulse_idx = group_idx * B + batch_idx;
+                // Batch-major order (B outer, C inner) - matches new RTL scheduling
+                int pulse_idx = batch_idx * num_col_groups + group_idx;
                 int hw_idx = pulse_idx * 16 + col_within_group;
             result_fp16[golden_idx] = hw_results_raw[static_cast<size_t>(hw_idx)];
         }

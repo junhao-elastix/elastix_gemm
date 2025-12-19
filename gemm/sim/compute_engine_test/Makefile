@@ -71,18 +71,21 @@ compile: create_library
 	@echo "Compiling MLP RTL modules..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
-		$(MLP_RTL)/mlp_dot16_int8.sv \
-		$(MLP_RTL)/mlp_dot16_bfp8.sv \
+		$(MLP_RTL)/comp_mlp_dot16_int8.sv \
+		$(MLP_RTL)/comp_mlp_dot16_bfp8.sv \
 		$(MLP_RTL)/weight_bram.sv \
-		$(MLP_RTL)/mlp_bram.sv \
-		$(MLP_RTL)/mlp_bram_col.sv \
+		$(MLP_RTL)/comp_mlp_bram.sv \
+		$(MLP_RTL)/comp_mlp_bram_col.sv \
 		$(MLP_RTL)/fp24_add.sv \
 		$(MLP_RTL)/fp_to_int.sv \
 		$(MLP_RTL)/int_to_fp.sv \
 		$(MLP_RTL)/int_adder_tree.sv \
-		$(MLP_RTL)/fp_adder_pipeline.sv \
-		$(MLP_RTL)/mlp_bram_col_ctrl.sv \
-		$(MLP_RTL)/row_bram.sv \
+		$(MLP_RTL)/comp_fp_adder_pipeline.sv \
+		$(MLP_RTL)/comp_mlp_bram_col_wrapper.sv \
+		$(MLP_RTL)/comp_row_bram.sv \
+		$(MLP_RTL)/comp_bram_fill_ctrl.sv \
+		$(MLP_RTL)/comp_mlp_dispatch.sv \
+		$(MLP_RTL)/comp_mlp_col_ctrl.sv \
 		$(MLP_RTL)/fp24_to_fp16.sv \
 		$(MLP_RTL)/compute_engine_mlp.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: MLP RTL compilation failed. See $(LOG_FILE)" && exit 1)
