@@ -22,7 +22,7 @@ import gemm_pkg::*;
     parameter AXI_ADDR_WIDTH = 42,     // AXI address width
     parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),
     parameter TILE_ADDR_WIDTH = $clog2(BRAM_DEPTH),
-    parameter [8:0] GDDR6_PAGE_ID = 9'd2  // GDDR6 Page ID for NoC routing
+    parameter [8:0] GDDR6_PAGE_ID = 9'd0  // GDDR6 Page ID for NoC routing
 )
 (
     // Clock and Reset

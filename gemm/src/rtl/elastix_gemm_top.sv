@@ -644,7 +644,7 @@ module elastix_gemm_top
                     logic [9:0]  bram_wr_count;  // Dispatcher BRAM write count (debug)
 
                     engine_top #(
-                        .GDDR6_PAGE_ID  (9'd0),   // Match ACX_GDDR6_SPACE = 0x0 (DMA target)
+                        .GDDR6_PAGE_ID  (9'd1),   // Match ACX_GDDR6_SPACE = 0x0 (DMA target)
                         .TGT_DATA_WIDTH (256),
                         .AXI_ADDR_WIDTH (42),
                         .NUM_TILES      (8)

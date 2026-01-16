@@ -28,7 +28,7 @@ import gemm_pkg::*;
     parameter AXI_ADDR_WIDTH = 42,
     parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),
     parameter TILE_ADDR_WIDTH = $clog2(BRAM_DEPTH),
-    parameter [8:0] GDDR6_PAGE_ID = 9'd2
+    parameter [8:0] GDDR6_PAGE_ID = 9'd0
 )
 (
     // Clock and Reset
