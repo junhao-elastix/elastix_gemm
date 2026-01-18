@@ -570,6 +570,12 @@ module compute_engine_mlp #(
     logic [7:0]  sched_nv_cnt;      // 0..V-1 within dot product
     logic [15:0] sched_result_cnt;  // Total results: B * num_col_groups
 
+    // last_matmul: Indicates truly last dot product of entire TILE operation
+    // This triggers FINAL_DRAIN in the wrapper instead of per-dot-product drains
+    logic        last_matmul;
+    assign last_matmul = (sched_batch_cnt == (active_left_ugd_len - 8'd1)) &&
+                         (sched_group_cnt == (num_col_groups - 4'd1));
+
     // Row BRAM read index driving
     logic [6:0]  nv_left_rd_idx_reg;
     logic [13:0] left_base_nv_idx_full;
@@ -654,18 +660,25 @@ module compute_engine_mlp #(
 
             SCHED_RUN: begin
                 if (act_valid && act_ready && act_cur_last_nv) begin
-                    sched_state_next = SCHED_WAIT_RESULT;
+                    // After last NV of a dot product, immediately load next dot product
+                    // Don't wait for result - the wrapper handles result timing via capture_delay
+                    // Check if this was the last dot product
+                    if ((sched_batch_cnt == (active_left_ugd_len - 1)) &&
+                        (sched_group_cnt == (num_col_groups - 1))) begin
+                        // All dot products sent, wait for final result
+                        sched_state_next = SCHED_WAIT_RESULT;
+                    end else begin
+                        // More dot products to send - immediately preload next
+                        sched_state_next = SCHED_PRELOAD_CUR;
+                    end
                 end
             end
 
             SCHED_WAIT_RESULT: begin
+                // Only entered after truly last dot product is sent
+                // Wait for final result to complete
                 if (dout_valid) begin
-                    // Check if we've completed all B*G results
-                    if (sched_result_cnt == (active_left_ugd_len * num_col_groups - 1)) begin
-                        sched_state_next = SCHED_IDLE;
-                    end else begin
-                        sched_state_next = SCHED_PRELOAD_CUR;
-                    end
+                    sched_state_next = SCHED_IDLE;
                 end
             end
 
@@ -743,6 +756,16 @@ module compute_engine_mlp #(
                 act_cur_new_dot <= (sched_nv_cnt == 8'd0);
                 act_cur_last_nv <= (sched_nv_cnt == (active_vec_len - 1));
                 act_cur_valid   <= 1'b1;
+                `ifdef SIMULATION
+                $display("[CE_MLP_DBG] @%0t load_cur: active_vec_len=%0d sched_nv_cnt=%0d last_nv=%0b batch=%0d group=%0d",
+                         $time, active_vec_len, sched_nv_cnt, (sched_nv_cnt == (active_vec_len - 1)),
+                         sched_batch_cnt, sched_group_cnt);
+                // Print first few bytes of activation data for debug
+                if (sched_batch_cnt == 0 && sched_nv_cnt == 0) begin
+                    $display("[CE_MLP_DATA] @%0t ACT man[0][31:0]=0x%08x exp[7:0]=0x%02x idx=%0d",
+                             $time, nv_left_man[0][31:0], nv_left_exp[7:0], nv_left_rd_idx_reg);
+                end
+                `endif
             end
 
             // Load next payload
@@ -798,30 +821,41 @@ module compute_engine_mlp #(
                 refill_next_pending <= 1'b0;
             end
 
-            // Result completion - NEW: group is inner, batch is outer
+            // Dot product transition: update counters when last NV is consumed (for next dot product addressing)
+            if ((sched_state_reg == SCHED_RUN) && act_valid && act_ready && act_cur_last_nv) begin
+                // This dot product is done, prepare for next one
+                `ifdef SIMULATION
+                $display("[CE_MLP_TRANS] @%0t DOT_DONE: batch=%0d->%0d group=%0d->%0d",
+                         $time, sched_batch_cnt,
+                         (sched_group_cnt == (num_col_groups - 1)) ? sched_batch_cnt + 8'd1 : sched_batch_cnt,
+                         sched_group_cnt,
+                         (sched_group_cnt == (num_col_groups - 1)) ? 4'd0 : sched_group_cnt + 4'd1);
+                `endif
+                // Check if we finished all groups for this batch
+                if (sched_group_cnt == (num_col_groups - 1)) begin
+                    // Advance to next batch, reset group counter
+                    sched_batch_cnt <= sched_batch_cnt + 8'd1;
+                    sched_group_cnt <= 4'd0;
+                end else begin
+                    // More groups in this batch
+                    sched_group_cnt <= sched_group_cnt + 4'd1;
+                end
+
+                // Reset per-dot-product state for next dot product
+                sched_nv_cnt    <= 8'd0;
+                act_cur_valid   <= 1'b0;
+                act_next_valid  <= 1'b0;
+                first_nv_sent   <= 1'b0;
+            end
+
+            // Result completion tracking (separate from dot product sending)
             if (dout_valid) begin
                 sched_result_cnt <= sched_result_cnt + 16'd1;
-                
+
                 if (sched_result_cnt == (active_left_ugd_len * num_col_groups - 1)) begin
-                    // All done (B batches * G groups)
+                    // All results received
                     compute_done  <= 1'b1;
                     sched_running <= 1'b0;
-                end else begin
-                    // Check if we finished all groups for this batch
-                    if (sched_group_cnt == (num_col_groups - 1)) begin
-                        // Advance to next batch, reset group counter
-                        sched_batch_cnt <= sched_batch_cnt + 8'd1;
-                        sched_group_cnt <= 4'd0;
-                    end else begin
-                        // More groups in this batch
-                        sched_group_cnt <= sched_group_cnt + 4'd1;
-                    end
-                    
-                    // Reset per-dot-product state
-                    sched_nv_cnt    <= 8'd0;
-                    act_cur_valid   <= 1'b0;
-                    act_next_valid  <= 1'b0;
-                    first_nv_sent   <= 1'b0;
                 end
             end
         end
@@ -857,6 +891,7 @@ module compute_engine_mlp #(
         .i_nv_left_exp(act_payload_exp),
         .i_new_dot(new_dot),
         .i_last_nv(last_nv),
+        .i_last_matmul(last_matmul && last_nv),  // Truly last dot product of entire TILE
 
         // Result interface
         .o_dout(mlp_dout),
