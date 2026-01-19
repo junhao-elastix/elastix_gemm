@@ -1,23 +1,26 @@
 // ------------------------------------------------------------------
 // Row BRAM Module with Native Vector Packing
 //
-// Purpose: L1 memory layer with automatic NV packing for single-cycle reads
+// Purpose: L1 memory layer for ACTIVATIONS (left matrix) ONLY
+//          Weights are stored directly in mlp_bram_col (external writes)
+//
 // Architecture:
-//  - Storage: 128 Native Vectors (NVs) per side
+//  - Storage: 128 Native Vectors (NVs) for activations
 //  - Each NV contains:
 //    - 4 mantissa groups (256-bit each)
 //    - 1 packed exponent (32-bit with 4 bytes)
 //
 // Write Interface:
-//  - Line-based writes (same as before) with automatic NV packing
-//  - FOUR PARALLEL WRITE PORTS - All can write in same cycle
+//  - Line-based writes with automatic NV packing
+//  - TWO PARALLEL WRITE PORTS (left mantissa + left exponent)
 //  - Writes are automatically packed into NV format internally
 //
 // Read Interface:
 //  - Native Vector interface for single-cycle NV reads
 //  - Combinational (0-latency) access to complete NVs
 //
-// Note: Copied from gemm/src/rtl/tile_bram.sv and renamed for MLP project
+// REFACTORED: Jan 2026 - Removed right (weight) write/read ports
+//             Weights now written directly to mlp_bram_col
 //
 // Original Author: Junhao Pan
 // Date: 10/31/2024
@@ -37,54 +40,33 @@ module comp_row_bram #(
     input  wire                      i_reset_n,
 
     // ====================================================================
-    // Write Ports
-    // FOUR PARALLEL WRITE PORTS - All can write in same cycle
+    // Write Ports (Activations ONLY - Left Side)
+    // TWO PARALLEL WRITE PORTS - mantissa + exponent
     // ====================================================================
     // Left mantissa write port
     input  wire [ADDR_WIDTH-1:0]       i_man_left_wr_addr,
     input  wire                        i_man_left_wr_en,
     input  wire [MAN_WIDTH-1:0]        i_man_left_wr_data,
 
-    // Right mantissa write port
-    input  wire [ADDR_WIDTH-1:0]       i_man_right_wr_addr,
-    input  wire                        i_man_right_wr_en,
-    input  wire [MAN_WIDTH-1:0]        i_man_right_wr_data,
-
     // Left exponent write port
     input  wire [ADDR_WIDTH-1:0]       i_exp_left_wr_addr,
     input  wire                        i_exp_left_wr_en,
     input  wire [EXP_WIDTH-1:0]        i_exp_left_wr_data,
 
-    // Right exponent write port
-    input  wire [ADDR_WIDTH-1:0]       i_exp_right_wr_addr,
-    input  wire                        i_exp_right_wr_en,
-    input  wire [EXP_WIDTH-1:0]        i_exp_right_wr_data,
-
     // ====================================================================
-    // Native Vector Read Interface
+    // Native Vector Read Interface (Activations ONLY - Left Side)
     // Combinational reads - complete NV in single cycle
     // ====================================================================
-    // Left NV read
     input  wire [6:0]                  i_nv_left_rd_idx,
     output wire [31:0]                 o_nv_left_exp,         // Packed exponents
-    output wire [MAN_WIDTH-1:0]        o_nv_left_man [0:3],   // 4 mantissa groups
-
-    // Right NV read
-    input  wire [6:0]                  i_nv_right_rd_idx,
-    output wire [31:0]                 o_nv_right_exp,        // Packed exponents
-    output wire [MAN_WIDTH-1:0]        o_nv_right_man [0:3]   // 4 mantissa groups
+    output wire [MAN_WIDTH-1:0]        o_nv_left_man [0:3]    // 4 mantissa groups
 );
 
     // ===================================================================
-    // NV-PACKED STORAGE (128 Native Vectors per side)
+    // NV-PACKED STORAGE (128 Native Vectors for activations)
     // ===================================================================
-    // Left side: 128 Native Vectors
     (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_left [0:127][0:3];
     (* ram_style = "block" *) reg [31:0]          nv_exp_left [0:127];       // 128 NVs x packed exp
-
-    // Right side: 128 Native Vectors
-    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_right [0:127][0:3];
-    (* ram_style = "block" *) reg [31:0]          nv_exp_right [0:127];      // 128 NVs x packed exp
 
     // ===================================================================
     // SIMULATION NOTE: Memory initialization
@@ -95,10 +77,8 @@ module comp_row_bram #(
         for (i = 0; i < 128; i = i + 1) begin
             for (j = 0; j < 4; j = j + 1) begin
                 nv_man_left[i][j] = {MAN_WIDTH{1'b0}};
-                nv_man_right[i][j] = {MAN_WIDTH{1'b0}};
             end
             nv_exp_left[i] = 32'b0;
-            nv_exp_right[i] = 32'b0;
         end
     end
 
@@ -111,13 +91,6 @@ module comp_row_bram #(
             // Calculate NV index and group within NV
             // NV index (addr/4), Group within NV [0-3]
             nv_man_left[i_man_left_wr_addr[8:2]][i_man_left_wr_addr[1:0]] <= i_man_left_wr_data;
-        end
-    end
-
-    // Right mantissa write - pack into NV format
-    always @(posedge i_clk) begin
-        if (i_man_right_wr_en) begin
-            nv_man_right[i_man_right_wr_addr[8:2]][i_man_right_wr_addr[1:0]] <= i_man_right_wr_data;
         end
     end
 
@@ -136,17 +109,6 @@ module comp_row_bram #(
         end
     end
 
-    always @(posedge i_clk) begin
-        if (i_exp_right_wr_en) begin
-            case (i_exp_right_wr_addr[1:0])
-                2'd0: nv_exp_right[i_exp_right_wr_addr[8:2]][7:0]   <= i_exp_right_wr_data;
-                2'd1: nv_exp_right[i_exp_right_wr_addr[8:2]][15:8]  <= i_exp_right_wr_data;
-                2'd2: nv_exp_right[i_exp_right_wr_addr[8:2]][23:16] <= i_exp_right_wr_data;
-                2'd3: nv_exp_right[i_exp_right_wr_addr[8:2]][31:24] <= i_exp_right_wr_data;
-            endcase
-        end
-    end
-
     // ===================================================================
     // NV READ LOGIC - Combinational (0-latency)
     // ===================================================================
@@ -156,13 +118,6 @@ module comp_row_bram #(
     assign o_nv_left_man[1] = nv_man_left[i_nv_left_rd_idx][1];
     assign o_nv_left_man[2] = nv_man_left[i_nv_left_rd_idx][2];
     assign o_nv_left_man[3] = nv_man_left[i_nv_left_rd_idx][3];
-
-    // Right NV read - output complete Native Vector
-    assign o_nv_right_exp = nv_exp_right[i_nv_right_rd_idx];
-    assign o_nv_right_man[0] = nv_man_right[i_nv_right_rd_idx][0];
-    assign o_nv_right_man[1] = nv_man_right[i_nv_right_rd_idx][1];
-    assign o_nv_right_man[2] = nv_man_right[i_nv_right_rd_idx][2];
-    assign o_nv_right_man[3] = nv_man_right[i_nv_right_rd_idx][3];
 
 endmodule
 
