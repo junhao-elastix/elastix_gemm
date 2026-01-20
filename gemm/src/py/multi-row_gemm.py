@@ -14,6 +14,7 @@
 
 import numpy as np
 
+
 # =============================================================================
 # Utility: V and C Partitioning (matches MULTI_ROW_REFERENCE.md exactly)
 # =============================================================================
@@ -23,6 +24,7 @@ def get_v_partition(r, V, num_rows):
     Get the V dimension partition for row r.
     First (V % num_rows) rows get (V // num_rows + 1) elements.
     Returns: (v_start, v_count)
+    **IMPORTANT** When each row has its own MEMBlk, v_start is always 0.
     """
     v_base = V // num_rows
     v_rem = V % num_rows
@@ -84,8 +86,8 @@ class MemBlk:
     """
     Memory Block abstraction (Reference Manual: 528 lines simplified to 512)
     Represents data in DDR: 512 lines × 32 elements per line.
-    - For activations: stored as (v_count × B) where line[v] contains A[all_b, v]
-    - For weights: stored as (v_count × C) where line[v] contains W[v, all_c]
+    - For activations: stored as (ugd_len × B) where line[v] contains A[all_b, v]
+    - For weights: stored as (ugd_len × C) where line[v] contains W[v, all_c]
     """
     def __init__(self, num_lines=528, line_size=32):
         self.data = np.zeros((num_lines, line_size), dtype=np.uint8)
@@ -203,86 +205,42 @@ class Dispatcher:
             Lines 48-63:  B=3, V=[0,1,2,3]
         
         =============================================================================
-        V PARTITIONING AND STRIDED ACCESS
-        =============================================================================
-        V is partitioned across rows. Each row handles a slice: V[v_start:v_start+v_count]
-        
-        Example: V=4 partitioned across 4 rows
-            Row 0: v_start=0, v_count=1 → handles V[0]
-            Row 1: v_start=1, v_count=1 → handles V[1]
-            Row 2: v_start=2, v_count=1 → handles V[2]
-            Row 3: v_start=3, v_count=1 → handles V[3]
-        
-        PROBLEM: With UGD-major layout, the V slice for each batch is NOT contiguous!
-            Row 1 needs: B=0,V[1] (lines 4-7), B=1,V[1] (lines 20-23), B=2,V[1] (lines 36-39)...
-            These are scattered with stride = total_V * 4 lines between batches.
-        
-        SOLUTION: Use indexed buffer access instead of sequential FIFO pops.
-            Source line index = ugd_idx * total_V * 4 + actual_v * 4 + l
-            where:
-                - ugd_idx = batch index (b) for left, or column index (c) for right
-                - total_V = original V before partitioning (defines stride)
-                - actual_v = v_start + v (the actual V index in original data)
-                - l = line within NV (0-3 for the 4 groups)
-        
-        =============================================================================
         EXPONENT INDEXING
         =============================================================================
         Exponents follow the same UGD-major layout but stored as individual bytes:
-            exp_idx = ugd_idx * total_V * 4 + actual_v * 4 + l
+            exp_idx = ugd_idx * ugd_len * 4 + v * 4 + l
         
         Each NV has 4 exponent bytes (one per group), so the indexing parallels mantissas.
         
-        =========================================================================
-        Extract V partitioning parameters
-        =========================================================================
-        These parameters control sequential vs strided access.
-
-        PER-ROW MEMBLK MODE (sequential access)
-        ======================================
         The emulator assumes per-row memblks where each row's memblk contains
         only the V slice for that row. This matches the hardware model where
         each row has its own GDDR6 memory channel.
 
         v_start = 0 (data starts at beginning of this row's memblk)
-        v_count = this row's V slice size (e.g., 32)
-        total_V = v_count (only this row's V in the memblk)
-
-        → Access formula: index = ugd * total_V * 4 + actual_v * 4 + l
-            which reduces to sequential reads within each row's memblk.
+        ugd_len = this row's V slice size (e.g., 32)
         """
         assert cmd['op_code'] == 0xF1, f"cmd op_code {cmd['op_code']} does not match DISPATCH"
 
         # Per-row memblk mode: data for this row starts at the beginning
-        # of the memblk and total_V == v_count (sequential access).
-        v_start = 0                            # Data starts at beginning of this row's memblk
-        v_count = cmd['ugd_len']               # This row's V count (= ugd_len for this row)
-        total_V = v_count                      # Per-row mode: total_V equals v_count
+        # of the memblk and sequential access is used.
+        ugd_len = cmd['ugd_len']               # This row's V count
         
         # =========================================================================
-        # PHASE 1: Buffer all exponents for indexed access
+        # PHASE 1: Prepare exponent byte stream and keep mantissas in FIFO
         # =========================================================================
-        # Read all 16 exponent lines (512 bytes total) into a flat buffer.
-        # This allows random access by index instead of sequential FIFO pops.
-        exp_buffer = []
+        # Read all 16 exponent lines (512 bytes total) and flatten to a deque
+        # so we can stream exponent bytes in order while popping mantissa lines
+        # sequentially from the FIFO. This removes the large mantissa buffer
+        # which is unnecessary in per-row memblk mode.
+        exp_fifo = FIFO()
         for i in range(16):
             line = fifo.pop()
             for exp_byte in line:
-                exp_buffer.append(exp_byte)
-        # exp_buffer[i] = exponent byte at flat index i
-        # To access exponent for (ugd_idx, nv_idx, group_idx):
-        #   index = ugd_idx * total_V * 4 + nv_idx * 4 + group_idx
-        
-        # =========================================================================
-        # PHASE 2: Buffer all mantissa lines for indexed access
-        # =========================================================================
-        # Read remaining mantissa lines into a list. Each element is one 32-byte line.
-        man_buffer = []
-        while not fifo.empty():
-            man_buffer.append(fifo.pop())
-        # man_buffer[i] = mantissa line (32 bytes) at line index i
-        # To access mantissa for (ugd_idx, nv_idx, line_within_nv):
-        #   index = ugd_idx * total_V * 4 + nv_idx * 4 + line_within_nv
+                exp_fifo.push(exp_byte)
+        # After popping exponent lines, the FIFO now contains only mantissa
+        # lines in the order they appear in the memblk. For per-row memblks
+        # this order matches the dispatch loops (b -> v -> l), so we can
+        # consume mantissa lines directly with fifo.pop() below.
         
         # =========================================================================
         # PHASE 3: Dispatch data based on direction
@@ -292,36 +250,25 @@ class Dispatcher:
             # LEFT DISPATCH: Activations → row_bram
             # -----------------------------------------------------------------
             # Data layout: B-major
-            # We write to RowBram sequentially (line_idx) and read from
-            # man_buffer/exp_buffer using the indexed access formula to extract
-            # the V slice for each batch.
+            # We write to RowBram sequentially (line_idx) and stream data
+            # sequentially from the FIFOs: exponent bytes are in `exp_fifo`
+            # and mantissa lines are consumed from `fifo` in-order.
             #
             # RowBram destination layout after dispatch:
-            #   Lines 0 to (v_count*4-1):           B=0, V[v_start:v_start+v_count]
-            #   Lines (v_count*4) to (2*v_count*4-1): B=1, V[v_start:v_start+v_count]
+            #   Lines 0 to (ugd_len*4-1):           B=0, V[:ugd_len]
+            #   Lines (ugd_len*4) to (2*ugd_len*4-1): B=1, V[:ugd_len]
             #   ...
             line_idx = 0  # Sequential write index into row_bram
             
             for b in range(cmd['nv_cnt']):        # Loop over batches (B)
-                for v in range(v_count):           # Loop over this row's V slice
-                    actual_v = v_start + v         # Map local v to global V index
-                    
+                for v in range(ugd_len):           # Loop over this row's V slice
                     for l in range(4):             # Loop over 4 lines per NV (4 groups)
-                        # -----------------------------------------------------
-                        # Calculate source indices using stride formula:
-                        #   index = b * total_V * 4 + actual_v * 4 + l
-                        #
-                        # Breakdown:
-                        #   b * total_V * 4  = skip past all V*4 lines for batches 0..b-1
-                        #   actual_v * 4     = skip past 4 lines for each V before actual_v
-                        #   l                = specific line within this NV
-                        # -----------------------------------------------------
-                        man_line_idx = b * total_V * 4 + actual_v * 4 + l
-                        exp_idx = b * total_V * 4 + actual_v * 4 + l
-                        
-                        curr_man = man_buffer[man_line_idx]
-                        curr_exp = exp_buffer[exp_idx]
-                        
+                        # In per-row memblk mode the mantissa lines are laid out
+                        # in the same order as (b -> v -> l). We stream mantissas
+                        # and exponents directly from their FIFOs in-order.
+                        curr_man = fifo.pop()
+                        curr_exp = exp_fifo.pop()
+
                         # Write to row_bram at sequential destination
                         comp_engine.RowBram.write(line_idx, curr_exp, curr_man)
                         line_idx += 1
@@ -330,8 +277,9 @@ class Dispatcher:
             # RIGHT DISPATCH: Weights → mlp_brams (distributed across columns)
             # -----------------------------------------------------------------
             # Data layout: C-major
-            # We read weights using the indexed access formula and distribute
-            # them across mlp_brams according to column assignment.
+            # We stream weights (exponent bytes from `exp_fifo`, mantissa
+            # lines from `fifo`) and distribute them across mlp_brams
+            # according to column assignment.
             #
             # Column distribution:
             #   - Each physical MLP has 2 banks (2 logical columns)
@@ -351,40 +299,21 @@ class Dispatcher:
             total_logical_cols = self.num_tiles * cols_per_tile
             
             for c in range(cmd['nv_cnt']):         # Loop over columns (C)
-                for v in range(v_count):            # Loop over this row's V slice
-                    actual_v = v_start + v          # Map local v to global V index
-                    
+                for v in range(ugd_len):            # Loop over this row's V slice
                     for l in range(4):              # Loop over 4 lines per NV
-                        # -----------------------------------------------------
-                        # Source index calculation (same formula, C-major)
-                        # -----------------------------------------------------
-                        man_line_idx = c * total_V * 4 + actual_v * 4 + l
-                        exp_idx = c * total_V * 4 + actual_v * 4 + l
-                        
-                        curr_man = man_buffer[man_line_idx]
-                        curr_exp = exp_buffer[exp_idx]
+                        # Pop mantissa line and get next exponent byte in-order
+                        curr_man = fifo.pop()
+                        curr_exp = exp_fifo.pop()
                         assert len(curr_man) == 32, f"curr_man length {len(curr_man)} should be 32"
-                        
-                        # -----------------------------------------------------
+
                         # Map logical column to physical MLP and bank
-                        # -----------------------------------------------------
-                        # bank_idx: which bank within the MLP (0 or 1)
-                        # real_col_idx: which physical MLP (0 to num_tiles-1)
                         bank_idx = col_sel % cols_per_tile
                         real_col_idx = col_sel // cols_per_tile
-                        
-                        # -----------------------------------------------------
+
                         # Calculate write address in mlp_bram
-                        # -----------------------------------------------------
-                        # wraddr = base + offset within this column's V data
-                        # v is the local V index (0 to v_count-1), not actual_v
                         wraddr = self.wraddr_start + v * 4 + l
-                        
-                        # -----------------------------------------------------
+
                         # Split 32-element group across 4 MLPRows
-                        # -----------------------------------------------------
-                        # MLPRow s gets elements [s*8 : (s+1)*8]
-                        # Each MLP in each row stores 8 elements per line
                         for s in range(4):
                             comp_engine.MLPStack.MLPRows[s].mlps[real_col_idx].mlp_bram.write(
                                 bank_idx, wraddr, curr_exp, curr_man[s*8:(s+1)*8]
@@ -396,7 +325,7 @@ class Dispatcher:
                 if col_sel >= total_logical_cols - 1:
                     # Wrapped around: advance wraddr_start for next round
                     col_sel = 0
-                    self.wraddr_start += v_count * 4
+                    self.wraddr_start += ugd_len * 4
                 else:
                     col_sel += 1
                             
@@ -924,16 +853,13 @@ class GEMM:
     - num_tiles tiles per row, each handling a slice of C dimension
     - Row reduction produces final result
     
-    Memory Modes:
-    =============
-    
-    DEFAULT: Per-Row Memblk Mode (recommended)
+    Per-Row Memblk
     ------------------------------------------
     Primary mode matching real hardware where each row has its own GDDR6 channel.
     - Each row has its own memblk (self.memblks[r])
     - Data is pre-partitioned: each row's memblk contains only its V slice
     - Use load_row_memblk() to load data
-    - v_start=0 and total_V=v_count → sequential access (no striding needed)
+    - v_start=0 and total_V=ugd_len for each row→ sequential access (no striding needed)
     """
     def __init__(self, num_rows=16, num_cols=8):
         self.num_rows = num_rows    
@@ -966,7 +892,7 @@ class GEMM:
         
         Each row's memblk contains only that row's V slice, so:
           - v_start = 0 (data starts at beginning of this row's memblk)
-          - total_V = v_count (only this row's V in the memblk)
+          - total_V = ugd_len (only this row's V in the memblk)
           - The strided access formula reduces to sequential reads
         
         Args:
@@ -1029,36 +955,17 @@ class GEMM:
     def run(self, cmd):
         """
         Execute a single GEMM command.
-        
-        V Partitioning Flow:
-        ====================
-        The inner dimension V is partitioned across rows. Each row handles
-        V[v_start:v_start+v_count] where:
-          - v_start = starting V index for this row
-          - v_count = number of V values this row handles
-          - total_V = original V before partitioning (cmd['ugd_len'])
-        
-        Example: V=4 with 16 rows
-          Row 0: v_start=0, v_count=1 → V[0]
-          Row 1: v_start=1, v_count=1 → V[1]
-          Row 2: v_start=2, v_count=1 → V[2]
-          Row 3: v_start=3, v_count=1 → V[3]
-          Rows 4-15: v_count=0 (no data)
-        
-        For each command, we compute the partition for each row and pass:
-          - ugd_len = v_count (this row's portion)
-          - v_start = starting index (for strided access in dispatch)
-          - total_V = original V (for stride calculation)
         """
         if cmd['op_code'] == 0xF0:
             # =================================================================
             # FETCH: Load data from memblk into FIFO
             # =================================================================
             row_cmd = cmd.copy()
+            total_V_global = cmd['ugd_len']  # Original V before partitioning
             for r in range(self.num_rows):
-                v_start, v_count = get_v_partition(r, cmd['ugd_len'], self.num_rows)
+                _, v_count = get_v_partition(r, total_V_global, self.num_rows)
                 row_cmd['ugd_len'] = v_count
-                row_cmd['v_start'] = v_start  # Which V index this row starts at (unused in per-row mode)
+                
                 # Clear FIFO before fetch to avoid mixing with unused data from previous dispatch
                 # (Dispatch only consumes what it needs: 16 exp + nv_cnt*ugd_len*4 mantissa lines)
                 self.dispatcher_controls[r].fetcher.fifo.clear()
@@ -1077,17 +984,12 @@ class GEMM:
             #
             # Dispatch parameters for per-row memblk mode:
             #    - v_start = 0 (data starts at beginning of row's memblk)
-            #    - total_V = v_count (only this row's V in memblk)
-            #    - Sequential access: index = b * v_count * 4 + v * 4 + l
+            #    - Sequential access: index = b * ugd_len * 4 + v * 4 + l
             row_cmd = cmd.copy()
             total_V_global = cmd['ugd_len']  # Original V before partitioning
             for r in range(self.num_rows):
-                v_start, v_count = get_v_partition(r, total_V_global, self.num_rows)
+                _, v_count = get_v_partition(r, total_V_global, self.num_rows)
                 row_cmd['ugd_len'] = v_count
-
-                # Per-row mode - data is pre-partitioned in each row's memblk.
-                row_cmd['v_start'] = 0        # Data starts at beginning of row's memblk
-                row_cmd['total_V'] = v_count  # Only this row's V in memblk
 
                 self.dispatcher_controls[r].dispatcher.exec_dispatch(
                     row_cmd,
@@ -1101,8 +1003,10 @@ class GEMM:
             # Each row computes partial sums for its V slice.
             # Rows with v_count=0 produce zero results (V loop doesn't execute).
             row_cmd = cmd.copy()
+            total_V_global = cmd['ugd_len']  # Original V before partitioning
             for r in range(self.num_rows):
-                row_cmd['ugd_len'] = get_v_partition(r, cmd['ugd_len'], self.num_rows)[1]
+                _, v_count = get_v_partition(r, total_V_global, self.num_rows)
+                row_cmd['ugd_len'] = v_count
                 self.compute_engines[r].compute(row_cmd)
         elif cmd['op_code'] == 0xF3:
             # WAIT_DISPATCH: Wait for dispatch to complete (no-op in Python model)
@@ -1204,29 +1108,6 @@ def cmd_readout(cmd_id, left_len, right_len, ugd_len):
         'ugd_len': ugd_len
     }
 
-
-
-def debug_partitioning(V, C, num_rows, num_tiles):
-    """Debug helper to visualize V and C partitioning"""
-    print(f"\nV Partitioning (V={V}, num_rows={num_rows}):")
-    total_v = 0
-    for r in range(num_rows):
-        v_start, v_count = get_v_partition(r, V, num_rows)
-        if v_count > 0:
-            print(f"  Row {r:2d}: V[{v_start:3d}:{v_start+v_count:3d}] (count={v_count})")
-            total_v += v_count
-    print(f"  Total V covered: {total_v} (expected: {V})")
-
-    print(f"\nC Partitioning (C={C}, num_tiles={num_tiles}):")
-    total_c = 0
-    for t in range(num_tiles):
-        c_start, c_count = get_c_partition(t, C, num_tiles)
-        if c_count > 0:
-            print(f"  Tile {t:2d}: C[{c_start:3d}:{c_start+c_count:3d}] (count={c_count})")
-            total_c += c_count
-    print(f"  Total C covered: {total_c} (expected: {C})")
-
-
 def verify_per_row_memblk():
     """
     Test with per-row memblks (pre-partitioned data).
@@ -1248,12 +1129,12 @@ def verify_per_row_memblk():
     B, C, V_per_row = 4, 4, 32
     num_rows = 16
     num_cols = 8
-    total_V = V_per_row * num_rows  # 512
+    total_V_global = V_per_row * num_rows  # 512
     
     print("=" * 70)
     print("Per-Row Memblk Verification (Pre-Partitioned Data)")
     print("=" * 70)
-    print(f"Configuration: B={B}, C={C}, V_per_row={V_per_row}, total_V={total_V}")
+    print(f"Configuration: B={B}, C={C}, V_per_row={V_per_row}, total_V={total_V_global}")
     
     engine = GEMM(num_rows=num_rows, num_cols=num_cols)
     
@@ -1270,10 +1151,10 @@ def verify_per_row_memblk():
     # =========================================================================
     # FETCH and DISPATCH right (weights)
     # =========================================================================
-    # Command specifies total_V = 512, which gets partitioned to 32 per row
-    cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=total_V, len=528, fetch_right=1)
+    # Command specifies total_V_global = 512, which gets partitioned to 32 per row
+    cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=total_V_global, len=528, fetch_right=1)
     engine.run(cmd)
-    cmd = cmd_dispatch(cmd_id=0, nv_cnt=C, ugd_len=total_V, tile_addr=0, col_start=0, disp_right=1, broadcast=0, man_4b=0)
+    cmd = cmd_dispatch(cmd_id=0, nv_cnt=C, ugd_len=total_V_global, tile_addr=0, col_start=0, disp_right=1, broadcast=0, man_4b=0)
     engine.run(cmd)
     
     # =========================================================================
@@ -1287,16 +1168,16 @@ def verify_per_row_memblk():
     # =========================================================================
     # FETCH and DISPATCH left (activations)
     # =========================================================================
-    cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=total_V, len=528, fetch_right=0)
+    cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=total_V_global, len=528, fetch_right=0)
     engine.run(cmd)
-    cmd = cmd_dispatch(cmd_id=0, nv_cnt=B, ugd_len=total_V, tile_addr=0, col_start=0, disp_right=0, broadcast=1, man_4b=0)
+    cmd = cmd_dispatch(cmd_id=0, nv_cnt=B, ugd_len=total_V_global, tile_addr=0, col_start=0, disp_right=0, broadcast=1, man_4b=0)
     engine.run(cmd)
     
     # =========================================================================
     # MATMUL: Compute with V_per_row for each row
     # =========================================================================
     cmd = cmd_matmul(cmd_id=0, left_addr=0, right_addr=0, left_len=B, right_len=C, 
-                     ugd_len=total_V, left_4b=0, right_4b=0, main_loop_left=1)
+                     ugd_len=total_V_global, left_4b=0, right_4b=0, main_loop_left=1)
     engine.run(cmd)
     
     # =========================================================================
@@ -1339,7 +1220,7 @@ def verify_per_row_memblk():
     # READOUT: Reduce and verify final sum
     # =========================================================================
     print("\n--- Verifying Final Sum ---")
-    cmd = cmd_readout(cmd_id=0, left_len=B, right_len=C, ugd_len=total_V)
+    cmd = cmd_readout(cmd_id=0, left_len=B, right_len=C, ugd_len=total_V_global)
     engine.run(cmd)
     
     # Compute expected final sum from all golden partials
