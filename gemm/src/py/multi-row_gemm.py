@@ -6,7 +6,8 @@
 # Memory Block format (528 lines total):
 # - Lines 0-15: Exponents (16 lines × 32 bytes = 512 exponents for 128 NVs × 4 groups)
 # - Lines 16-527: Mantissas (512 lines × 32 bytes per line, one group per line)
-#
+# - Default behavior has Memory Blocks for each compute row
+# 
 # Simplifications from hardware:
 # - Each line is 32 uint8 values (not 256-bit packed)
 # - No cycle-accurate timing model
@@ -219,10 +220,10 @@ class Dispatcher:
         SOLUTION: Use indexed buffer access instead of sequential FIFO pops.
             Source line index = ugd_idx * total_V * 4 + actual_v * 4 + l
             where:
-              - ugd_idx = batch index (b) for left, or column index (c) for right
-              - total_V = original V before partitioning (defines stride)
-              - actual_v = v_start + v (the actual V index in original data)
-              - l = line within NV (0-3 for the 4 groups)
+                - ugd_idx = batch index (b) for left, or column index (c) for right
+                - total_V = original V before partitioning (defines stride)
+                - actual_v = v_start + v (the actual V index in original data)
+                - l = line within NV (0-3 for the 4 groups)
         
         =============================================================================
         EXPONENT INDEXING
@@ -231,45 +232,32 @@ class Dispatcher:
             exp_idx = ugd_idx * total_V * 4 + actual_v * 4 + l
         
         Each NV has 4 exponent bytes (one per group), so the indexing parallels mantissas.
+        
+        =========================================================================
+        Extract V partitioning parameters
+        =========================================================================
+        These parameters control sequential vs strided access.
+
+        PER-ROW MEMBLK MODE (sequential access)
+        ======================================
+        The emulator assumes per-row memblks where each row's memblk contains
+        only the V slice for that row. This matches the hardware model where
+        each row has its own GDDR6 memory channel.
+
+        v_start = 0 (data starts at beginning of this row's memblk)
+        v_count = this row's V slice size (e.g., 32)
+        total_V = v_count (only this row's V in the memblk)
+
+        → Access formula: index = ugd * total_V * 4 + actual_v * 4 + l
+            which reduces to sequential reads within each row's memblk.
         """
         assert cmd['op_code'] == 0xF1, f"cmd op_code {cmd['op_code']} does not match DISPATCH"
-        
-        # =========================================================================
-        # Extract V partitioning parameters
-        # =========================================================================
-        # These parameters control sequential vs strided access.
-        #
-        # DEFAULT: PER-ROW MEMBLK MODE (sequential access)
-        # ================================================
-        # This is the primary mode matching real hardware where each row has its
-        # own GDDR6 channel with pre-partitioned data.
-        #
-        #   v_start = 0 (data starts at beginning of this row's memblk)
-        #   v_count = this row's V slice size (e.g., 32)
-        #   total_V = v_count (only this row's V in the memblk)
-        #
-        #   → Stride formula: index = ugd * total_V * 4 + actual_v * 4 + l
-        #                           = ugd * v_count * 4 + (0 + v) * 4 + l
-        #                           = ugd * v_count * 4 + v * 4 + l
-        #     This is just sequential access within each batch!
-        #
-        # FALLBACK: SHARED MEMBLK MODE (strided access)
-        # =============================================
-        # Legacy mode for testing with a single shared memblk containing all rows' data.
-        # Requires explicit v_start and total_V to extract each row's V slice.
-        #
-        #   v_start = partition offset (e.g., 32 for row 1 when V=128, 16 rows)
-        #   v_count = this row's V slice size (e.g., 8)
-        #   total_V = original V before partitioning (e.g., 128)
-        #
-        #   → Stride formula: index = ugd * total_V * 4 + actual_v * 4 + l
-        #                           = ugd * 128 * 4 + (32 + v) * 4 + l
-        #     Reads non-contiguous data with stride = total_V * 4 between batches.
-        #
-        # The defaults (v_start=0, total_V=v_count) enable per-row mode automatically.
-        v_start = cmd.get('v_start', 0)       # Default 0: per-row mode (sequential)
-        v_count = cmd['ugd_len']              # This row's V count (= ugd_len for this row)
-        total_V = cmd.get('total_V', v_count) # Default v_count: per-row mode (sequential)
+
+        # Per-row memblk mode: data for this row starts at the beginning
+        # of the memblk and total_V == v_count (sequential access).
+        v_start = 0                            # Data starts at beginning of this row's memblk
+        v_count = cmd['ugd_len']               # This row's V count (= ugd_len for this row)
+        total_V = v_count                      # Per-row mode: total_V equals v_count
         
         # =========================================================================
         # PHASE 1: Buffer all exponents for indexed access
@@ -297,16 +285,16 @@ class Dispatcher:
         #   index = ugd_idx * total_V * 4 + nv_idx * 4 + line_within_nv
         
         # =========================================================================
-        # PHASE 3: Dispatch with strided access based on direction
+        # PHASE 3: Dispatch data based on direction
         # =========================================================================
         if cmd['disp_right'] == 0:
             # -----------------------------------------------------------------
             # LEFT DISPATCH: Activations → row_bram
             # -----------------------------------------------------------------
             # Data layout: B-major
-            # We write to row_bram sequentially (line_idx), but read from
-            # man_buffer/exp_buffer with stride to extract only V[v_start:v_start+v_count]
-            # for each batch.
+            # We write to RowBram sequentially (line_idx) and read from
+            # man_buffer/exp_buffer using the indexed access formula to extract
+            # the V slice for each batch.
             #
             # RowBram destination layout after dispatch:
             #   Lines 0 to (v_count*4-1):           B=0, V[v_start:v_start+v_count]
@@ -341,7 +329,9 @@ class Dispatcher:
             # -----------------------------------------------------------------
             # RIGHT DISPATCH: Weights → mlp_brams (distributed across columns)
             # -----------------------------------------------------------------
-            # Data layout: C-major (same strided access pattern as left)
+            # Data layout: C-major
+            # We read weights using the indexed access formula and distribute
+            # them across mlp_brams according to column assignment.
             #
             # Column distribution:
             #   - Each physical MLP has 2 banks (2 logical columns)
@@ -944,30 +934,13 @@ class GEMM:
     - Data is pre-partitioned: each row's memblk contains only its V slice
     - Use load_row_memblk() to load data
     - v_start=0 and total_V=v_count → sequential access (no striding needed)
-    
-    FALLBACK: Shared Memblk Mode (legacy)
-    -------------------------------------
-    Legacy mode for simple testing with a single data source.
-    - All rows share one memblk (self.memblk)
-    - V partitioning done via strided access in dispatch
-    - Use load_memblk() to load data
-    - Requires explicit v_start and total_V for strided extraction
     """
     def __init__(self, num_rows=16, num_cols=8):
         self.num_rows = num_rows    
         self.num_cols = num_cols
-
-        # FALLBACK: Shared memblk (legacy mode for simple testing)
-        self.memblk = MemBlk(num_lines=528, line_size=32)
-        
-        # DEFAULT: Per-row memblks (recommended, matches real hardware)
+        # Per-row memblks
         # Each row has its own memblk, matching real hardware with separate GDDR6 channels
         self.memblks = [MemBlk(num_lines=528, line_size=32) for _ in range(num_rows)]
-        
-        # Mode selection flag:
-        # - True (default): use per-row memblks with sequential access
-        # - False: use shared memblk with strided access (set by load_memblk())
-        self.use_per_row_memblk = True
         
         self.results = [0.0]
 
@@ -983,18 +956,6 @@ class GEMM:
 
         # Result Collector
         self.result_collector = ResultCollector(num_rows)
-    
-    def load_memblk(self, data):
-        """
-        FALLBACK: Load data into the shared memory block (legacy mode).
-        
-        All rows will use this same memblk with strided access for V partitioning.
-        This mode requires explicit v_start and total_V in dispatch commands.
-        
-        For new code, prefer load_row_memblk() which matches real hardware.
-        """
-        self.memblk.data = data
-        self.use_per_row_memblk = False
     
     def load_row_memblk(self, row: int, data):
         """
@@ -1013,7 +974,7 @@ class GEMM:
             data: Pre-partitioned data for this row
         """
         self.memblks[row].data = data
-        self.use_per_row_memblk = True
+        # Per-row memblk mode enforced
 
     def reset_results(self, size=0):
         """Reset the results list to empty or specified size"""
@@ -1097,15 +1058,13 @@ class GEMM:
             for r in range(self.num_rows):
                 v_start, v_count = get_v_partition(r, cmd['ugd_len'], self.num_rows)
                 row_cmd['ugd_len'] = v_count
-                row_cmd['v_start'] = v_start  # Which V index this row starts at
+                row_cmd['v_start'] = v_start  # Which V index this row starts at (unused in per-row mode)
                 # Clear FIFO before fetch to avoid mixing with unused data from previous dispatch
                 # (Dispatch only consumes what it needs: 16 exp + nv_cnt*ugd_len*4 mantissa lines)
                 self.dispatcher_controls[r].fetcher.fifo.clear()
-                
-                # Select memblk based on mode:
-                # - DEFAULT (per-row): each row fetches from its own pre-partitioned memblk
-                # - FALLBACK (shared): all rows fetch from the same memblk (strided access in dispatch)
-                memblk_to_use = self.memblks[r] if self.use_per_row_memblk else self.memblk
+
+                # Per-row memblk mode: each row fetches from its own pre-partitioned memblk
+                memblk_to_use = self.memblks[r]
                 self.dispatcher_controls[r].fetcher.exec_fetch(row_cmd, memblk_to_use)
         elif cmd['op_code'] == 0xF1:
             # =================================================================
@@ -1116,35 +1075,23 @@ class GEMM:
             #   - v_start: where this row's V slice starts in the global data
             #   - total_V: original V before partitioning, needed for stride calc
             #
-            # Memory Mode Selection:
-            # ----------------------
-            # DEFAULT: Per-row memblk mode (use_per_row_memblk=True)
+            # Dispatch parameters for per-row memblk mode:
             #    - v_start = 0 (data starts at beginning of row's memblk)
-            #    - total_V = v_count (only this row's V in the memblk)
+            #    - total_V = v_count (only this row's V in memblk)
             #    - Sequential access: index = b * v_count * 4 + v * 4 + l
-            #
-            # FALLBACK: Shared memblk mode (use_per_row_memblk=False)
-            #    - v_start = partition offset (e.g., 0, 32, 64, ...)
-            #    - total_V = original V before partitioning
-            #    - Strided access to read non-contiguous data
             row_cmd = cmd.copy()
             total_V_global = cmd['ugd_len']  # Original V before partitioning
             for r in range(self.num_rows):
                 v_start, v_count = get_v_partition(r, total_V_global, self.num_rows)
                 row_cmd['ugd_len'] = v_count
-                
-                if self.use_per_row_memblk:
-                    # DEFAULT: Per-row mode - data is pre-partitioned, sequential access
-                    row_cmd['v_start'] = 0        # Data starts at beginning
-                    row_cmd['total_V'] = v_count  # Only this row's V in memblk
-                else:
-                    # FALLBACK: Shared mode - need strided access to extract V slice
-                    row_cmd['v_start'] = v_start           # Offset into shared data
-                    row_cmd['total_V'] = total_V_global    # Full V for stride calculation
-                
+
+                # Per-row mode - data is pre-partitioned in each row's memblk.
+                row_cmd['v_start'] = 0        # Data starts at beginning of row's memblk
+                row_cmd['total_V'] = v_count  # Only this row's V in memblk
+
                 self.dispatcher_controls[r].dispatcher.exec_dispatch(
-                    row_cmd, 
-                    self.dispatcher_controls[r].fetcher.fifo, 
+                    row_cmd,
+                    self.dispatcher_controls[r].fetcher.fifo,
                     self.compute_engines[r]
                 )
         elif cmd['op_code'] == 0xF2:
@@ -1257,87 +1204,6 @@ def cmd_readout(cmd_id, left_len, right_len, ugd_len):
         'ugd_len': ugd_len
     }
 
-def verify():
-    """
-    Testbench for Multi-Row GEMM.
-    Compares: numpy.matmul vs reference impl vs GEMM class model.
-    """
-    test_cases = [
-        'B1_C1_V1',
-        'B1_C1_V128',
-        'B4_C4_V4',
-        'B4_C4_V32',
-        'B4_C16_V8',
-        'B8_C18_V4',
-        'B8_C32_V2'
-    ]
-
-    print("=" * 70)
-    print("Multi-Row GEMM Verification")
-    print("=" * 70)
-
-    all_passed = True
-    
-    hex_path = '/home/dev/Dev/elastix_gemm/hex'
-    left_memblk = MemBlk(num_lines=528, line_size=32)
-    left_memblk.from_hex(f'{hex_path}/left.hex')
-    right_memblk = MemBlk(num_lines=528, line_size=32)
-    right_memblk.from_hex(f'{hex_path}/right.hex')
-    print(left_memblk.data)
-    print(right_memblk.data)
-
-    for test in test_cases:
-        print(f"\n--- Testing {test} ---")
-        # Test name format: B{x}_C{y}_V{z}
-        parts = test.split('_')
-        B = int(parts[0][1:])  # B{x}
-        C = int(parts[1][1:])  # C{y}
-        V = int(parts[2][1:])  # V{z}
-        engine = GEMM(num_rows=16, num_cols=8)
-        # fetch right
-        engine.load_memblk(right_memblk.data)
-        cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=V, len=528, fetch_right=1)
-        engine.run(cmd)
-        # dispatch right
-        cmd = cmd_dispatch(cmd_id=0, nv_cnt=C, ugd_len=V, tile_addr=0, col_start=0, disp_right=1, broadcast=0, man_4b=0)
-        engine.run(cmd)
-        # fetch left
-        engine.load_memblk(left_memblk.data)
-        cmd = cmd_fetch(cmd_id=0, start_addr=0, ugd_len=V, len=528, fetch_right=0)
-        engine.run(cmd)
-        # dispatch left
-        cmd = cmd_dispatch(cmd_id=0, nv_cnt=B, ugd_len=V, tile_addr=0, col_start=0, disp_right=0, broadcast=1, man_4b=0)
-        engine.run(cmd)
-        # matmul
-        cmd = cmd_matmul(cmd_id=0, left_addr=0, right_addr=0, left_len=B, right_len=C, ugd_len=V, left_4b=0, right_4b=0, main_loop_left=1)
-        engine.run(cmd)
-        # readout
-        cmd = cmd_readout(cmd_id=0, left_len=B, right_len=C, ugd_len=V)
-        engine.run(cmd)
-
-        # verify
-        golden_file = f'{hex_path}/golden_{test}.hex'
-        # Read text hex file: each line is a uint16 hex string representing float16 bits
-        with open(golden_file, 'r') as f:
-            hex_lines = [line.strip() for line in f if line.strip()]
-        # Parse hex strings to uint16, then reinterpret bits as float16
-        golden_uint16 = np.array([int(h, 16) for h in hex_lines], dtype=np.uint16)
-        golden_data = golden_uint16.view(np.float16).tolist()
-        
-        # Expected: B × C results
-        expected_len = B * C
-        assert len(golden_data) == expected_len, f"Golden data length {len(golden_data)} should be {expected_len}"
-        assert len(engine.results) == len(golden_data), f"Results length {len(engine.results)} should be {len(golden_data)}"
-        for i in range(len(engine.results)):
-            # Use float16-appropriate tolerance (rtol=5e-3 for float32 compute vs float16 golden)
-            # float16 has ~3.3 decimal digits precision, so 0.5% relative tolerance is appropriate
-            if not np.allclose(engine.results[i], golden_data[i], rtol=5e-3, atol=1e-5):
-                print(f"  MISMATCH at index {i}: got {engine.results[i]}, expected {golden_data[i]}")
-                all_passed = False
-        if all_passed:
-            print(f"  PASSED: All {len(golden_data)} results match!")
-
-    return all_passed
 
 
 def debug_partitioning(V, C, num_rows, num_tiles):
@@ -1502,13 +1368,7 @@ def verify_per_row_memblk():
 
 
 if __name__ == "__main__":
-    # Run shared memblk verification (backward compatible)
-    print("Running shared memblk tests...")
-    verify()
-    
-    print("\n")
-    
-    # Run per-row memblk verification
+    # Run per-row memblk verification (canonical mode)
     print("Running per-row memblk test...")
     verify_per_row_memblk()
 
