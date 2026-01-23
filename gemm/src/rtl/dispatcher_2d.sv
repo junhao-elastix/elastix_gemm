@@ -101,7 +101,8 @@ module dispatcher_2d
         ST_IDLE        = 4'd0,
         ST_EXP_BUFFER  = 4'd1,  // Stage-1: Buffer exponent lines
         ST_MAN_ROUTE   = 4'd2,  // Stage-2: Route mantissa lines
-        ST_DONE        = 4'd3
+        ST_DRAIN       = 4'd3,  // Stage-3: Drain leftover FIFO data (for partial blocks)
+        ST_DONE        = 4'd4
     } state_t;
 
     state_t state_reg, state_next;
@@ -249,18 +250,24 @@ module dispatcher_2d
     
     always_comb begin
         can_read = 1'b0;
-        
+
         case (state_reg)
             ST_EXP_BUFFER: begin
                 // Read exponent lines - stop when we've issued all 16
                 can_read = !i_fifo_empty && (exp_reads_issued < EXP_LINES);
             end
-            
+
             ST_MAN_ROUTE: begin
                 // Read mantissa lines - stop when we've issued all needed
                 can_read = !i_fifo_empty && (man_reads_issued < total_man_reads_needed);
             end
-            
+
+            ST_DRAIN: begin
+                // Drain any leftover data from FIFO (discarded, not processed)
+                // This handles partial blocks where nv_cnt*ugd_len*4 < 512
+                can_read = !i_fifo_empty;
+            end
+
             default: begin
                 can_read = 1'b0;
             end
@@ -305,12 +312,29 @@ module dispatcher_2d
                 // Use lines_processed count for robust completion detection
                 // (avoids timing race between is_last_line and counter updates)
                 if (data_valid && !data_is_exp && (lines_processed >= total_man_lines - 1)) begin
+                    // Go to DRAIN state to empty any leftover FIFO data
+                    // This is critical for partial blocks where nv_cnt*ugd_len*4 < 512
+                    state_next = ST_DRAIN;
+
+                    // synthesis translate_off
+                    `ifdef DEBUG_DISPATCHER
+                    $display("[DISPATCHER] @%0t COMPLETING MAN_ROUTE: lines_processed=%0d, total_man_lines=%0d -> DRAIN",
+                             $time, lines_processed, total_man_lines);
+                    `endif
+                    // synthesis translate_on
+                end
+            end
+
+            ST_DRAIN: begin
+                // Drain any leftover FIFO data (discarded, not processed)
+                // Transition to DONE when FIFO is empty (or after pipeline drains)
+                // data_valid being low for 2 cycles indicates FIFO is drained
+                if (i_fifo_empty && !data_valid && !fifo_rd_en_reg) begin
                     state_next = ST_DONE;
 
                     // synthesis translate_off
                     `ifdef DEBUG_DISPATCHER
-                    $display("[DISPATCHER] @%0t COMPLETING: lines_processed=%0d, total_man_lines=%0d",
-                             $time, lines_processed, total_man_lines);
+                    $display("[DISPATCHER] @%0t DRAIN complete -> DONE", $time);
                     `endif
                     // synthesis translate_on
                 end
@@ -456,9 +480,10 @@ module dispatcher_2d
 
                                 // RIGHT path: advance col_sel after completing each UGD
                                 // Data is organized by UGD: all col0 data, then all col1 data, etc.
-                                // col_sel wraps at nv_cnt (C columns), not NUM_COLS (16)
+                                // col_sel wraps at NUM_COLS (16), not nv_cnt
+                                // When C > NUM_COLS, wraddr_start advances on wrap
                                 if (disp_right_reg) begin
-                                    if (col_sel == nv_cnt_reg[3:0] - 4'd1) begin
+                                    if (col_sel == NUM_COLS - 1) begin
                                         // Wrap around: reset col_sel, advance wraddr_start
                                         col_sel <= '0;
                                         wraddr_start <= wraddr_start + ugd_len_reg[ADDR_WIDTH-3:0] * LINES_PER_NV;

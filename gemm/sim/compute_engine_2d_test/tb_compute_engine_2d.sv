@@ -76,6 +76,7 @@ module tb_compute_engine_2d;
         '{C: 2,  V: 2,  B: 2,   name: "golden_B2_C2_V2"},      // Multi-batch, multi-column
         '{C: 4,  V: 4,  B: 4,   name: "golden_B4_C4_V4"},      // 4x4 test
         '{C: 8,  V: 4,  B: 4,   name: "golden_B4_C8_V4"},      // 8 columns
+        '{C: 13, V: 9,  B: 4,   name: "golden_B4_C13_V9"},     // Non-power-of-2 C and V
         '{C: 16, V: 8,  B: 4,   name: "golden_B4_C16_V8"},     // Full 16 columns
         '{C: 8,  V: 16, B: 8,   name: "golden_B8_C8_V16"},     // 8 batches
         '{C: 16, V: 4,  B: 16,  name: "golden_B16_C16_V4"},    // 16 batches, 16 cols

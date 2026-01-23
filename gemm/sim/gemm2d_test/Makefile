@@ -16,9 +16,11 @@
 
 # Simulation settings
 SIM_TOP := tb_gemm2d
+SIM_TOP_MULTI := tb_gemm2d_multi_iter
 DEVICE := AC7t1500
 BASE_NAME := ac7t1500
 LOG_FILE := sim_gemm2d.log
+LOG_FILE_MULTI := sim_gemm2d_multi_iter.log
 
 # Achronix environment setup
 export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
@@ -172,6 +174,106 @@ run_vsim: compile
 # Run tests
 run: run_vsim
 
+# =========================================================================
+# Multi-Iteration Test Targets
+# Tests weight persistence across 10 iterations
+# =========================================================================
+compile_multi: create_library
+	@echo "======================================================================" | tee $(LOG_FILE_MULTI)
+	@echo "  Multi-Iteration GEMM Compilation Started: $$(date)" | tee -a $(LOG_FILE_MULTI)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MULTI)
+	@echo "Compiling Achronix primitives..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(DSM_COMPILE_FILE) \
+		$(DEVICE_MODELS) \
+		$(ACX_LIB_S7T)/common/acx_integer.sv \
+		$(ACX_LIB_S7T)/common/acx_floating_point.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling package and include files..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_INC)/gemm_pkg.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Package compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling MLP primitives..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
+		$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
+		$(GEMM_RTL)/weight_bram.sv \
+		$(GEMM_RTL)/comp_MLP.sv \
+		$(GEMM_RTL)/comp_MLPRow.sv \
+		$(GEMM_RTL)/comp_stack_fifo.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: MLP primitives compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling FP arithmetic modules..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/fp_to_int.sv \
+		$(GEMM_RTL)/int_to_fp.sv \
+		$(GEMM_RTL)/int_adder_tree.sv \
+		$(GEMM_RTL)/comp_fp_adder_pipeline.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: FP arithmetic compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling FIFO and BRAM modules..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/flex_fifo.sv \
+		$(GEMM_RTL)/comp_row_bram.sv \
+		$(GEMM_RTL)/comp_MLPStack.sv \
+		$(GEMM_RTL)/comp_MLPStack_oFIFO.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: FIFO/BRAM compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling Fetcher and Dispatcher modules..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/fetcher_2d.sv \
+		$(GEMM_RTL)/dispatcher_2d.sv \
+		$(GEMM_RTL)/dispatcher_control_2d.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Fetcher/Dispatcher compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling Compute Engine and Control modules..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/compute_engine_2d.sv \
+		$(GEMM_RTL)/cmd_fifo.sv \
+		$(GEMM_RTL)/master_control_2d.sv \
+		$(GEMM_RTL)/result_collector_2d.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Control modules compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling Top-level module..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/engine_top_2d.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Top-level compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling Multi-Iteration Memory Model..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(SIM_DIR)/tb_mem_model_multi_iter.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Memory model compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compiling Multi-Iteration Testbench..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(SIM_DIR)/tb_gemm2d_multi_iter.sv >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Testbench compilation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "Compilation completed successfully" | tee -a $(LOG_FILE_MULTI)
+	@echo ""
+
+run_vsim_multi: compile_multi
+	@echo "======================================================================" | tee -a $(LOG_FILE_MULTI)
+	@echo "  Multi-Iteration GEMM Simulation Started: $$(date)" | tee -a $(LOG_FILE_MULTI)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MULTI)
+	@echo "Running Multi-Iteration GEMM simulation (10 iterations)..." | tee -a $(LOG_FILE_MULTI)
+	@export LD_LIBRARY_PATH="" && \
+	vsim -c -asdb_skip -do "run -all; quit -force" work.$(SIM_TOP_MULTI) >> $(LOG_FILE_MULTI) 2>&1 || \
+		(echo "ERROR: Simulation failed. See $(LOG_FILE_MULTI)" && exit 1)
+	@echo "" | tee -a $(LOG_FILE_MULTI)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MULTI)
+	@echo "  Multi-Iteration GEMM Simulation Completed: $$(date)" | tee -a $(LOG_FILE_MULTI)
+	@echo "======================================================================" | tee -a $(LOG_FILE_MULTI)
+	@echo "" | tee -a $(LOG_FILE_MULTI)
+	@echo "Extracting test summary..." | tee -a $(LOG_FILE_MULTI)
+	@grep -E "PASS|FAIL|ALL TESTS|ITERATION|MATCH|Captured|MISMATCH|errors" $(LOG_FILE_MULTI) | tail -50 || echo "Warning: Could not find test summary"
+	@echo ""
+	@echo "Full log available in: $(LOG_FILE_MULTI)"
+
+run_multi: run_vsim_multi
+
 # Debug with GUI
 debug: compile
 	@echo "=== Running 2-D GEMM Debug Simulation ==="
@@ -226,15 +328,21 @@ help:
 	@echo "Configuration: B=4, C=4, V=32 with 16 hex file pairs"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make             - Compile and run simulation (outputs to $(LOG_FILE))"
-	@echo "  make run         - Compile and run simulation (same as make)"
+	@echo "  make             - Compile and run single-iteration test ($(LOG_FILE))"
+	@echo "  make run         - Compile and run single-iteration test (same as make)"
+	@echo "  make run_multi   - Run multi-iteration test (10 iters, weight persistence)"
 	@echo "  make compile     - Compile only (no simulation)"
-	@echo "  make debug       - Run with GUI for debugging"
+	@echo "  make debug       - Run single-iteration test with GUI"
 	@echo "  make summary     - Show test results summary"
 	@echo "  make view-log    - View full simulation log"
 	@echo "  make clean       - Remove all generated files"
 	@echo "  make help        - Show this help message"
 	@echo ""
+	@echo "Multi-Iteration Test:"
+	@echo "  - Tests weight persistence across 10 MATMUL iterations"
+	@echo "  - Weights loaded once, activations reloaded each iteration"
+	@echo "  - Verifies all 160 results (10 x 16) are identical"
+	@echo ""
 	@echo "========================================================================"
 
-.PHONY: all create_library compile run_vsim run debug view-log summary clean help
+.PHONY: all create_library compile run_vsim run compile_multi run_vsim_multi run_multi debug view-log summary clean help
