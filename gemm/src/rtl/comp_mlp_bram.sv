@@ -16,7 +16,7 @@
 `endif
 
 
-module comp_MLP #(
+module comp_mlp_bram #(
     // Only difference between base and upper MLPs is muxsel
     parameter logic [1:0] mux_sel_multa_l = 2'b00,  // Mux select for forward cascade A, lower block
     parameter logic [2:0]  mux_sel_multa_h = 3'b000, // Mux select for forward cascade A, higher block
@@ -139,4 +139,4 @@ module comp_MLP #(
       .mlp_dout(dout),
       .mlpram_mlp_dout(  /* NC */)
   );
-endmodule : comp_MLP
+endmodule : comp_mlp_bram

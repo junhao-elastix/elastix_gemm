@@ -23,28 +23,36 @@ cmd_fifo.sv
 csr_to_fifo_bridge.sv
 master_control.sv
 # Elastix GEMM Engine - Memory Hierarchy
-# NOTE: dispatcher_bram.sv and dispatcher.sv removed (direct FETCH to row_bram)
 dispatcher_control.sv
 dma_bram_bridge.sv
 fetcher.sv
-# Elastix GEMM Engine - Result Path (MLP direct output mode)
+# Elastix GEMM Engine - Result Path
 flex_fifo.sv
+result_to_dma.sv
 result_fifo_to_simple_bram.sv
 shift_reg.sv
-# NOTE: result_arbiter, result_bram archived (not used in MLP mode)
-# Elastix GEMM Engine - MLP Compute (Active Architecture)
+# Elastix GEMM Engine - MLP Compute (Single-Row Architecture - Legacy)
 engine_top.sv
 compute_engine_mlp.sv
+# Elastix GEMM Engine - 2D Multi-Row Architecture (16 rows x 16 cols)
+engine_top_2d.sv
+master_control_2d.sv
+dispatcher_control_2d.sv
+dispatcher_2d.sv
+fetcher_2d.sv
+compute_engine_2d.sv
+result_collector_2d.sv
 comp_row_bram.sv
 comp_bram_fill_ctrl.sv
-comp_mlp_dispatch.sv
 comp_mlp_col_ctrl.sv
 weight_bram.sv
 comp_mlp_bram.sv
 comp_mlp_bram_col.sv
+comp_stack_fifo.sv
 comp_mlp_bram_col_wrapper.sv
 comp_mlp_dot16_bfp8.sv
 comp_mlp_dot16_int8.sv
+# FP Arithmetic
 fp24_add.sv
 fp24_to_fp16.sv
 # Integer-Domain FP Adder Pipeline (for improved numerical accuracy)
@@ -52,9 +60,6 @@ fp_to_int.sv
 int_to_fp.sv
 int_adder_tree.sv
 comp_fp_adder_pipeline.sv
-# NOTE: Legacy modular compute engine archived to archive_dec15/
-# Archived modules: compute_engine_modular, gfp8_bcv_controller, 
-#   gfp8_nv_dot, gfp8_to_fp16, tile_bram, tile_result_fifo
 }
 
 # WARNING: do not modify the files below this line unless you know what you are doing

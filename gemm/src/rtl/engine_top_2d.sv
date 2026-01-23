@@ -57,14 +57,13 @@ import gemm_pkg::*;
     t_AXI4.initiator                     axi_ddr_if [NUM_ROWS-1:0],
 
     // ====================================================================
-    // Result Output Interface (to Host DMA)
+    // Result Output Interface (BRAM Write to DMA Bridge)
     // Output is packed 256-bit lines (16 x FP16)
     // ====================================================================
-    input  logic                         i_result_ready,
-    output logic                         o_result_valid,
-    output logic                         o_result_last,
-    output logic [15:0]                  o_result_keep,   // 16-bit keep mask
-    output logic [255:0]                 o_result_data,   // 256-bit packed (16 x FP16)
+    output logic                         o_bram_wr_en,
+    output logic [8:0]                   o_bram_wr_addr,
+    output logic [255:0]                 o_bram_wr_data,
+    output logic [31:0]                  o_bram_wr_strobe,
 
     // ====================================================================
     // Status Outputs
@@ -136,6 +135,13 @@ import gemm_pkg::*;
     logic         rc_busy;
     logic [7:0]   rc_id;
     logic         rc_ack_readout;
+
+    // Result Collector -> result_to_dma (internal ready-valid)
+    logic         rc_output_valid;
+    logic         rc_output_last;
+    logic [15:0]  rc_output_keep;
+    logic [255:0] rc_output_data;
+    logic         rc_output_ready;
 
     // ===================================================================
     // DC -> CE Data Paths (per row)
@@ -350,7 +356,7 @@ import gemm_pkg::*;
             // NV index: addr * 2 + bank (where bank = col % 2)
             assign wt_nv_idx_r = {dc_right_wr_addr[r], 1'b0} + {9'b0, col_idx_r[0]};
 
-            `ifdef SIMULATION
+            `ifdef DEBUG_ENGINE_TOP
             always @(posedge i_clk) begin
                 if (wt_wr_en_r && r == 0) begin
                     $display("[WT_ADDR_CALC] @%0t row=%0d dc_addr=%0d col_idx=%0d mlp_sel=%0d nv_idx=%0d",
@@ -440,17 +446,41 @@ import gemm_pkg::*;
         .i_ce_result_empty  (ce_to_rc_result_empty),
         .o_ce_result_rd_en  (rc_to_ce_result_rd_en),
 
-        // Output Interface (to Host DMA - 256-bit packed FP16)
-        .i_output_ready     (i_result_ready),
-        .o_output_valid     (o_result_valid),
-        .o_output_last      (o_result_last),
-        .o_output_keep      (o_result_keep),
-        .o_output_data      (o_result_data),
+        // Output Interface (to result_to_dma - internal ready-valid)
+        .i_output_ready     (rc_output_ready),
+        .o_output_valid     (rc_output_valid),
+        .o_output_last      (rc_output_last),
+        .o_output_keep      (rc_output_keep),
+        .o_output_data      (rc_output_data),
 
         // Status
         .o_rc_state         (rc_state),
         .o_rc_busy          (rc_busy),
         .o_rc_cmd_id        (rc_id)
+    );
+
+    // ===================================================================
+    // Result BRAM Adapter - Converts ready-valid to BRAM write interface
+    // ===================================================================
+    result_to_dma #(
+        .DATA_WIDTH (256),
+        .ADDR_WIDTH (9)
+    ) u_result_to_dma (
+        .i_clk          (i_clk),
+        .i_reset_n      (i_reset_n),
+
+        // Ready-Valid Input (from result_collector_2d)
+        .i_data         (rc_output_data),
+        .i_keep         (rc_output_keep),
+        .i_last         (rc_output_last),
+        .i_valid        (rc_output_valid),
+        .o_ready        (rc_output_ready),
+
+        // BRAM Write Output (to external DMA bridge)
+        .o_bram_wr_en   (o_bram_wr_en),
+        .o_bram_wr_addr (o_bram_wr_addr),
+        .o_bram_wr_data (o_bram_wr_data),
+        .o_bram_wr_strobe(o_bram_wr_strobe)
     );
 
     // ===================================================================

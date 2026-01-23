@@ -13,8 +13,8 @@
 set NAP_CLK_PERIOD 2.500
 create_clock -name nap_clk [get_ports i_nap_clk] -period $NAP_CLK_PERIOD
 
-# Set 200MHz target for reg clock
-set REG_CLK_PERIOD 5.000
+# Set 300MHz target for reg clock
+set REG_CLK_PERIOD 3.333
 create_clock -name reg_clk [get_ports i_reg_clk] -period $REG_CLK_PERIOD
 
 # Set 100MHz target for ADM clock
@@ -52,7 +52,7 @@ set_clock_groups -asynchronous -group {nap_clk} \
 
 # Set explicit clock uncertainties to give realistic timing targets
 set_clock_uncertainty -setup 0.15 [get_clocks reg_clk]
-set_clock_uncertainty -setup 0.10 [get_clocks adm_clk] 
+set_clock_uncertainty -setup 0.15 [get_clocks adm_clk] 
 set_clock_uncertainty -setup 0.20 [get_clocks nap_clk]
 
 # Set max delay constraints between clock domains to prevent excessive optimization

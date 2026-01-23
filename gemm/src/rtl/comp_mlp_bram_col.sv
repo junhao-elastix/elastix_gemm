@@ -18,7 +18,7 @@
 `endif
 
 
-module comp_MLPRow #(
+module comp_mlp_bram_col #(
     // How many MLPs to stack in this column
     parameter integer NUM_MLPS = 8,
     parameter logic dump_waves = 0
@@ -69,7 +69,7 @@ logic [71:0] multb_h[NUM_MLPS-1:0];        // Forward cascade B, higher
 logic [71:0] multa_l[NUM_MLPS-1:0];        // Forward cascade A, lower
 logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
- comp_MLP #(
+ comp_mlp_bram #(
     // Select DIN_A[71:0] for both A ports at column base
     .mux_sel_multa_l(2'b00),
     .mux_sel_multa_h(3'b000),
@@ -115,7 +115,7 @@ logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
   for (genvar i = 1; i < NUM_MLPS; i = i + 1) begin : mlp_gen
 
-    comp_MLP #(
+    comp_mlp_bram #(
         // Select cascade input for A ports
         .mux_sel_multa_l(2'b11),
         .mux_sel_multa_h(3'b111),
@@ -162,13 +162,13 @@ logic [71:0] multb_l[NUM_MLPS-1:0];        // Forward cascade B, lower
 
 initial begin
     if (dump_waves) begin
-        $dumpfile("comp_MLPRow.vcd");
-        $dumpvars(0, comp_MLPRow);
+        $dumpfile("comp_mlp_bram_col.vcd");
+        $dumpvars(0, comp_mlp_bram_col);
    end
 end
 
 // synthesis translate_off
-`ifdef DEBUG_MLPSTACK
+`ifdef SIMULATION
 // Debug: Track MLP inputs and outputs for sign debugging
 logic [7:0] din_bytes [7:0];  // Unpack din mantissas for debug
 logic [15:0] dout_sign_check;  // Check sign bits of FP24 outputs
@@ -209,4 +209,4 @@ end
 `endif
 // synthesis translate_on
 
-endmodule : comp_MLPRow
+endmodule

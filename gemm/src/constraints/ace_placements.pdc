@@ -38,41 +38,104 @@ set_placement -fixed {i:i_msix_irq_handler.i_axi_responder_nap.i_axi_responder} 
 set_placement -fixed {i:i_flr_responder.i_axi_responder_nap.i_axi_responder} {s:x_core.NOC[9][8].logic.noc.nap_s}
 
 # -------------------------------------------------------------------------
-# GDDR6 NAP Placements - Channel 0 Only (GEMM Engine Focus)
-# MS2.0 GEMM Engine uses Channel 0 @ NOC[3][3]
-# Channels 1-7 disabled for focused GEMM architecture
+# GDDR6 NAP Placements - 2D Multi-Row GEMM Engine (16 NAPs)
+# 16 NAP responders, one per GDDR6 channel (16 rows -> 16 channels)
+# -------------------------------------------------------------------------
+# Placement Mapping:
+#   West side (Rows 0-7):  NOC column 3, rows 3-10
+#   East side (Rows 8-15): NOC column 8, rows 3-10
 # -------------------------------------------------------------------------
 
-# Channel 1: MS2.0 GEMM Engine NAP placement (FIXED Oct 8 2025)
-# West side: NOC[3][4] for GDDR6 Channel 1
-# Architecture (per GDDR6 reference design):
-#   Engine (initiator) -> NAP responder wrapper -> NoC -> GDDR6_1
-# Dispatcher acts as AXI master/initiator, NAP provides slave/responder interface
-# Using nap_s (slave) for responder wrapper per reference design pattern
-# Note: Generate blocks create instance names with underscore syntax (gddr_gen_noc_1, not gddr_gen_noc[1])
-# Reference: gddr_ref_design/src/constraints/ace_placements.pdc
-set_placement -fixed [find -insts "gddr_gen_noc_1\*i_axi_responder_wrapper.i_axi_responder"] \
+# West side NAPs (rows 0-7) on NOC column 3
+# Row 0: Controller 0 Ch0 (PAGE_ID 0xC) - NOC[3][3]
+set_placement -fixed [find -insts "gen_gddr_nap_0\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][3].logic.noc.nap_s"
+
+# Row 1: Controller 0 Ch1 (PAGE_ID 0xD) - NOC[3][4]
+set_placement -fixed [find -insts "gen_gddr_nap_1\*i_nap_responder.i_axi_responder"] \
     "s:x_core.NOC[3][4].logic.noc.nap_s"
 
-# Channel 0: MS2.0 GEMM Engine Placement Region (following reference design patterns)
-# West side region for Channel 0 GEMM engine - coordinates from GDDR6 reference design
-# This places GEMM engine components near NOC[3][3] for optimal Channel 0 access
-create_region "region_gemm_engine_ch0" "55 193 81 229" -snap fabric_clusters -type soft
+# Row 2: Controller 1 Ch0 (PAGE_ID 0x4) - NOC[3][5]
+set_placement -fixed [find -insts "gen_gddr_nap_2\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][5].logic.noc.nap_s"
 
-# Add GEMM engine components to placement region
-add_region_find_insts "region_gemm_engine_ch0" "find -insts *gemm_engine_channel*"
+# Row 3: Controller 1 Ch1 (PAGE_ID 0x5) - NOC[3][6]
+set_placement -fixed [find -insts "gen_gddr_nap_3\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][6].logic.noc.nap_s"
 
-# Explicit BRAM placement for engine components (if using ACX_BRAM72K)
-# Note: Following reference pattern - place BRAMs near their logic
-# set_placement -fixed [find -insts "*gemm_engine*bram*"] {s:x_core.BMLP[3][3].logic.bmlp.bram[0]}
-# set_placement -fixed [find -insts "*dispatcher*bram*"] {s:x_core.BMLP[3][4].logic.bmlp.bram[0]}
+# Row 4: Controller 2 Ch0 (PAGE_ID 0x0) - NOC[3][7]
+set_placement -fixed [find -insts "gen_gddr_nap_4\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][7].logic.noc.nap_s"
 
-# MLP placement (if compute engine uses ACX_MLP72 primitives)
-# Note: Would need to identify specific MLP instances in compute_engine
-# set_placement -fixed [find -insts "*compute_engine*mlp*"] {s:x_core.BMLP[3][3].logic.bmlp.mlp[0]}
+# Row 5: Controller 2 Ch1 (PAGE_ID 0x1) - NOC[3][8]
+set_placement -fixed [find -insts "gen_gddr_nap_5\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][8].logic.noc.nap_s"
 
-# Channels 1-7: Commented out in RTL, no placement constraints needed
-# Future expansion: Uncomment and add placements when additional channels used
+# Row 6: Controller 3 Ch0 (PAGE_ID 0x8) - NOC[3][9]
+set_placement -fixed [find -insts "gen_gddr_nap_6\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][9].logic.noc.nap_s"
+
+# Row 7: Controller 3 Ch1 (PAGE_ID 0x9) - NOC[3][10]
+set_placement -fixed [find -insts "gen_gddr_nap_7\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[3][10].logic.noc.nap_s"
+
+# East side NAPs (rows 8-15) on NOC column 8
+# Row 8: Controller 4 Ch0 (PAGE_ID 0xF) - NOC[8][3]
+set_placement -fixed [find -insts "gen_gddr_nap_8\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][3].logic.noc.nap_s"
+
+# Row 9: Controller 4 Ch1 (PAGE_ID 0xE) - NOC[8][4]
+set_placement -fixed [find -insts "gen_gddr_nap_9\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][4].logic.noc.nap_s"
+
+# Row 10: Controller 5 Ch0 (PAGE_ID 0x7) - NOC[8][5]
+set_placement -fixed [find -insts "gen_gddr_nap_10\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][5].logic.noc.nap_s"
+
+# Row 11: Controller 5 Ch1 (PAGE_ID 0x6) - NOC[8][6]
+set_placement -fixed [find -insts "gen_gddr_nap_11\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][6].logic.noc.nap_s"
+
+# Row 12: Controller 6 Ch0 (PAGE_ID 0x3) - NOC[8][7]
+set_placement -fixed [find -insts "gen_gddr_nap_12\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][7].logic.noc.nap_s"
+
+# Row 13: Controller 6 Ch1 (PAGE_ID 0x2) - NOC[8][8]
+set_placement -fixed [find -insts "gen_gddr_nap_13\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][8].logic.noc.nap_s"
+
+# Row 14: Controller 7 Ch0 (PAGE_ID 0xB) - NOC[8][9]
+set_placement -fixed [find -insts "gen_gddr_nap_14\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][9].logic.noc.nap_s"
+
+# Row 15: Controller 7 Ch1 (PAGE_ID 0xA) - NOC[8][10]
+set_placement -fixed [find -insts "gen_gddr_nap_15\*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[8][10].logic.noc.nap_s"
+
+# -------------------------------------------------------------------------
+# 2D GEMM Engine Placement Regions
+# -------------------------------------------------------------------------
+# West side region for rows 0-7
+create_region "region_gemm_engine_west" "55 160 81 260" -snap fabric_clusters -type soft
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_0*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_1*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_2*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_3*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_4*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_5*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_6*"
+add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_7*"
+
+# East side region for rows 8-15
+create_region "region_gemm_engine_east" "300 160 330 260" -snap fabric_clusters -type soft
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_8*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_9*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_10*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_11*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_12*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_13*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_14*"
+add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_15*"
 
 # -------------------------------------------------------------------------
 # Example of how to fix the location of an MLP and a BRAM

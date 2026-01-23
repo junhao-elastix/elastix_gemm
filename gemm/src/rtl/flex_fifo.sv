@@ -71,11 +71,13 @@ module flex_fifo #(
         for (init_i = 0; init_i < DEPTH; init_i = init_i + 1) begin
             mem[init_i] = '0;
         end
-        // Display configuration
+        // Display configuration (controlled by DEBUG_FLEX_FIFO macro)
+        `ifdef DEBUG_FLEX_FIFO
         $display("[FLEX_FIFO] Configuration: DEPTH=%0d, DATA_WIDTH=%0d", DEPTH, DATA_WIDTH);
         $display("[FLEX_FIFO] 10%% of DEPTH = %0d, REMAINING_SPACE = %0d", TEN_PERCENT, REMAINING_SPACE);
         $display("[FLEX_FIFO] AFULL_THRESHOLD = %0d (triggers with %0d remaining)",
                  AFULL_THRESHOLD, REMAINING_SPACE);
+        `endif
     end
     `endif
 

@@ -49,7 +49,6 @@ set_option -fsm_explorer 1
 
 # Reduce retiming iterations to speed up synthesis
 set_option -retiming 1
-set_option -retiming_iteration_limit 25
 
 # Enable pipeline optimization for better timing closure
 set_option -pipeline 1
@@ -61,5 +60,5 @@ set_option -maxfan 500
 set_option -arithmetic_optimization 1
 
 # Optimize for speed rather than area (faster synthesis)
-set_option -optimize_for_speed 1
+# set_option -optimize_for_speed 1
 

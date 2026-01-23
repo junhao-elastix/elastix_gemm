@@ -32,7 +32,7 @@
 //   - Results pushed to FIFOs when drain completes
 //   - Adder tree pops from FIFOs when all 4 stacks have data
 //
-// Output: 16 x FP16 results (column-ordered: col0, col1, ..., col15)
+// Output: 16 × FP16 results (packed as 8 × 32-bit words)
 //
 // Pipeline Latency:
 //   - MLP internal pipeline: 2 cycles
@@ -64,7 +64,7 @@
 `timescale 1ps / 1ps
 `default_nettype none
 
-module comp_MLPStack #(
+module comp_mlp_bram_col_wrapper #(
     parameter integer NUM_MLPS = 8,
     parameter integer NUM_STACKS = 4,           // 4 parallel stacks
     parameter integer CYCLES_PER_NV = 4,        // 4 cycles per NV (32 elements / 8 per cycle)
@@ -78,7 +78,7 @@ module comp_MLPStack #(
     // =========================================================================
     // Base Address Configuration
     // =========================================================================
-    input  logic [9:0]  i_rd_base_addr,       // Read base address (from MATMUL command)
+    input  logic [9:0]  i_rd_base_addr,       // Read base address (from TILE command)
 
     // =========================================================================
     // Weight Loading Interface (DIRECT WRITE - NO HANDSHAKE)
@@ -106,14 +106,14 @@ module comp_MLPStack #(
     input  logic [7:0]   i_nv_left_exp,       // 8-bit exponent (broadcast to 4 stacks)
     input  logic        i_new_dot,            // Start new dot product (reset accumulator)
     input  logic        i_last_nv,            // This is the last NV of the current dot product
-    input  logic        i_last_matmul,        // Truly last dot product of entire MATMUL (triggers final drain)
+    input  logic        i_last_matmul,        // Truly last dot product of entire TILE (triggers final drain)
 
     // =========================================================================
-    // Result Interface (downstream) - 16 parallel FP16 outputs to external FIFOs
+    // Result Interface (downstream)
     // =========================================================================
-    output logic [15:0] o_result_fp16 [15:0],  // 16 x FP16 results (NUM_MLPS * 2 columns)
-    output logic        o_result_push,         // Push enable for all 16 FIFOs
-    input  logic        i_result_fifo_full     // OR of all external FIFO full flags
+    output logic [71:0] o_dout [NUM_MLPS-1:0], // MLP outputs (combined from 4 stacks)
+    output logic        o_dout_valid,          // Results valid
+    input  logic        i_dout_ready           // Downstream ready
 );
 
     // =========================================================================
@@ -283,18 +283,6 @@ module comp_MLPStack #(
         end
     endgenerate
 
-    // synthesis translate_off
-    `ifdef DEBUG_MLPSTACK
-    always @(posedge clk) begin
-        // Debug: Show first few weight writes with full detail
-        if (wt_loading && (i_wt_mlp_sel == 0) && (i_wt_wr_addr < 10)) begin
-            $display("[MLPSTACK_WR] @%0t mlp_sel=%0d i_wt_wr_addr=%0d mlp_wraddr=%0d wt_loading=%b",
-                     $time, i_wt_mlp_sel, i_wt_wr_addr, mlp_wraddr, wt_loading);
-        end
-    end
-    `endif
-    // synthesis translate_on
-
     // =========================================================================
     // Per-Stack Data Extraction: Activation Data
     // =========================================================================
@@ -409,7 +397,7 @@ module comp_MLPStack #(
     // Stall condition: waiting for data at NV boundary (cycle 3)
     // REMOVED for optimization: We assume data is always available once streaming starts
     // Stall when we're at cycle 3 in RUNNING but no valid data is available
-    // Exception: If we are finishing the MATMUL (last_nv && last_matmul), we don't stall, we go to DRAIN
+    // Exception: If we are finishing the tile (last_nv && last_matmul), we don't stall, we go to DRAIN
     logic stalling;
     assign stalling = 1'b0; // FORCE NO STALL
 
@@ -525,14 +513,12 @@ module comp_MLPStack #(
                     chunk_cnt <= chunk_cnt + 2'd1;
                 end
 
-                // synthesis translate_off
-                `ifdef DEBUG_MLPSTACK
+                `ifdef SIMULATION
                 $display("[WRAPPER_DBG] @%0t ACT_LATCH: i_last_nv=%0b i_new_dot=%0b nv_idx=%0d chunk=%0d",
                          $time, i_last_nv, i_new_dot,
                          i_new_dot ? 7'd0 : (chunk_cnt == 2'd3 ? nv_index + 7'd1 : nv_index),
                          i_new_dot ? 2'd0 : (chunk_cnt == 2'd3 ? 2'd0 : chunk_cnt + 2'd1));
                 `endif
-                // synthesis translate_on
             end
 
             case (comp_state_reg)
@@ -609,9 +595,9 @@ module comp_MLPStack #(
             logic [71:0] stack_bram_din;
             assign stack_bram_din = wt_loading ? {i_nv_right_exp, wt_man_slice[s]} : 72'b0;
 
-            comp_MLPRow #(
+            comp_mlp_bram_col #(
                 .NUM_MLPS(NUM_MLPS)
-            ) u_mlp_row (
+            ) u_mlp_bram_col (
                 .clk(clk),
                 .rstn(rstn),
                 .ce(mlp_ce),
@@ -683,8 +669,8 @@ module comp_MLPStack #(
         end
     end
 
-    // Pop from all FIFOs when all have data and downstream FIFOs not full
-    assign fifo_pop_enable = fifo_all_ready && !i_result_fifo_full;
+    // Pop from all FIFOs when all have data and downstream is ready
+    assign fifo_pop_enable = fifo_all_ready && i_dout_ready;
 
     // =========================================================================
     // Repack FIFO Outputs for Adder Pipeline
@@ -744,11 +730,8 @@ module comp_MLPStack #(
                 .o_valid(adder_valid_bank1)
             );
 
-            // Map to column-ordered output:
-            // Even columns: bank0 (MLP0 bank0 -> col0, MLP1 bank0 -> col2, ...)
-            // Odd columns:  bank1 (MLP0 bank1 -> col1, MLP1 bank1 -> col3, ...)
-            assign o_result_fp16[m*2]     = final_bank0[m];  // Even column
-            assign o_result_fp16[m*2 + 1] = final_bank1[m];  // Odd column
+            // Combine into output format
+            assign o_dout[m] = {40'd0, final_bank1[m], final_bank0[m]};
 
             // Use adder valid from MLP 0 for overall output valid
             if (m == 0) begin : gen_valid
@@ -758,15 +741,14 @@ module comp_MLPStack #(
     endgenerate
 
     // =========================================================================
-    // Output Push: From adder pipeline valid signal
+    // Output Valid: From adder pipeline valid signal
     // =========================================================================
-    assign o_result_push = adder_output_valid;
+    assign o_dout_valid = adder_output_valid;
 
     // =========================================================================
     // Debug Output
     // =========================================================================
     // synthesis translate_off
-    `ifdef DEBUG_MLPSTACK
     logic [1:0] comp_state_prev;
     logic       wt_loading_prev;
     logic       fifo_push_prev;
@@ -790,8 +772,8 @@ module comp_MLPStack #(
 
         // Report FIFO pop events
         if (fifo_pop_enable) begin
-            $display("[MLP_FIFO] @%0t POP: all_ready=%b, fifo_full=%b",
-                     $time, fifo_all_ready, i_result_fifo_full);
+            $display("[MLP_FIFO] @%0t POP: all_ready=%b, dout_ready=%b",
+                     $time, fifo_all_ready, i_dout_ready);
         end
 
         // Report backpressure events
@@ -800,10 +782,10 @@ module comp_MLPStack #(
                      $time, comp_state_reg, fifo_any_full);
         end
 
-        // Report output push
-        if (o_result_push) begin
-            $display("[MLP_FIFO] @%0t RESULT_PUSH: col0=0x%04x col1=0x%04x col2=0x%04x col3=0x%04x",
-                     $time, o_result_fp16[0], o_result_fp16[1], o_result_fp16[2], o_result_fp16[3]);
+        // Report output valid
+        if (o_dout_valid) begin
+            $display("[MLP_FIFO] @%0t DOUT_VALID: MLP0 bank0=0x%04x bank1=0x%04x",
+                     $time, final_bank0[0], final_bank1[0]);
         end
 
         // Report raw FP24 from FIFO when popping (before adder tree)
@@ -816,10 +798,9 @@ module comp_MLPStack #(
                      adder_input_bank1[0][2], adder_input_bank1[0][3]);
         end
     end
-    `endif
     // synthesis translate_on
 
-endmodule : comp_MLPStack
+endmodule
 
 `default_nettype wire
 

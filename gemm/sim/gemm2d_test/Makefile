@@ -55,9 +55,12 @@ VLOG_OPTIONS += +define+USE_BEHAVIORAL_BRAM
 # VLOG_OPTIONS += +define+DEBUG_FETCHER           # fetcher_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_DISPATCHER_CTRL   # dispatcher_control_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_MASTER_CTRL       # master_control_2d.sv
-# VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStack_oFIFO.sv
+# VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStack_oFIFO.sv, weight_bram.sv, comp_fp_adder_pipeline.sv
 # VLOG_OPTIONS += +define+DEBUG_COMPUTE           # compute_engine_2d.sv
-# VLOG_OPTIONS += +define+DEBUG_WEIGHT_BRAM       # weight_bram.sv (quiet mode)
+# VLOG_OPTIONS += +define+DEBUG_FLEX_FIFO         # flex_fifo.sv (config display)
+# VLOG_OPTIONS += +define+DEBUG_CMD_FIFO          # cmd_fifo.sv (FIFO writes/reads)
+# VLOG_OPTIONS += +define+DEBUG_ENGINE_TOP        # engine_top_2d.sv (weight address calc)
+# VLOG_OPTIONS += +define+DEBUG_TB                # tb_gemm2d.sv (AXI, FIFO, MC state)
 # =========================================================================
 VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal
 VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/
@@ -132,7 +135,8 @@ compile: create_library
 		$(GEMM_RTL)/compute_engine_2d.sv \
 		$(GEMM_RTL)/cmd_fifo.sv \
 		$(GEMM_RTL)/master_control_2d.sv \
-		$(GEMM_RTL)/result_collector_2d.sv >> $(LOG_FILE) 2>&1 || \
+		$(GEMM_RTL)/result_collector_2d.sv \
+		$(GEMM_RTL)/result_to_dma.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: Control modules compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling Top-level module..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \

@@ -135,9 +135,11 @@ module comp_fp_adder_pipeline #(
             else $error("FP_OUT_WIDTH must be 24 (FP24) or 16 (FP16)");
         assert (INT_WIDTH >= 64 && INT_WIDTH <= 256)
             else $error("INT_WIDTH must be between 64 and 256");
-        
+
+        `ifdef DEBUG_MLPSTACK
         $display("fp_adder_pipeline: NUM_INPUTS=%0d, FP_IN=%0d, FP_OUT=%0d, INT=%0d, LATENCY=%0d",
                  NUM_INPUTS, FP_IN_WIDTH, FP_OUT_WIDTH, INT_WIDTH, TOTAL_LATENCY);
+        `endif
     end
 
 endmodule

@@ -392,42 +392,35 @@ module elastix_gemm_top
     // The responder includes an AXI initiator NAP
     //--------------------------------
 
-    // Engine result BRAM write signals (from MS2.0 GEMM engine)
-    // CRITICAL FIX (Oct 10, 2025): Initialize to avoid undriven signals when generate loop assigns later
-    // These are assigned inside the generate loop but used outside - must have defaults
-    logic         engine_bram_wr_en = 1'b0;
-    logic [8:0]   engine_bram_wr_addr = 9'b0;
-    logic [255:0] engine_bram_wr_data = 256'b0;
-    logic [31:0]  engine_bram_wr_strobe = 32'b0;
+    // Engine result BRAM write signals (from 2D GEMM engine)
+    // Assigned directly from engine_top_2d outputs
+    logic         engine_bram_wr_en;
+    logic [8:0]   engine_bram_wr_addr;
+    logic [255:0] engine_bram_wr_data;
+    logic [31:0]  engine_bram_wr_strobe;
     
     // =========================================================================
-    // Pipeline Probe Signals (driven from engine_top in generate block)
+    // Pipeline Probe Signals (LEGACY - from single-row engine_top)
     // =========================================================================
-    // Probe 0: dispatcher_bram write data (verify FETCH)
+    // NOTE: These are not driven by engine_top_2d - kept for compatibility
+    // with existing register interface. Values will remain at 0.
     logic [15:0] probe_disp_data = 16'd0;
     logic        probe_disp_valid = 1'b0;
-    
-    // Probe 1: row_bram write data (verify DISPATCH)
     logic [15:0] probe_rowbram_data = 16'd0;
     logic        probe_rowbram_valid = 1'b0;
-    
-    // Probe 2: FP24 compute output (verify MLP compute)
     logic [23:0] probe_fp24_data = 24'd0;
     logic        probe_fp24_valid = 1'b0;
-    
-    // Probe 3: FP16 converted result (verify output conversion)
     logic [15:0] probe_fp16_data = 16'd0;
     logic        probe_fp16_valid = 1'b0;
-    
+
     // =========================================================================
-    // Probe Capture Registers - Capture on valid, hold until next valid
-    // Format: probe_reg_N = {padding, probe_data} captured when probe_valid fires
+    // Probe Capture Registers (LEGACY - values will remain at 0)
     // =========================================================================
-    logic [15:0] captured_probe_0 = 16'd0;  // dispatcher_bram data
-    logic [15:0] captured_probe_1 = 16'd0;  // row_bram data
-    logic [23:0] captured_probe_2 = 24'd0;  // FP24 compute result
-    logic [15:0] captured_probe_3 = 16'd0;  // FP16 final result
-    
+    logic [15:0] captured_probe_0 = 16'd0;
+    logic [15:0] captured_probe_1 = 16'd0;
+    logic [23:0] captured_probe_2 = 24'd0;
+    logic [15:0] captured_probe_3 = 16'd0;
+
     always_ff @(posedge i_reg_clk or negedge reg_rstn) begin
         if (!reg_rstn) begin
             captured_probe_0 <= 16'd0;
@@ -435,7 +428,6 @@ module elastix_gemm_top
             captured_probe_2 <= 24'd0;
             captured_probe_3 <= 16'd0;
         end else begin
-            // Each probe captures independently when its valid fires
             if (probe_disp_valid)    captured_probe_0 <= probe_disp_data;
             if (probe_rowbram_valid) captured_probe_1 <= probe_rowbram_data;
             if (probe_fp24_valid)    captured_probe_2 <= probe_fp24_data;
@@ -501,383 +493,201 @@ module elastix_gemm_top
         .i_reset_n          (reg_rstn) // active low synchronous reset
     );
     //--------------------------------------------------------------------
-    // GDDR6 Channel Infrastructure
+    // 2D Multi-Row GEMM Engine Infrastructure
     //--------------------------------------------------------------------
-    // Implements 8 GDDR6 memory channels with NoC interfaces:
-    //   - Channel 0: MS2.0 GEMM Engine (matrix multiplication core)
-    //   - Channels 1-7: Packet gen/checker for memory validation
+    // Implements 16 GDDR6 channels with NoC interfaces for 2D GEMM array:
+    //   - 16 NAP responders (one per GDDR6 channel/row)
+    //   - engine_top_2d with 16 AXI initiator interfaces
+    //   - Result adapter with internal FIFO -> BRAM write interface
     //--------------------------------------------------------------------
 
     // Local parameters for NAP interface
     localparam NAP_DATA_WIDTH = `ACX_NAP_AXI_DATA_WIDTH;
     localparam NAP_ADDR_WIDTH = `ACX_NAP_AXI_RESPONDER_ADDR_WIDTH;
+    localparam NUM_ROWS_2D = 16;  // 16 rows in 2D array
+
+    // NAP placement mapping arrays (column/row per GDDR6 channel)
+    // West side (rows 0-7): NOC column 3, rows 3-10
+    // East side (rows 8-15): NOC column 8, rows 3-10
+    localparam int NAP_COL [0:15] = '{3, 3, 3, 3, 3, 3, 3, 3, 8, 8, 8, 8, 8, 8, 8, 8};
+    localparam int NAP_ROW [0:15] = '{3, 4, 5, 6, 7, 8, 9, 10, 3, 4, 5, 6, 7, 8, 9, 10};
 
 
-    // Generate 8 GDDR6 channels with NoC interfaces
-    genvar i;
+    // =====================================================================
+    // 16 AXI Interface Array for 2D GEMM Engine
+    // =====================================================================
+    // Declare interface array at module level for engine_top_2d connection
+    t_AXI4 #(
+        .DATA_WIDTH (NAP_DATA_WIDTH),
+        .ADDR_WIDTH (NAP_ADDR_WIDTH),
+        .LEN_WIDTH  (8),
+        .ID_WIDTH   (8)
+    ) gddr_nap_if [NUM_ROWS_2D-1:0] ();
+
+    // =====================================================================
+    // 16 NAP Responders for 2D GEMM Engine (one per row/GDDR6 channel)
+    // =====================================================================
     generate
-        for (i=0; i<MAX_NOC_CHANNELS; i=i+1) begin : gddr_gen_noc
+        for (genvar r = 0; r < NUM_ROWS_2D; r++) begin : gen_gddr_nap
+            // Non-AXI signals from NAP
+            logic output_rstn_nap;
+            logic error_valid_nap;
+            logic [2:0] error_info_nap;
 
-            if (GDDR6_NOC_CONFIG[i]) begin : noc_on
+            // NAP responder wrapper - placement determined by ace_placements.pdc
+            nap_responder_wrapper #(
+                .COLUMN         (NAP_COL[r]),
+                .ROW            (NAP_ROW[r]),
+                .E2W_ARB_SCHED  (32'hffffffff),
+                .W2E_ARB_SCHED  (32'hffffffff)
+            ) i_nap_responder (
+                .i_clk          (i_nap_clk),
+                .i_reset_n      (nap_rstn),
+                .nap            (gddr_nap_if[r]),
+                .o_output_rstn  (output_rstn_nap),
+                .o_error_valid  (error_valid_nap),
+                .o_error_info   (error_info_nap)
+            );
+        end
+    endgenerate
 
-                // Instantiate AXI4 interface for NAP
-                t_AXI4 #(
-                    .DATA_WIDTH (NAP_DATA_WIDTH),
-                    .ADDR_WIDTH (NAP_ADDR_WIDTH),
-                    .LEN_WIDTH  (8),
-                    .ID_WIDTH   (8)
-                ) nap();
+    // =====================================================================
+    // 2D GEMM Engine Instance
+    // =====================================================================
+    // Engine status signals
+    logic        engine_busy;
+    logic [3:0]  mc_state_2d, rc_state_2d;
 
-                // Non-AXI signals from AXI NAP
-                logic output_rstn_nap;
-                logic error_valid_nap;
-                logic [2:0] error_info_nap;
+    // Soft-reset for engine
+    logic engine_soft_reset;
+    logic engine_rstn;
+    assign engine_soft_reset = user_regs_write[CONTROL_REG][1];
+    assign engine_rstn = reg_rstn & ~engine_soft_reset;
 
-                // Channel 1: MS2.0 GEMM Engine (MOVED from Ch0 for DC AXI support)
-                // GDDR6_1 supports Direct Connect AXI interface from fabric
-                // Channel 0 only supports NoC mode (no DC interface)
-                if (i == 1) begin : gemm_engine_channel
-                    // MS2.0 GEMM Engine on Channel 1
-                    // Architecture (CORRECTED per GDDR6 reference design):
-                    //   Engine (initiator) -> NAP (responder) -> NoC -> GDDR6_1
-                    // Engine performs FETCH from GDDR6 and matrix multiplication
+    // Command FIFO interface
+    logic [31:0] cmd_fifo_wdata;
+    logic        cmd_fifo_wen;
+    logic        cmd_fifo_full, cmd_fifo_afull;
+    logic [12:0] cmd_fifo_count;
+    logic        bridge_busy;
 
-                    // NAP responder wrapper for MS2.0 Engine (FIXED Oct 8 2025!)
-                    // Dispatcher acts as AXI master/initiator, NAP provides AXI slave/responder interface
-                    // This allows dispatcher to READ FROM GDDR6 via FETCH commands
-                    // Reference: gddr_ref_design/src/rtl/gddr_ref_design_top.sv line 295
-                    nap_responder_wrapper #(
-                        .COLUMN         (3),    // West column for Channel 1
-                        .ROW            (4),    // Row 4 for Channel 1 (NOC[3][4])
-                        .E2W_ARB_SCHED  (32'hffffffff),  // East-to-west arbitration
-                        .W2E_ARB_SCHED  (32'hffffffff)   // West-to-east arbitration
-                    ) i_axi_responder_wrapper (
-                        .i_clk          (i_nap_clk),
-                        .i_reset_n      (nap_rstn),
-                        .nap            (nap),  // NAP provides AXI slave/responder interface
-                        .o_output_rstn  (output_rstn_nap),
-                        .o_error_valid  (error_valid_nap),
-                        .o_error_info   (error_info_nap)
-                    );
+    // CSR to FIFO bridge
+    csr_to_fifo_bridge i_csr_bridge (
+        .i_clk         (i_reg_clk),
+        .i_reset_n     (engine_rstn),
+        .i_cmd_word0   (user_regs_write[ENGINE_CMD_WORD0]),
+        .i_cmd_word1   (user_regs_write[ENGINE_CMD_WORD1]),
+        .i_cmd_word2   (user_regs_write[ENGINE_CMD_WORD2]),
+        .i_cmd_word3   (user_regs_write[ENGINE_CMD_WORD3]),
+        .i_cmd_submit  (write_strobes[ENGINE_CMD_SUBMIT]),
+        .o_bridge_busy (bridge_busy),
+        .o_fifo_wdata  (cmd_fifo_wdata),
+        .o_fifo_wen    (cmd_fifo_wen),
+        .i_fifo_full   (cmd_fifo_full),
+        .i_fifo_afull  (cmd_fifo_afull)
+    );
 
-                    // Pass raw submit signal to engine_wrapper - CSR bridge does its own edge detection
-                    // CRITICAL FIX: Remove duplicate pulse generation (CSR bridge has internal edge detection)
+    // BRAM write interface from engine (connected to dma_bram_bridge)
+    logic         engine_2d_bram_wr_en;
+    logic [8:0]   engine_2d_bram_wr_addr;
+    logic [255:0] engine_2d_bram_wr_data;
+    logic [31:0]  engine_2d_bram_wr_strobe;
 
-                    // Engine status signals
-                    logic        engine_busy;
-                    logic [31:0] engine_result_count;
-                    logic [3:0]  mc_state, mc_state_next, dc_state, ce_state;
-                    logic [31:0] engine_debug;
-                    logic [31:0] bcv_debug_state;      // BCV controller internal state (Oct 10, 2025)
-                    logic [31:0] bcv_debug_dimensions; // BCV captured dimensions (Oct 10, 2025)
-                    logic [31:0] mc_tile_dimensions;   // Master control TILE dimensions (Oct 10, 2025)
-                    logic [31:0] mc_payload_word1, mc_payload_word2, mc_payload_word3;  // MC raw payload words (Oct 10, 2025)
+    // 2D GEMM Engine with 16 AXI interfaces
+    // Note: Interface arrays require individual connections for each element
+    engine_top_2d #(
+        .NUM_MLPS     (8),
+        .STACK_DEPTH  (4),
+        .NUM_ROWS     (NUM_ROWS_2D),
+        .NUM_COLS     (16),
+        .MAN_WIDTH    (256),
+        .EXP_WIDTH    (8),
+        .BRAM_DEPTH   (512)
+    ) i_engine_top_2d (
+        .i_clk              (i_reg_clk),
+        .i_reset_n          (engine_rstn),
 
-                    // BRAM Data Path Debug Signals (Oct 9, 2025 - CE Stuck Debug)
-                    logic [10:0]  ce_bram_rd_addr;
-                    logic         ce_bram_rd_en;
-                    // logic [2:0]   ce_load_count;  // REMOVED: not in working CE version
-                    logic [255:0] dbram_rd_data;
-                    logic [10:0]  dc_bram_wr_addr;
-                    logic         dc_bram_wr_en;
-                    logic         dc_fetch_done;
-                    logic         dc_disp_done;
+        // Command FIFO interface (from CSR bridge)
+        .i_cmd_fifo_wdata   (cmd_fifo_wdata),
+        .i_cmd_fifo_wen     (cmd_fifo_wen),
+        .o_cmd_fifo_full    (cmd_fifo_full),
+        .o_cmd_fifo_afull   (cmd_fifo_afull),
+        .o_cmd_fifo_count   (cmd_fifo_count),
 
-                    // CRITICAL FIX: CSR bridge has internal edge detection
-                    // Pass raw register value directly - do NOT pre-generate pulse
+        // 16 AXI interfaces to NAPs
+        .axi_ddr_if         (gddr_nap_if),
 
-                    // Result BRAM interface signals
-                    logic [8:0]   result_bram_wr_addr;
-                    logic [255:0] result_bram_wr_data;
-                    logic         result_bram_wr_en;
-                    logic [31:0]  result_bram_wr_strobe;
+        // BRAM Write Interface (direct to dma_bram_bridge)
+        .o_bram_wr_en       (engine_2d_bram_wr_en),
+        .o_bram_wr_addr     (engine_2d_bram_wr_addr),
+        .o_bram_wr_data     (engine_2d_bram_wr_data),
+        .o_bram_wr_strobe   (engine_2d_bram_wr_strobe),
 
-                    // NO CDC SYNCHRONIZERS NEEDED - All on same clock (i_nap_clk)
-                    // reg_control_block, engine_wrapper, and NAP wrapper all run on i_nap_clk
-                    // Direct connection of CSR signals with no clock domain crossing
+        // Status outputs
+        .o_engine_busy      (engine_busy),
+        .o_mc_state         (mc_state_2d),
+        .o_rc_state         (rc_state_2d)
+    );
 
-                    // Soft-reset for engine (Oct 10, 2025 - Allow software reset between tests)
-                    // Control Register bit 1: Engine soft reset (active high)
-                    // Clears all FSM states (MC, DC, CE) and command FIFOs
-                    // ✅ engine_rstn combines reg_rstn and soft reset from control register
-                    // engine_rstn is LOW when reg_rstn is LOW OR engine_soft_reset is HIGH
-                    logic engine_soft_reset;
-                    logic engine_rstn;
-                    assign engine_soft_reset = user_regs_write[CONTROL_REG][1];
-                    assign engine_rstn = reg_rstn & ~engine_soft_reset;
+    // Connect engine BRAM writer to module-level signals
+    assign engine_bram_wr_en     = engine_2d_bram_wr_en;
+    assign engine_bram_wr_addr   = engine_2d_bram_wr_addr;
+    assign engine_bram_wr_data   = engine_2d_bram_wr_data;
+    assign engine_bram_wr_strobe = engine_2d_bram_wr_strobe;
 
-                    // =====================================================================
-                    // MS2.0 GEMM Engine Integration (Oct 12, 2025 - Validated Architecture)
-                    // =====================================================================
-                    // Uses engine_top.sv (validated in simulation with 8/8 tests passing)
-                    // with simple adapter bridges for CSR and BRAM interfaces
-                    
-                    // Command path: CSR -> csr_to_fifo_bridge -> cmd FIFO -> engine_top
-                    logic [31:0] cmd_fifo_wdata;
-                    logic        cmd_fifo_wen;
-                    logic        cmd_fifo_full, cmd_fifo_afull;
-                    logic [12:0] cmd_fifo_count;
-                    logic        bridge_busy;
+    // =====================================================================
+    // CSR Register Mappings for 2D Engine
+    // =====================================================================
+    // Engine command registers (read-back)
+    assign user_regs_read[ENGINE_BYPASS_CTRL] = {30'h0, user_regs_write[ENGINE_BYPASS_CTRL][1:0]};
+    assign user_regs_read[ENGINE_CMD_WORD0] = user_regs_write[ENGINE_CMD_WORD0];
+    assign user_regs_read[ENGINE_CMD_WORD1] = user_regs_write[ENGINE_CMD_WORD1];
+    assign user_regs_read[ENGINE_CMD_WORD2] = user_regs_write[ENGINE_CMD_WORD2];
+    assign user_regs_read[ENGINE_CMD_WORD3] = user_regs_write[ENGINE_CMD_WORD3];
+    assign user_regs_read[ENGINE_CMD_SUBMIT] = 32'h0;  // Write-only trigger register
 
-                    csr_to_fifo_bridge i_csr_bridge (
-                        .i_clk         (i_reg_clk),
-                        .i_reset_n     (engine_rstn),
-                        .i_cmd_word0   (user_regs_write[ENGINE_CMD_WORD0]),
-                        .i_cmd_word1   (user_regs_write[ENGINE_CMD_WORD1]),
-                        .i_cmd_word2   (user_regs_write[ENGINE_CMD_WORD2]),
-                        .i_cmd_word3   (user_regs_write[ENGINE_CMD_WORD3]),
-                        .i_cmd_submit  (write_strobes[ENGINE_CMD_SUBMIT]),
-                        .o_bridge_busy (bridge_busy),
-                        .o_fifo_wdata  (cmd_fifo_wdata),
-                        .o_fifo_wen    (cmd_fifo_wen),
-                        .i_fifo_full   (cmd_fifo_full),
-                        .i_fifo_afull  (cmd_fifo_afull)
-                    );
+    // Engine status: {reserved[12], reserved[4], mc_state[4], rc_state[4], reserved[4], busy[1]}
+    assign user_regs_read[ENGINE_STATUS] = {12'h0, 4'h0, mc_state_2d, rc_state_2d, 3'b0, engine_busy};
+    assign user_regs_read[ENGINE_RESULT_COUNT] = 32'h0;  // TODO: Add result counter to engine_top_2d
+    assign user_regs_read[ENGINE_DEBUG] = {24'd0, rc_state_2d, mc_state_2d};
 
-                    // Result path: engine_top -> direct 256-bit output -> dma_bram_bridge
-                    // (MLP mode outputs 16×FP16 per cycle directly to BRAM)
-                    logic [255:0] result_256_data;
-                    logic         result_256_valid;
-                    logic [8:0]   result_256_wr_addr;
-                    logic [15:0]  result_count_16bit;  // FP16 result count
-                    logic [3:0]  last_opcode;
-                    logic [9:0]  bram_wr_count;  // Dispatcher BRAM write count (debug)
+    // Circular buffer interface registers (simplified for 2D engine)
+    assign user_regs_read[ENGINE_WRITE_TOP] = {23'h0, engine_2d_bram_wr_addr};
+    assign user_regs_read[REG_RD_PTR] = user_regs_write[REG_RD_PTR];  // Host-controlled read pointer
+    assign user_regs_read[REG_WR_PTR] = {23'h0, engine_2d_bram_wr_addr};
+    assign user_regs_read[REG_USED_ENTRIES] = 32'h0;  // TODO: Add tracking
+    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, ~engine_busy};  // Empty when not busy
 
-                    engine_top #(
-                        .GDDR6_PAGE_ID  (9'd1),   // Match ACX_GDDR6_SPACE = 0x0 (DMA target)
-                        .TGT_DATA_WIDTH (256),
-                        .AXI_ADDR_WIDTH (42),
-                        .NUM_TILES      (8)
-                    ) i_engine_top (
-                        .i_clk              (i_reg_clk),
-                        .i_reset_n          (engine_rstn),
-                        // Command FIFO interface
-                        .i_cmd_fifo_wdata   (cmd_fifo_wdata),
-                        .i_cmd_fifo_wen     (cmd_fifo_wen),
-                        .o_cmd_fifo_full    (cmd_fifo_full),
-                        .o_cmd_fifo_afull   (cmd_fifo_afull),
-                        .o_cmd_fifo_count   (cmd_fifo_count),
-                        // 256-bit result interface (direct to dma_bram_bridge)
-                        .o_result_256_data    (result_256_data),
-                        .o_result_256_valid   (result_256_valid),
-                        .o_result_256_wr_addr (result_256_wr_addr),
-                        // NAP AXI interface
-                        .nap_axi            (nap),
-                        // Flow control
-                        .i_result_almost_full (result_almost_full),
-                        // Status outputs
-                        .o_engine_busy      (engine_busy),
-                        .o_mc_state         (mc_state),
-                        .o_mc_state_next    (mc_state_next),
-                        .o_dc_state         (dc_state),
-                        .o_ce_state         (ce_state),
-                        .o_last_opcode      (last_opcode),
-                        // Debug outputs
-                        .o_bram_wr_count    (bram_wr_count),
-                        .o_result_count     (result_count_16bit),
-                        .o_mc_tile_dimensions (mc_tile_dimensions),
-                        .o_mc_payload_word1 (mc_payload_word1),
-                        .o_mc_payload_word2 (mc_payload_word2),
-                        .o_mc_payload_word3 (mc_payload_word3),
-                        .o_bcv_debug_state  (bcv_debug_state),
-                        .o_bcv_debug_dimensions (bcv_debug_dimensions),
-                        // Probe outputs (pipeline debugging)
-                        .o_probe_disp_data    (probe_disp_data),
-                        .o_probe_disp_valid   (probe_disp_valid),
-                        .o_probe_rowbram_data (probe_rowbram_data),
-                        .o_probe_rowbram_valid(probe_rowbram_valid),
-                        .o_probe_fp24_data    (probe_fp24_data),
-                        .o_probe_fp24_valid   (probe_fp24_valid),
-                        .o_probe_fp16_data    (probe_fp16_data),
-                        .o_probe_fp16_valid   (probe_fp16_valid)
-                    );
+    // NAP error status (aggregate across all 16 NAPs)
+    assign user_regs_read[NAP_ERROR_STATUS] = 32'h0;  // TODO: Aggregate NAP errors
+    assign user_regs_read[DC_BRAM_WR_COUNT] = 32'h0;  // TODO: Add debug counter
+    assign user_regs_read[DC_DEBUG] = {28'h0, 4'h0};  // TODO: Add DC state
 
-                    // =====================================================================
-                    // Result BRAM Adapter (256-bit MLP mode with circular buffer tracking)
-                    // =====================================================================
-                    // Local signals for capturing results
-                    logic [15:0] local_result_0, local_result_1, local_result_2, local_result_3;
-                    logic        result_almost_full;     // Backpressure signal
+    // Debug registers (simplified for 2D engine - tie off unused)
+    assign user_regs_read[CE_BRAM_ADDR_DEBUG] = 32'h0;
+    assign user_regs_read[CE_BRAM_DATA_LOW] = 32'h0;
+    assign user_regs_read[CE_BRAM_DATA_MID] = 32'h0;
+    assign user_regs_read[CE_CONTROL_DEBUG] = 32'h0;
+    assign user_regs_read[DC_BRAM_WRITE_DEBUG] = 32'h0;
+    assign user_regs_read[DC_CONTROL_DEBUG] = 32'h0;
+    assign user_regs_read[BCV_DEBUG_STATE] = 32'h0;
+    assign user_regs_read[BCV_DEBUG_DIMS] = 32'h0;
+    assign user_regs_read[MC_TILE_DIMS] = 32'h0;
+    assign user_regs_read[MC_PAYLOAD_WORD1] = 32'h0;
+    assign user_regs_read[MC_PAYLOAD_WORD2] = 32'h0;
+    assign user_regs_read[MC_PAYLOAD_WORD3] = 32'h0;
 
-                    // Circular buffer interface signals
-                    logic [12:0] result_rd_ptr;          // Read pointer from host (FP16 granularity)
-                    logic [12:0] result_wr_ptr;          // Write pointer from hardware (FP16 granularity)
-                    logic [13:0] result_used_entries;    // Used entries (FP16 count)
-                    logic        result_empty;           // Empty flag
+    // Tie off GDDR6 channel status signals (2D engine handles internally)
+    assign gddr_nap_running = 8'h0;
+    assign gddr_nap_done = 8'hff;
+    assign gddr_nap_fail = 8'h0;
 
-                    result_fifo_to_simple_bram i_result_adapter (
-                        .i_clk              (i_reg_clk),
-                        .i_reset_n          (engine_rstn),
-                        // 256-bit result interface (MLP mode)
-                        .i_data_256         (result_256_data),
-                        .i_data_valid       (result_256_valid),
-                        .i_wr_addr          (result_256_wr_addr),
-                        // Legacy FIFO interface (tied off internally)
-                        .i_fifo_rdata       (16'd0),
-                        .o_fifo_ren         (),  // Unused
-                        .i_fifo_empty       (1'b1),
-                        // BRAM interface
-                        .o_bram_wr_addr     (result_bram_wr_addr),
-                        .o_bram_wr_data     (result_bram_wr_data),
-                        .o_bram_wr_en       (result_bram_wr_en),
-                        .o_bram_wr_strobe   (result_bram_wr_strobe),
-                        // First 4 results for CSR debug
-                        .o_result_0         (local_result_0),
-                        .o_result_1         (local_result_1),
-                        .o_result_2         (local_result_2),
-                        .o_result_3         (local_result_3),
-                        // Circular buffer interface (FP16 granularity)
-                        .i_rd_ptr           (result_rd_ptr),
-                        .o_wr_ptr           (result_wr_ptr),
-                        .o_used_entries     (result_used_entries),
-                        .o_empty            (result_empty),
-                        .o_almost_full      (result_almost_full)
-                    );
-
-                    // Map simplified debug signals (engine_top now exposes full debug outputs)
-                    assign engine_result_count = {16'd0, result_count_16bit};
-                    assign engine_debug = {24'd0, last_opcode, mc_state};
-                    // Debug signals (mc_tile_dimensions, mc_payload_word1/2/3, bcv_debug_*) now connected to engine_top
-                    // Tie off unused signals from previous architecture
-                    assign ce_bram_rd_addr = 11'd0;
-                    assign ce_bram_rd_en = 1'b0;
-                    assign dbram_rd_data = 256'd0;
-                    assign dc_bram_wr_addr = 11'd0;
-                    assign dc_bram_wr_en = 1'b0;
-                    assign dc_fetch_done = 1'b0;
-                    assign dc_disp_done = 1'b0;
-
-                    // Map engine registers to CSR read interface
-                    assign user_regs_read[ENGINE_BYPASS_CTRL] = {30'h0, user_regs_write[ENGINE_BYPASS_CTRL][1:0]};
-                    assign user_regs_read[ENGINE_CMD_WORD0] = user_regs_write[ENGINE_CMD_WORD0];
-                    assign user_regs_read[ENGINE_CMD_WORD1] = user_regs_write[ENGINE_CMD_WORD1];
-                    assign user_regs_read[ENGINE_CMD_WORD2] = user_regs_write[ENGINE_CMD_WORD2];
-                    assign user_regs_read[ENGINE_CMD_WORD3] = user_regs_write[ENGINE_CMD_WORD3];
-                    assign user_regs_read[ENGINE_CMD_SUBMIT] = 32'h0;  // Write-only trigger register
-                    assign user_regs_read[ENGINE_STATUS] = {12'h0, mc_state_next, mc_state, dc_state, ce_state, 3'b0, engine_busy};
-                    assign user_regs_read[ENGINE_RESULT_COUNT] = engine_result_count;
-                    assign user_regs_read[ENGINE_DEBUG] = engine_debug;  // FIXED: Use actual engine_wrapper debug signals
-
-                    // Circular buffer interface - direct connections (no intermediate registers)
-                    // ✅ SIMPLIFIED: Direct connections from CSR writes and hardware outputs
-                    // Read pointer: Direct from CSR write register (host-controlled)
-                    assign result_rd_ptr = user_regs_write[REG_RD_PTR][12:0];
-                    
-                    // Circular buffer register mappings (direct from hardware signals)
-                    assign user_regs_read[ENGINE_WRITE_TOP] = {19'h0, result_wr_ptr};      // RO: Hardware write pointer (0x22C)
-                    assign user_regs_read[REG_RD_PTR] = {19'h0, result_rd_ptr};            // RW: Host-controlled read pointer (0x230)
-                    assign user_regs_read[REG_WR_PTR] = {19'h0, result_wr_ptr};            // RO: Hardware write pointer (0x234)
-                    assign user_regs_read[REG_USED_ENTRIES] = {18'h0, result_used_entries}; // RO: Used entries (0x238)
-                    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, result_empty};        // RO: Empty flag (0x23C)
-                    assign user_regs_read[NAP_ERROR_STATUS] = {28'h0, error_valid_nap, error_info_nap};  // NAP Channel 1 error monitoring
-                    assign user_regs_read[DC_BRAM_WR_COUNT] = {22'h0, bram_wr_count};  // Dispatcher BRAM write count (verify FETCH worked)
-                    assign user_regs_read[DC_DEBUG] = {28'h0, dc_state};  // Dispatcher state debug
-
-                    // Debug Registers (Oct 9, 2025 - MS2.0 GEMM Engine Debug Visibility)
-                    assign user_regs_read[CE_BRAM_ADDR_DEBUG] = {21'h0, ce_bram_rd_addr};  // CE BRAM read address [10:0]
-                    assign user_regs_read[CE_BRAM_DATA_LOW] = dbram_rd_data[31:0];          // BRAM data sample [31:0]
-                    assign user_regs_read[CE_BRAM_DATA_MID] = dbram_rd_data[63:32];         // BRAM data sample [63:32]
-                    assign user_regs_read[CE_CONTROL_DEBUG] = {24'h0, ce_bram_rd_en, 3'h0, 3'h0, ce_state};  // CE control signals (ce_load_count removed)
-                    assign user_regs_read[DC_BRAM_WRITE_DEBUG] = {20'h0, dc_bram_wr_en, dc_bram_wr_addr};  // DC BRAM write signals
-                    assign user_regs_read[DC_CONTROL_DEBUG] = {24'h0, dc_fetch_done, dc_disp_done, 2'b0, dc_state};  // DC control status
-                    assign user_regs_read[BCV_DEBUG_STATE] = bcv_debug_state;  // BCV controller internal state (Oct 10, 2025)
-                    assign user_regs_read[BCV_DEBUG_DIMS] = bcv_debug_dimensions;  // BCV captured dimensions (Oct 10, 2025)
-                    assign user_regs_read[MC_TILE_DIMS] = mc_tile_dimensions;  // Master control TILE dimensions (Oct 10, 2025)
-                    assign user_regs_read[MC_PAYLOAD_WORD1] = mc_payload_word1;  // MC raw payload word 1 (Oct 10, 2025)
-                    assign user_regs_read[MC_PAYLOAD_WORD2] = mc_payload_word2;  // MC raw payload word 2 (Oct 10, 2025)
-                    assign user_regs_read[MC_PAYLOAD_WORD3] = mc_payload_word3;  // MC raw payload word 3 (Oct 10, 2025)
-
-                    // MMIO debug counters declared at module level (outside generate block)
-                    // See lines 436-456 for counter logic
-                    // Counters exposed via SCRATCH register for debugging
-
-                    // Engine status registers handled above - no additional assignments needed
-
-                    // Connect engine result BRAM writer to module-level signals
-                    assign engine_bram_wr_en     = result_bram_wr_en;
-                    assign engine_bram_wr_addr   = result_bram_wr_addr;
-                    assign engine_bram_wr_data   = result_bram_wr_data;
-                    assign engine_bram_wr_strobe = result_bram_wr_strobe;
-                    
-                    // Direct result capture signals for peek functionality
-                    // These connect to the top-level registers for CSR reads
-                    assign direct_result_256_data = result_256_data;
-                    assign direct_result_256_valid = result_256_valid;
-
-                    // Tie off packet gen status signals for Channel 0
-                    assign gddr_nap_running[i] = 1'b0;
-                    assign gddr_nap_done[i] = 1'b1;
-                    assign gddr_nap_fail[i] = 1'b0;
-
-                    // Tie off Channel 1 GDDR6 packet gen registers (not used by GEMM engine)
-                    // Channel 1 uses ENGINE-specific registers instead
-                    for (genvar j = 0; j < REGS_PER_GDDR_CH; j = j + 1) begin
-                        if ((i*REGS_PER_GDDR_CH + j) < NUM_GDDR_REGS) begin
-                            assign user_regs_read[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH + j] = 32'b0;
-                        end
-                    end
-                end 
-                // else begin : pkt_gen_channel
-                //     // NAP responder wrapper for packet generators (channels 1-7)
-                //     // Packet generators test memory by writing TO the NAP as if it were memory
-                //     nap_responder_wrapper i_axi_responder_wrapper (
-                //         .i_clk          (i_nap_clk),
-                //         .i_reset_n      (nap_rstn),
-                //         .nap            (nap),
-                //         .o_output_rstn  (output_rstn_nap),
-                //         .o_error_valid  (error_valid_nap),
-                //         .o_error_info   (error_info_nap)
-                //     );
-
-                //     // Packet Generator/Checker (Test/Validation Functionality)
-                //     // Generates pseudo-random read/write traffic for GDDR6 validation
-
-                //     // Create unique random data pattern for each channel
-                //     localparam logic [NAP_DATA_WIDTH-1:0] RAND_DATA_INIT = {(NAP_DATA_WIDTH/32){32'hdeadbeef}} + integer'(i + 10);
-
-                //     axi_mem_pkt_gen_chk_channel #(
-                //         .LINEAR_PKTS            (0),                    // Random packet generation
-                //         .LINEAR_ADDR            (1),                    // Linear addressing
-                //         .TGT_ADDR_WIDTH         (GDDR_NOC_ADDR_WIDTH),  // 26-bit target address
-                //         .TGT_ADDR_PAD_WIDTH     (GDDR_PAD_WIDTH),       // Padding bits
-                //         .TGT_ADDR_ID            (GDDR6_ID_NOC_CH1[i*9+:9]), // NoC page ID
-                //         .AXI_DATA_WIDTH         (NAP_DATA_WIDTH),       // 256-bit data
-                //         .AXI_ADDR_WIDTH         (NAP_ADDR_WIDTH),       // 42-bit address
-                //         .MAX_BURST_LEN          (16),                   // 16-beat max burst
-                //         .RAND_DATA_INIT         (RAND_DATA_INIT),       // Unique random seed
-                //         .NO_AR_LIMIT            (0),                    // Enforce AR spacing
-                //         .NUM_REGS               (REGS_PER_GDDR_CH),     // 11 registers
-                //         .CHANNEL_CLK_FREQ       (300),                  // 300MHz NAP clock
-                //         .OUTPUT_PIPELINE_LENGTH (3)                     // Pipeline depth
-                //     ) i_axi_mem_channel_gddr (
-                //         // Clock and reset
-                //         .i_ch_clk       (i_nap_clk),
-                //         .i_reg_clk      (i_reg_clk),
-                //         .i_ch_reset_n   (nap_rstn),
-                //         // AXI interface (shared with NAP wrapper)
-                //         .axi_if         (nap),
-                //         // Register interface
-                //         .i_regs_write   (user_regs_write[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH +: REGS_PER_GDDR_CH]),
-                //         .o_regs_read    (user_regs_read[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH +: REGS_PER_GDDR_CH]),
-                //         // Status outputs
-                //         .o_running      (gddr_nap_running[i]),
-                //         .o_done         (gddr_nap_done[i]),
-                //         .o_fail         (gddr_nap_fail[i])
-                //     );
-
-                // end
-
-            end else begin : noc_off
-                // Tie off unused channel status signals
-                assign gddr_nap_running[i] = 1'b0;
-                assign gddr_nap_done[i] = 1'b1;
-                assign gddr_nap_fail[i] = 1'b0;
-                
-                // Tie off unused GDDR6 packet gen registers (channels 0,2-7 disabled)
-                for (genvar j = 0; j < REGS_PER_GDDR_CH; j = j + 1) begin
-                    if ((i*REGS_PER_GDDR_CH + j) < NUM_GDDR_REGS) begin
-                        assign user_regs_read[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH + j] = 32'b0;
-                    end
+    // Tie off GDDR6 packet gen registers (not used in 2D engine)
+    generate
+        for (genvar i = 0; i < MAX_NOC_CHANNELS; i++) begin : gen_gddr_regs_tieoff
+            for (genvar j = 0; j < REGS_PER_GDDR_CH; j++) begin : gen_gddr_reg
+                if ((i*REGS_PER_GDDR_CH + j) < NUM_GDDR_REGS) begin : gen_valid_reg
+                    assign user_regs_read[GDDR_REGS_BASE + i*REGS_PER_GDDR_CH + j] = 32'b0;
                 end
             end
         end

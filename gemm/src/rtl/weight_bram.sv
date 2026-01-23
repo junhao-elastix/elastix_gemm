@@ -51,7 +51,7 @@ module weight_bram #(
   always @(posedge wrclk) begin
     if (wren) begin
       mem[wraddr] <= din;
-      `ifdef DEBUG_WEIGHT_BRAM
+      `ifdef DEBUG_MLPSTACK
       $display("[WT_BRAM_WR] @%0t wraddr=%0d din[71:64]=0x%02x din[63:0]=0x%016x",
                $time, wraddr, din[71:64], din[63:0]);
       `endif
@@ -66,7 +66,7 @@ module weight_bram #(
   always @(posedge rdclk) begin
     if (rden) begin
       dout_reg <= {mem[rd_addr_odd], mem[rd_addr_even]};
-      `ifdef DEBUG_WEIGHT_BRAM
+      `ifdef DEBUG_MLPSTACK
       $display("[WT_BRAM_RD] @%0t rdaddr=%0d dout[143:72]=0x%018x dout[71:0]=0x%018x",
                $time, rdaddr, mem[rd_addr_odd], mem[rd_addr_even]);
       `endif
@@ -93,7 +93,7 @@ module weight_bram #(
   (* keep = "true" *) wire Open = 1'b0;
 
   // synthesis translate_off
-  `ifdef DEBUG_WEIGHT_BRAM
+  `ifdef DEBUG_MLPSTACK
   always @(posedge wrclk) begin
       if (wren) begin
           $display("[WT_BRAM_WR] @%0t wraddr=%0d din[71:64]=0x%02x din[63:0]=0x%016x",

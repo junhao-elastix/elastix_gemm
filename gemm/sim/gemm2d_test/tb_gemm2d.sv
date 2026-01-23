@@ -90,13 +90,28 @@ module tb_gemm2d;
     logic [12:0] cmd_fifo_count;
 
     // ====================================================================
-    // Result Interface
+    // Result BRAM Interface
     // ====================================================================
-    logic        result_ready;
-    logic        result_valid;
-    logic        result_last;
-    logic [15:0] result_keep;
-    logic [255:0] result_data;
+    logic        bram_wr_en;
+    logic [8:0]  bram_wr_addr;
+    logic [255:0] bram_wr_data;
+    logic [31:0] bram_wr_strobe;
+
+    // ====================================================================
+    // Result BRAM Model (for verification)
+    // ====================================================================
+    logic [255:0] result_bram [0:511];  // 512 x 256-bit
+    logic [8:0]   result_bram_wr_count;
+
+    // BRAM write process
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+            result_bram_wr_count <= 9'd0;
+        end else if (bram_wr_en) begin
+            result_bram[bram_wr_addr] <= bram_wr_data;
+            result_bram_wr_count <= result_bram_wr_count + 9'd1;
+        end
+    end
 
     // ====================================================================
     // Status Interface
@@ -140,12 +155,11 @@ module tb_gemm2d;
         // AXI Interfaces (16 channels)
         .axi_ddr_if         (axi_ddr_if),
         
-        // Result Interface
-        .i_result_ready     (result_ready),
-        .o_result_valid     (result_valid),
-        .o_result_last      (result_last),
-        .o_result_keep      (result_keep),
-        .o_result_data      (result_data),
+        // Result BRAM Interface
+        .o_bram_wr_en       (bram_wr_en),
+        .o_bram_wr_addr     (bram_wr_addr),
+        .o_bram_wr_data     (bram_wr_data),
+        .o_bram_wr_strobe   (bram_wr_strobe),
         
         // Status
         .o_engine_busy      (engine_busy),
@@ -568,48 +582,48 @@ module tb_gemm2d;
     endtask
 
     // ====================================================================
-    // Result Capture Task
+    // Result Capture Task (reads from result BRAM after completion)
     // ====================================================================
     task automatic capture_results(input integer expected_count);
         integer timeout;
         integer line_idx;
-        
-        $display("[TB] Capturing results (expected %0d FP16 values)...", expected_count);
-        
-        captured_count = 0;
-        line_idx = 0;
+        integer lines_needed;
+        logic [255:0] bram_line;
+
+        $display("[TB] Waiting for results to arrive in BRAM (expected %0d FP16 values)...", expected_count);
+
+        // Calculate how many 256-bit lines we need (16 FP16 per line)
+        lines_needed = (expected_count + 15) / 16;
+
+        // Wait for engine to finish or all lines to be written
         timeout = 0;
-        result_ready = 1'b1;
-        
-        while (captured_count < expected_count && timeout < 100000) begin
+        while (result_bram_wr_count < lines_needed && timeout < 100000) begin
             @(posedge clk);
             timeout++;
-            
-            if (result_valid) begin
-                // Extract FP16 values from 256-bit line (16 x FP16)
-                for (int i = 0; i < 16 && captured_count < expected_count; i++) begin
-                    if (result_keep[i]) begin
-                        captured_results[captured_count] = result_data[i*16 +: 16];
-                        captured_count++;
-                    end
-                end
-                
-                line_idx++;
-                
-                if (result_last) begin
-                    $display("[TB] Last result received at line %0d", line_idx);
-                    break;
-                end
+        end
+
+        if (timeout >= 100000) begin
+            $error("[TB] Timeout waiting for BRAM writes! Got %0d/%0d lines",
+                   result_bram_wr_count, lines_needed);
+            return;
+        end
+
+        $display("[TB] BRAM received %0d lines in %0d cycles. Reading back...",
+                 result_bram_wr_count, timeout);
+
+        // Read results from BRAM
+        captured_count = 0;
+        for (line_idx = 0; line_idx < lines_needed && captured_count < expected_count; line_idx++) begin
+            bram_line = result_bram[line_idx];
+
+            // Extract FP16 values from 256-bit line (16 x FP16)
+            for (int i = 0; i < 16 && captured_count < expected_count; i++) begin
+                captured_results[captured_count] = bram_line[i*16 +: 16];
+                captured_count++;
             end
         end
-        
-        result_ready = 1'b0;
-        
-        if (timeout >= 100000) begin
-            $error("[TB] Timeout waiting for results! Captured %0d/%0d", captured_count, expected_count);
-        end else begin
-            $display("[TB] Captured %0d results in %0d cycles", captured_count, timeout);
-        end
+
+        $display("[TB] Captured %0d results from BRAM", captured_count);
     endtask
 
     // ====================================================================
@@ -746,7 +760,6 @@ module tb_gemm2d;
         tests_passed = 0;
         cmd_fifo_wdata = 32'd0;
         cmd_fifo_wen = 1'b0;
-        result_ready = 1'b0;
         captured_count = 0;
         
         $display("\n===============================================");
@@ -949,6 +962,7 @@ module tb_gemm2d;
     // Debug: Monitor FIFO Activity in Dispatcher Controls (Row 0 only for brevity)
     // ====================================================================
     // Access internal FIFO signals via hierarchical reference
+    `ifdef DEBUG_TB
     always @(posedge clk) begin
         if (reset_n) begin
             // Monitor Row 0 FIFO write activity (data from fetcher)
@@ -974,10 +988,12 @@ module tb_gemm2d;
             end
         end
     end
+    `endif
 
     // ====================================================================
     // Debug: Monitor AXI AR transactions (Row 0 - see if fetcher issues reads)
     // ====================================================================
+    `ifdef DEBUG_TB
     always @(posedge clk) begin
         if (reset_n && axi_ddr_if[0].arvalid && axi_ddr_if[0].arready) begin
             $display("[AXI_AR] @%0t Row0: araddr=0x%011x, arlen=%0d",
@@ -991,5 +1007,6 @@ module tb_gemm2d;
             end
         end
     end
+    `endif
 
 endmodule : tb_gemm2d

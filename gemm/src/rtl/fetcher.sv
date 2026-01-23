@@ -1,0 +1,617 @@
+// ------------------------------------------------------------------
+// Fetcher Module
+//
+// Purpose: FETCH operations with pipelined AR issuing
+// Features:
+//  - 32-deep FWFT FIFO for AR burst management
+//  - Back-to-back AR issuing (up to 32 outstanding requests)
+//  - Parallel exponent unpacking
+//  - State machine: IDLE → ACTIVE → DONE
+//
+// Memory Layout (GFP8 Block):
+//  Lines 0-15:   Packed Exponents (16 lines, 1 burst)
+//  Lines 16-527: Mantissas (512 lines, 32 bursts)
+//  Total: 33 bursts × 16 beats = 528 lines
+//
+// Author: Junhao Pan
+// Date: 10/31/2025
+// ------------------------------------------------------------------
+
+`include "nap_interfaces.svh"
+
+module fetcher
+import gemm_pkg::*;
+#(
+    parameter MAN_WIDTH = 256,
+    parameter EXP_WIDTH = 8,
+    parameter BRAM_DEPTH = 512,
+    parameter AXI_ADDR_WIDTH = 42,
+    parameter BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH),
+    parameter TILE_ADDR_WIDTH = $clog2(BRAM_DEPTH),
+    parameter [8:0] GDDR6_PAGE_ID = 9'd0
+)
+(
+    // Clock and Reset
+    input  logic                         i_clk,
+    input  logic                         i_reset_n,
+
+    // Master Control Interface (FETCH command)
+    input  logic                         i_fetch_en,
+    input  logic [link_addr_width_gp-1:0] i_fetch_addr,
+    input  logic [link_len_width_gp-1:0]  i_fetch_len,
+    input  logic                         i_fetch_target, // 0=left, 1=right
+    output logic                         o_fetch_done,
+
+    // row_bram Write Interface (Direct writes to compute_engine row_bram)
+    // Left mantissa write port
+    output logic [TILE_ADDR_WIDTH-1:0]   o_man_left_wr_addr,
+    output logic                         o_man_left_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_man_left_wr_data,
+    
+    // Right mantissa write port
+    output logic [TILE_ADDR_WIDTH-1:0]   o_man_right_wr_addr,
+    output logic                         o_man_right_wr_en,
+    output logic [MAN_WIDTH-1:0]         o_man_right_wr_data,
+
+    // Left exponent write port  
+    output logic [TILE_ADDR_WIDTH-1:0]   o_exp_left_wr_addr,
+    output logic                         o_exp_left_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_exp_left_wr_data,
+    
+    // Right exponent write port
+    output logic [TILE_ADDR_WIDTH-1:0]   o_exp_right_wr_addr,
+    output logic                         o_exp_right_wr_en,
+    output logic [EXP_WIDTH-1:0]         o_exp_right_wr_data,
+
+    // AXI-4 Initiator Interface
+    t_AXI4.initiator                     axi_ddr_if,
+
+    // Debug Interface
+    output logic [3:0]                   o_fetcher_state,
+    output logic [10:0]                  o_wr_addr,
+    output logic                         o_wr_en
+);
+
+    // ===================================================================
+    // State Machine Definition (SIMPLIFIED)
+    // ===================================================================
+    typedef enum logic [3:0] {
+        ST_IDLE        = 4'd0,
+        ST_FETCH_INIT  = 4'd1,
+        ST_FETCH_ACTIVE= 4'd2,  // Single state for all AR issuing + R receiving
+        ST_FETCH_DONE  = 4'd3
+    } state_t;
+
+    state_t state_reg, state_next;
+
+    // ===================================================================
+    // Local Parameters
+    // ===================================================================
+    localparam FIXED_BURST_LEN = 15;        // AXI arlen = 15 means 16 beats
+    localparam BYTES_PER_BEAT = 32;
+    localparam ADDR_BYTE_SHIFT = 5;
+    localparam TOTAL_BURSTS = 33;           // 1 exp + 32 man
+    localparam AR_FIFO_DEPTH = 64;          // 64-deep FIFO (increased for safety)
+
+    // ===================================================================
+    // Internal Signals
+    // ===================================================================
+    logic [link_addr_width_gp-1:0] fetch_addr_reg;
+    logic        fetch_target_reg;
+    logic        fetch_en_prev;  // Edge detection
+
+    // AR issuing control
+    logic [5:0]  ars_issued;          // 0-33 ARs issued
+    logic [10:0] current_line_reg;    // Current line offset for AR address
+    logic        ar_issue_req;        // Request to issue AR
+    logic        ar_can_issue;        // FIFO not full, can issue
+
+    // R data receiving control
+    logic [9:0]  lines_received;
+    logic [4:0]  exp_lines_received;  // 0-15 exponent lines
+    logic [9:0]  man_lines_received;  // 0-511 mantissa lines
+    logic [1:0]  settle_cycles;       // Cycles to wait after last line for BRAM write to complete
+
+    // R-channel target tracking (for associating R responses with correct target)
+    logic        r_target_fifo [0:AR_FIFO_DEPTH-1];  // Stores target for each AR burst
+    logic [5:0]  r_target_wr_ptr;
+    logic [5:0]  r_target_rd_ptr;
+    logic [6:0]  r_target_count;
+    logic        r_target_wr;
+    logic        r_target_rd;
+    logic        r_target_current_burst;  // Registered target for current burst
+    logic [3:0]  r_burst_beat_count;      // Track beats within current burst (0-15)
+
+    // ===================================================================
+    // AR FIFO - 64-deep Regular FIFO
+    // ===================================================================
+    // Stores burst start line offsets AND target for each AR issued
+    // Registered output to avoid race conditions
+    // Format: {target[11], address[10:0]}
+
+    logic [11:0] ar_fifo [0:AR_FIFO_DEPTH-1];
+    logic [5:0]  ar_fifo_wr_ptr;
+    logic [5:0]  ar_fifo_rd_ptr;
+    logic [6:0]  ar_fifo_count;
+    logic [11:0] ar_fifo_rd_data_reg; // Registered output: {target, address}
+    logic        ar_fifo_empty;
+    logic        ar_fifo_full;
+    logic        ar_fifo_wr;
+    logic        ar_fifo_rd;
+
+    assign ar_fifo_empty = (ar_fifo_count == 0);
+    assign ar_fifo_full = (ar_fifo_count >= AR_FIFO_DEPTH);
+    assign ar_fifo_wr = ar_issue_req && ar_can_issue;
+    assign ar_fifo_rd = (axi_ddr_if.arvalid && axi_ddr_if.arready);  // Advance on AR handshake, not R completion
+    assign ar_can_issue = !ar_fifo_full;
+
+    // FIFO write and read with registered output
+    // Strategy: Load output register when writing to empty FIFO (synchronous with write)
+    //           This ensures output is valid one cycle later, before AR handshake
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            ar_fifo_wr_ptr <= '0;
+            ar_fifo_rd_ptr <= '0;
+            ar_fifo_rd_data_reg <= '0;
+        end else if (state_reg == ST_FETCH_DONE) begin
+            // Reset FIFO pointers when FETCH completes
+            ar_fifo_wr_ptr <= '0;
+            ar_fifo_rd_ptr <= '0;
+            ar_fifo_rd_data_reg <= '0;
+        end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
+            // Pre-load first AR FIFO entry at FETCH_START
+            // This ensures ar_fifo_rd_data_reg has correct {target, addr} for first AR
+            ar_fifo[0] <= {i_fetch_target, 11'd0};  // {target, addr=0}
+            ar_fifo_rd_data_reg <= {i_fetch_target, 11'd0};
+        end else begin
+            // Handle writes
+            if (ar_fifo_wr) begin
+                // Store both address and target: {target[11], address[10:0]}
+                ar_fifo[ar_fifo_wr_ptr] <= {fetch_target_reg, current_line_reg};
+                ar_fifo_wr_ptr <= ar_fifo_wr_ptr + 1;
+
+                // If writing to empty FIFO, also load output register
+                // This ensures data is valid next cycle when AR can issue
+                if (ar_fifo_empty) begin
+                    ar_fifo_rd_data_reg <= {fetch_target_reg, current_line_reg};
+                end 
+            end
+
+            // Handle reads (on AR handshake)
+            if (ar_fifo_rd) begin
+                ar_fifo_rd_ptr <= ar_fifo_rd_ptr + 1;
+                // Load next value if available
+                // Account for concurrent read/write: if count=1 but write happening, next value exists
+                if ((ar_fifo_count > 1) || ar_fifo_wr) begin
+                    // Bypass logic: if reading address being written, use write data directly
+                    if (ar_fifo_wr && (ar_fifo_wr_ptr == (ar_fifo_rd_ptr + 1))) begin
+                        ar_fifo_rd_data_reg <= {fetch_target_reg, current_line_reg};
+                    end else begin
+                        ar_fifo_rd_data_reg <= ar_fifo[ar_fifo_rd_ptr + 1];
+                    end
+                end
+            end
+        end
+    end
+
+    // FIFO count
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            ar_fifo_count <= '0;
+        end else begin
+            case ({ar_fifo_wr, ar_fifo_rd})
+                2'b00: ar_fifo_count <= ar_fifo_count;
+                2'b01: ar_fifo_count <= ar_fifo_count - 1;
+                2'b10: ar_fifo_count <= ar_fifo_count + 1;
+                2'b11: ar_fifo_count <= ar_fifo_count;  // Net zero
+            endcase
+        end
+    end
+
+    // ===================================================================
+    // R-Channel Target FIFO with Burst Tracking
+    // ===================================================================
+    // Push target when AR handshakes (one per burst)
+    // Pop target and load register when first beat of new burst arrives
+    // All 16 beats of a burst use the same registered target
+    assign r_target_wr = (axi_ddr_if.arvalid && axi_ddr_if.arready);  // Push on AR handshake
+    assign r_target_rd = (axi_ddr_if.rvalid && axi_ddr_if.rready && r_burst_beat_count == 0);  // Pop at burst start
+
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            r_target_wr_ptr <= '0;
+            r_target_rd_ptr <= '0;
+            r_target_count <= '0;
+            r_target_current_burst <= 1'b0;
+            r_burst_beat_count <= '0;
+        end else if (state_reg == ST_FETCH_DONE) begin
+            // Reset R-target FIFO when FETCH completes
+            // This ensures clean state for next FETCH (bursts arrive in order, no overlap)
+            r_target_wr_ptr <= '0;
+            r_target_rd_ptr <= '0;
+            r_target_count <= '0;
+            r_target_current_burst <= 1'b0;
+            r_burst_beat_count <= '0;
+        end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
+            // Pre-load first target at FETCH_START (R bursts may arrive before AR handshakes!)
+            r_target_fifo[0] <= i_fetch_target;
+            r_target_current_burst <= i_fetch_target;
+        end else begin
+            // FIFO operates: push on AR handshake, pop when starting new burst
+
+            // Write: Push target when AR handshakes
+            if (r_target_wr) begin
+                r_target_fifo[r_target_wr_ptr] <= ar_target;  // Store target from AR FIFO output
+                r_target_wr_ptr <= r_target_wr_ptr + 1;
+            end
+
+            // Burst beat counter and target loading
+            if (axi_ddr_if.rvalid && axi_ddr_if.rready) begin
+                if (r_burst_beat_count == 0) begin
+                    // Start of new burst: load target from FIFO and advance read pointer
+                    r_target_current_burst <= r_target_fifo[r_target_rd_ptr];
+                    r_target_rd_ptr <= r_target_rd_ptr + 1;
+                    // `ifdef SIMULATION
+                    // $display("[R_TARGET_LOAD] @%0t rd_ptr=%0d, loading target=%s for new burst",
+                    //          $time, r_target_rd_ptr, r_target_fifo[r_target_rd_ptr] ? "RIGHT" : "LEFT");
+                    // `endif
+                end
+
+                // Increment beat counter (wraps at 16)
+                if (axi_ddr_if.rlast) begin
+                    r_burst_beat_count <= '0;  // Reset on last beat
+                end else begin
+                    r_burst_beat_count <= r_burst_beat_count + 1;
+                end
+            end
+
+            // Update count
+            case ({r_target_wr, r_target_rd})
+                2'b00: r_target_count <= r_target_count;
+                2'b01: r_target_count <= r_target_count - 1;
+                2'b10: r_target_count <= r_target_count + 1;
+                2'b11: r_target_count <= r_target_count;  // Net zero
+            endcase
+        end
+    end
+
+    // ===================================================================
+    // State Machine
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            state_reg <= ST_IDLE;
+            fetch_en_prev <= 1'b0;
+        end else begin
+            state_reg <= state_next;
+            // Always sample fetch_en for edge detection
+            // The falling edge (when MC clears fetch_en after FETCH_DONE) followed by
+            // a rising edge (when MC sets fetch_en for next FETCH) will trigger correctly.
+            // Previous bug: resetting fetch_en_prev in ST_FETCH_DONE created false edges
+            // when fetch_en was still high from MC.
+                fetch_en_prev <= i_fetch_en;
+        end
+    end
+
+    always_comb begin
+        state_next = state_reg;
+
+        case (state_reg)
+            ST_IDLE: begin
+                if (i_fetch_en && !fetch_en_prev) begin
+                    state_next = ST_FETCH_INIT;
+                end
+            end
+
+            ST_FETCH_INIT: begin
+                state_next = ST_FETCH_ACTIVE;
+            end
+
+            ST_FETCH_ACTIVE: begin
+                // Stay active until all lines received AND unpacking complete AND BRAM writes settled
+                // Unpacking needs unpack_idx_reg to reach 512 (512 exponents: indices 0-511)
+                // BRAM writes are registered, so need 2 settle cycles after last line
+                if (lines_received >= 528 && unpack_idx_reg >= 512 && settle_cycles >= 2) begin
+                    state_next = ST_FETCH_DONE;
+                end
+            end
+
+            ST_FETCH_DONE: begin
+                state_next = ST_IDLE;
+            end
+
+            default: state_next = ST_IDLE;
+        endcase
+    end
+
+    // ===================================================================
+    // FETCH Command Processing
+    // ===================================================================
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            fetch_addr_reg <= '0;
+            fetch_target_reg <= 1'b0;
+            ars_issued <= '0;
+            current_line_reg <= '0;
+            lines_received <= '0;
+            exp_lines_received <= '0;
+            man_lines_received <= '0;
+            settle_cycles <= '0;
+        end else begin
+            case (state_reg)
+                ST_IDLE: begin
+                    if (i_fetch_en && !fetch_en_prev) begin
+                        fetch_addr_reg <= i_fetch_addr;
+                        fetch_target_reg <= i_fetch_target;
+                        ars_issued <= '0;
+                        current_line_reg <= '0;
+                        lines_received <= '0;
+                        exp_lines_received <= '0;
+                        man_lines_received <= '0;
+                        settle_cycles <= '0;
+                        // Note: r_target_fifo initialization happens in R-target always_ff block
+                    end
+                end
+
+                ST_FETCH_ACTIVE: begin
+                    // AR issuing: Issue ARs as fast as FIFO accepts
+                    if (ar_issue_req && ar_can_issue) begin
+                        current_line_reg <= current_line_reg + 16;  // Next burst
+                        ars_issued <= ars_issued + 1;
+                    end
+
+                    // R data receiving: Count lines as they arrive (bursts arrive in order)
+                    if (axi_ddr_if.rvalid && axi_ddr_if.rready && lines_received < 528) begin
+                        lines_received <= lines_received + 1;
+
+                        if (lines_received < 16) begin
+                            exp_lines_received <= exp_lines_received + 1;
+                        end else begin
+                            man_lines_received <= man_lines_received + 1;
+                        end
+                    end
+
+                    // Settling counter: Wait for BRAM writes to complete
+                    if (lines_received >= 528 && settle_cycles < 2) begin
+                        settle_cycles <= settle_cycles + 1;
+                    end
+                end
+
+                ST_FETCH_DONE: begin
+                end
+
+                default: begin
+                    // No updates
+                end
+            endcase
+        end
+    end
+
+    // AR issue request: Issue all 33 ARs as fast as possible
+    always_comb begin
+        ar_issue_req = 1'b0;
+        if (state_reg == ST_FETCH_ACTIVE) begin
+            ar_issue_req = (ars_issued < TOTAL_BURSTS);
+        end
+    end
+
+    // ===================================================================
+    // AXI Read Address Channel
+    // ===================================================================
+    logic ar_valid_reg;
+
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            ar_valid_reg <= 1'b0;
+        end else if (state_reg == ST_FETCH_DONE || state_reg == ST_IDLE) begin
+            // Clear arvalid when FETCH completes or in IDLE
+            ar_valid_reg <= 1'b0;
+        end else begin
+            // In ST_FETCH_ACTIVE: manage arvalid based on AR FIFO state
+            if (ar_fifo_wr) begin
+                ar_valid_reg <= 1'b1;  // Assert arvalid when AR enters FIFO
+            end else if (axi_ddr_if.arvalid && axi_ddr_if.arready && ar_fifo_count == 1) begin
+                // Clear after last AR handshakes (FIFO will be empty)
+                ar_valid_reg <= 1'b0;
+            end
+        end
+    end
+
+    // AXI4 AR channel assignments
+    // GDDR6 NAP Address Format (per Achronix spec):
+    // [41:37] = Reserved (5 bits, from GDDR6_PAGE_ID[8:4], must be 0)
+    // [36:33] = Ctrl ID (4 bits, from GDDR6_PAGE_ID[3:0])
+    // [32:0]  = Memory Address (33 bits, contiguous)
+    //   [32:31] = Upper 2 bits (for >2GB expansion)
+    //   [30:5]  = Line address
+    //   [4:0]   = Byte offset (must be 0 for 32-byte alignment)
+    // Truncate line address to 26 bits to prevent overflow into ctrl_id field
+    // Use registered value from FIFO, not live current_line_reg!
+    // Extract address (bits [10:0]) and target (bit [11]) from FIFO output
+    logic [25:0] line_addr_26bit;
+    logic        ar_target;  // Target from AR FIFO
+    always_comb begin
+        line_addr_26bit = (fetch_addr_reg + ar_fifo_rd_data_reg[10:0]);  // Extract address from FIFO
+        ar_target = ar_fifo_rd_data_reg[11];  // Extract target from FIFO
+    end
+
+    assign axi_ddr_if.arvalid = ar_valid_reg;
+    assign axi_ddr_if.arid = 8'hFE;  // Fixed ID for fetcher
+    assign axi_ddr_if.araddr = {GDDR6_PAGE_ID, 2'b00, line_addr_26bit, {ADDR_BYTE_SHIFT{1'b0}}};
+    assign axi_ddr_if.arlen = FIXED_BURST_LEN;
+
+    assign axi_ddr_if.arsize = 3'h5;  // 32 bytes
+    assign axi_ddr_if.arburst = 2'b01;  // INCR
+    assign axi_ddr_if.arlock = 1'b0;
+    assign axi_ddr_if.arcache = 4'h0;
+    assign axi_ddr_if.arprot = 3'b010;
+    assign axi_ddr_if.arqos = 4'h0;
+    assign axi_ddr_if.arregion = 4'h0;
+
+    // ===================================================================
+    // AXI Read Data Channel
+    // ===================================================================
+    assign axi_ddr_if.rready = (state_reg == ST_FETCH_ACTIVE);
+
+    // ===================================================================
+    // row_bram Mantissa Write Logic (Direct to compute_engine row_bram)
+    // ===================================================================
+    logic [8:0] man_wr_addr_reg;
+    logic [MAN_WIDTH-1:0] man_wr_data_reg;
+    logic        man_wr_en_left_reg;
+    logic        man_wr_en_right_reg;
+    
+    // Packed exponent buffer (temporary storage for unpacking)
+    logic [MAN_WIDTH-1:0] exp_packed_buffer [0:15];
+
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            man_wr_addr_reg <= '0;
+            man_wr_data_reg <= '0;
+            man_wr_en_left_reg <= 1'b0;
+            man_wr_en_right_reg <= 1'b0;
+            for (int i = 0; i < 16; i++) begin
+                exp_packed_buffer[i] <= '0;
+            end
+        end else begin
+            man_wr_en_left_reg <= 1'b0;   // Default
+            man_wr_en_right_reg <= 1'b0;  // Default
+
+            if (state_reg == ST_FETCH_ACTIVE && axi_ddr_if.rvalid && axi_ddr_if.rready && lines_received < 528) begin
+                if (lines_received < 16) begin
+                    // Lines 0-15: Store packed exponents in local buffer (for unpacking)
+                    exp_packed_buffer[exp_lines_received[3:0]] <= axi_ddr_if.rdata;
+                end else begin
+                    // Lines 16-527: Write mantissas directly to row_bram (address 0-511)
+                    man_wr_addr_reg <= man_lines_received[8:0];  // Direct mapping: 0-511
+                    man_wr_data_reg <= axi_ddr_if.rdata;
+                    
+                    // Split write enables based on target
+                    if (r_target_current_burst == 1'b0) begin
+                        man_wr_en_left_reg <= 1'b1;
+                    end else begin
+                        man_wr_en_right_reg <= 1'b1;
+                    end
+                end
+            end
+        end
+    end
+
+    // Mantissa write outputs (split left/right)
+    assign o_man_left_wr_addr = man_wr_addr_reg;
+    assign o_man_left_wr_data = man_wr_data_reg;
+    assign o_man_left_wr_en = man_wr_en_left_reg;
+    
+    assign o_man_right_wr_addr = man_wr_addr_reg;
+    assign o_man_right_wr_data = man_wr_data_reg;
+    assign o_man_right_wr_en = man_wr_en_right_reg;
+
+    // ===================================================================
+    // Parallel Exponent Unpacking (from local buffer to row_bram)
+    // ===================================================================
+    logic [9:0]  unpack_idx_reg;
+
+    // Continuous unpacking counter (runs every cycle during mantissa phase)
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            unpack_idx_reg <= 10'd0;
+        end else if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
+            unpack_idx_reg <= 10'd0;
+        end else if (state_reg == ST_FETCH_ACTIVE && lines_received >= 16 && unpack_idx_reg < 10'd512) begin
+            // Start unpacking once we're in mantissa phase (total 512 exponents)
+            unpack_idx_reg <= unpack_idx_reg + 10'd1;
+        end
+    end
+
+    // Calculate buffer index and byte offset
+    logic [3:0] exp_packed_idx;
+    logic [4:0] exp_byte_offset;
+    assign exp_packed_idx = unpack_idx_reg[9:5];   // /32 (which packed line)
+    assign exp_byte_offset = unpack_idx_reg[4:0];  // %32 (which byte in line)
+
+    // Extract current exponent byte from local buffer
+    logic [7:0] current_exp_byte;
+    assign current_exp_byte = exp_packed_buffer[exp_packed_idx][exp_byte_offset*8 +: 8];
+
+    // Exponent write enables (split left/right)
+    assign o_exp_left_wr_en = (state_reg == ST_FETCH_ACTIVE) &&
+                              (fetch_target_reg == 1'b0) &&
+                              (unpack_idx_reg >= 10'd0) &&
+                              (unpack_idx_reg < 10'd512);
+
+    assign o_exp_right_wr_en = (state_reg == ST_FETCH_ACTIVE) &&
+                               (fetch_target_reg == 1'b1) &&
+                               (unpack_idx_reg >= 10'd0) &&
+                               (unpack_idx_reg < 10'd512);
+
+    // Exponent write addresses (direct mapping to row_bram)
+    assign o_exp_left_wr_addr = unpack_idx_reg[8:0];
+    assign o_exp_right_wr_addr = unpack_idx_reg[8:0];
+
+    // Exponent write data
+    assign o_exp_left_wr_data = current_exp_byte;
+    assign o_exp_right_wr_data = current_exp_byte;
+
+    // ===================================================================
+    // AXI Write Channels (unused - tie off)
+    // ===================================================================
+    assign axi_ddr_if.awvalid = 1'b0;
+    assign axi_ddr_if.awid = '0;
+    assign axi_ddr_if.awaddr = '0;
+    assign axi_ddr_if.awlen = '0;
+    assign axi_ddr_if.awsize = '0;
+    assign axi_ddr_if.awburst = '0;
+    assign axi_ddr_if.awlock = '0;
+    assign axi_ddr_if.awcache = '0;
+    assign axi_ddr_if.awprot = '0;
+    assign axi_ddr_if.awqos = '0;
+    assign axi_ddr_if.awregion = '0;
+    assign axi_ddr_if.wvalid = 1'b0;
+    assign axi_ddr_if.wdata = '0;
+    assign axi_ddr_if.wstrb = '0;
+    assign axi_ddr_if.wlast = 1'b0;
+    assign axi_ddr_if.bready = 1'b0;
+
+    // ===================================================================
+    // Fetch Done Signal
+    // ===================================================================
+    logic fetch_done_reg;
+
+    always_ff @(posedge i_clk) begin
+        if (~i_reset_n) begin
+            fetch_done_reg <= 1'b0;
+        end else begin
+            fetch_done_reg <= (state_reg == ST_FETCH_DONE);
+        end
+    end
+
+    assign o_fetch_done = fetch_done_reg;
+
+    // ===================================================================
+    // Debug Outputs
+    // ===================================================================
+    // Note: o_fetcher_state, o_wr_addr, o_wr_en removed (no longer in port list)
+    
+    // `ifdef SIMULATION
+    // always @(posedge i_clk) begin
+    //     if (state_reg == ST_IDLE && i_fetch_en && !fetch_en_prev) begin
+    //         $display("[FETCHER] @%0t FETCH_START: addr=%0d (0x%08x), len=%0d, target=%s",
+    //                  $time, i_fetch_addr, i_fetch_addr, i_fetch_len, i_fetch_target ? "RIGHT" : "LEFT");
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && lines_received == 16) begin
+    //         $display("[FETCHER] @%0t Finished exp_packed phase, starting mantissa phase", $time);
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && lines_received == 528) begin
+    //         $display("[FETCHER] @%0t All 528 lines received, unpack_idx=%0d, settle=%0d",
+    //                  $time, unpack_idx_reg, settle_cycles);
+    //     end
+    //     if (state_reg == ST_FETCH_ACTIVE && unpack_idx_reg == 512) begin
+    //         $display("[FETCHER] @%0t Unpacking complete (512 exponents)", $time);
+    //     end
+    //     if (state_reg == ST_FETCH_DONE) begin
+    //         $display("[FETCHER] @%0t FETCH_DONE, returning to IDLE", $time);
+    //     end
+    // end
+    // `endif
+
+endmodule

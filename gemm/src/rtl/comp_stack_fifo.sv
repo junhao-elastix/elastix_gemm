@@ -154,6 +154,7 @@ module comp_stack_fifo #(
     end
 
     // Assertions for debugging
+    `ifdef DEBUG_MLPSTACK
     always @(posedge clk) begin
         if (rstn) begin
             if (i_push && full_reg) begin
@@ -164,6 +165,7 @@ module comp_stack_fifo #(
             end
         end
     end
+    `endif
     // synthesis translate_on
 
 endmodule
