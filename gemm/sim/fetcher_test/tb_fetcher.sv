@@ -1,12 +1,10 @@
 // ------------------------------------------------------------------
-// Fetcher Module Testbench (CORRECTED)
+// Fetcher 2D Testbench
 //
-// Purpose: Validate fetcher.sv performance and correctness
-// Reference: dispatcher_control.sv orchestration pattern
+// Purpose: Validate fetcher_2d.sv correctness
+// Method: Load hex files, fetch via AXI, drain FIFO, compare
 //
-// This version matches EXACT interfaces from working RTL
-//
-// Date: 2025-11-03
+// Date: 2026-01-21
 // ------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -16,15 +14,13 @@
 module tb_fetcher;
 
     // ====================================================================
-    // Parameters (match dispatcher_control.sv)
+    // Parameters
     // ====================================================================
-    localparam MAN_WIDTH = 256;
-    localparam EXP_WIDTH = 8;
-    localparam BRAM_DEPTH = 512;
+    localparam DATA_WIDTH = 256;
     localparam AXI_ADDR_WIDTH = 42;
-    localparam BRAM_ADDR_WIDTH = $clog2(BRAM_DEPTH);  // 9
-    localparam TILE_ADDR_WIDTH = $clog2(BRAM_DEPTH);  // 9
-    localparam [8:0] GDDR6_PAGE_ID = 9'd2;
+    localparam [8:0] GDDR6_CTRL_ID = 9'd2;
+    localparam LINES_PER_BLOCK = 528;
+    localparam FIFO_DEPTH = 1024;
 
     // ====================================================================
     // Clock and Reset
@@ -40,8 +36,6 @@ module tb_fetcher;
     // ====================================================================
     integer test_errors;
     integer cycle_count;
-    integer fetch_left_cycles;
-    integer fetch_right_cycles;
 
     // ====================================================================
     // AXI Interface (NAP to GDDR6)
@@ -71,156 +65,138 @@ module tb_fetcher;
     ) u_gddr6_model (
         .i_clk(clk),
         .i_reset_n(reset_n),
-        .axi_mem_if(axi_nap.responder),  // ← Memory is responder
+        .axi_mem_if(axi_nap.responder),
         .o_outstanding_count(mem_outstanding_count),
         .o_total_ar_received(mem_total_ar_received),
         .o_total_r_issued(mem_total_r_issued)
     );
 
     // ====================================================================
-    // Internal Signals (match dispatcher_control.sv pattern)
+    // Fetcher Control Signals
     // ====================================================================
-    
-    // Fetcher control
     logic                         fetch_en;
-    logic [25:0]                  fetch_addr;    // link_addr_width_gp = 26
-    logic [15:0]                  fetch_len;     // link_len_width_gp = 16
-    logic                         fetch_target;  // 0=left, 1=right
+    logic [25:0]                  fetch_addr;
+    logic [15:0]                  fetch_len;
     logic                         fetch_done;
 
-    // Fetcher → Dispatcher BRAM Write (lines 106-118)
-    logic [MAN_WIDTH-1:0]         fetcher_bram_wr_data;
-    logic [BRAM_ADDR_WIDTH+2:0]   fetcher_bram_wr_addr;  // 11-bit
-    logic                         fetcher_bram_wr_en;
-    logic                         fetcher_bram_wr_target;
-
-    // Fetcher → Dispatcher BRAM Exp Aligned Write
-    logic [TILE_ADDR_WIDTH-1:0]   fetcher_exp_left_wr_addr;
-    logic                         fetcher_exp_left_wr_en;
-    logic [EXP_WIDTH-1:0]         fetcher_exp_left_wr_data;
-    logic [TILE_ADDR_WIDTH-1:0]   fetcher_exp_right_wr_addr;
-    logic                         fetcher_exp_right_wr_en;
-    logic [EXP_WIDTH-1:0]         fetcher_exp_right_wr_data;
-
-    // Fetcher ← Dispatcher BRAM Exp Packed Read
-    logic [3:0]                   fetcher_exp_packed_rd_addr;
-    logic                         fetcher_exp_packed_rd_target;
-    logic [MAN_WIDTH-1:0]         dispatcher_bram_exp_packed_rd_data;
-
-    // Testbench → Dispatcher BRAM Read (for verification)
-    logic [BRAM_ADDR_WIDTH-1:0]   dispatcher_man_left_rd_addr;
-    logic                         dispatcher_man_left_rd_en;
-    logic [MAN_WIDTH-1:0]         dispatcher_bram_man_left_rd_data;
-    logic [BRAM_ADDR_WIDTH-1:0]   dispatcher_man_right_rd_addr;
-    logic                         dispatcher_man_right_rd_en;
-    logic [MAN_WIDTH-1:0]         dispatcher_bram_man_right_rd_data;
-    logic [TILE_ADDR_WIDTH-1:0]   dispatcher_exp_left_rd_addr;
-    logic                         dispatcher_exp_left_rd_en;
-    logic [EXP_WIDTH-1:0]         dispatcher_bram_exp_left_rd_data;
-    logic [TILE_ADDR_WIDTH-1:0]   dispatcher_exp_right_rd_addr;
-    logic                         dispatcher_exp_right_rd_en;
-    logic [EXP_WIDTH-1:0]         dispatcher_bram_exp_right_rd_data;
+    // ====================================================================
+    // FIFO Interface
+    // ====================================================================
+    logic [DATA_WIDTH-1:0]        fifo_wr_data;
+    logic                         fifo_wr_en;
+    logic                         fifo_afull;
+    logic [DATA_WIDTH-1:0]        fifo_rd_data;
+    logic                         fifo_rd_en;
+    logic                         fifo_empty;
+    logic                         fifo_full;
+    logic [$clog2(FIFO_DEPTH):0]  fifo_count;
 
     // ====================================================================
-    // DUT: Fetcher Module - OPTIMIZED VERSION
+    // Debug Signals
     // ====================================================================
-    fetcher_opt #(
-        .MAN_WIDTH      (MAN_WIDTH),
-        .EXP_WIDTH      (EXP_WIDTH),
-        .BRAM_DEPTH     (BRAM_DEPTH),
+    logic [3:0]                   fetcher_state;
+    logic [15:0]                  lines_received;
+
+    // ====================================================================
+    // DUT: Fetcher 2D Module
+    // ====================================================================
+    fetcher_2d #(
+        .DATA_WIDTH     (DATA_WIDTH),
         .AXI_ADDR_WIDTH (AXI_ADDR_WIDTH),
-        .BRAM_ADDR_WIDTH(BRAM_ADDR_WIDTH),
-        .TILE_ADDR_WIDTH(TILE_ADDR_WIDTH),
-        .GDDR6_PAGE_ID  (GDDR6_PAGE_ID)
+        .GDDR6_CTRL_ID  (GDDR6_CTRL_ID)
     ) u_fetcher (
-        .i_clk                  (clk),
-        .i_reset_n              (reset_n),
-        .i_fetch_en             (fetch_en),
-        .i_fetch_addr           (fetch_addr),
-        .i_fetch_len            (fetch_len),
-        .i_fetch_target         (fetch_target),
-        .o_fetch_done           (fetch_done),
-        .o_bram_wr_data         (fetcher_bram_wr_data),
-        .o_bram_wr_addr         (fetcher_bram_wr_addr),
-        .o_bram_wr_en           (fetcher_bram_wr_en),
-        .o_bram_wr_target       (fetcher_bram_wr_target),
-        .o_exp_left_wr_addr     (fetcher_exp_left_wr_addr),
-        .o_exp_left_wr_en       (fetcher_exp_left_wr_en),
-        .o_exp_left_wr_data     (fetcher_exp_left_wr_data),
-        .o_exp_right_wr_addr    (fetcher_exp_right_wr_addr),
-        .o_exp_right_wr_en      (fetcher_exp_right_wr_en),
-        .o_exp_right_wr_data    (fetcher_exp_right_wr_data),
-        .o_exp_packed_rd_addr   (fetcher_exp_packed_rd_addr),
-        .o_exp_packed_rd_target (fetcher_exp_packed_rd_target),
-        .i_exp_packed_rd_data   (dispatcher_bram_exp_packed_rd_data),
-        .axi_ddr_if             (axi_nap.initiator),  // ← Fetcher is initiator
-        .o_fetcher_state        (),  // Debug (unused)
-        .o_wr_addr              (),  // Debug (unused)
-        .o_wr_en                ()   // Debug (unused)
+        .i_clk              (clk),
+        .i_reset_n          (reset_n),
+        .i_fetch_en         (fetch_en),
+        .i_fetch_addr       (fetch_addr),
+        .i_fetch_len        (fetch_len),
+        .o_fetch_done       (fetch_done),
+        .o_fifo_wr_data     (fifo_wr_data),
+        .o_fifo_wr_en       (fifo_wr_en),
+        .i_fifo_afull       (fifo_afull),
+        .axi_ddr_if         (axi_nap.initiator),
+        .o_fetcher_state    (fetcher_state),
+        .o_lines_received   (lines_received)
     );
 
     // ====================================================================
-    // Dispatcher BRAM (exact instantiation from dispatcher_control.sv)
+    // Output FIFO (depth 1024 > 528 lines)
     // ====================================================================
-    dispatcher_bram #(
-        .MAN_WIDTH          (MAN_WIDTH),
-        .EXP_WIDTH          (EXP_WIDTH),
-        .EXP_PACKED_DEPTH   (16),
-        .BRAM_DEPTH         (BRAM_DEPTH),
-        .WR_ADDR_WIDTH      (BRAM_ADDR_WIDTH + 2),  // 11-bit
-        .RD_ADDR_WIDTH      (BRAM_ADDR_WIDTH)        // 9-bit
-    ) u_dispatcher_bram (
-        .i_clk                  (clk),
-        .i_reset_n              (reset_n),
-        
-        // Write ports (from fetcher)
-        .i_wr_data              (fetcher_bram_wr_data),
-        .i_wr_addr              (fetcher_bram_wr_addr),
-        .i_wr_en                (fetcher_bram_wr_en),
-        .i_wr_target            (fetcher_bram_wr_target),
-        
-        // Exp aligned write (from fetcher)
-        .i_exp_left_wr_addr     (fetcher_exp_left_wr_addr),
-        .i_exp_left_wr_en       (fetcher_exp_left_wr_en),
-        .i_exp_left_wr_data     (fetcher_exp_left_wr_data),
-        .i_exp_right_wr_addr    (fetcher_exp_right_wr_addr),
-        .i_exp_right_wr_en      (fetcher_exp_right_wr_en),
-        .i_exp_right_wr_data    (fetcher_exp_right_wr_data),
-        
-        // Read ports (to testbench for verification)
-        .i_man_left_rd_addr     (dispatcher_man_left_rd_addr),
-        .i_man_left_rd_en       (dispatcher_man_left_rd_en),
-        .o_man_left_rd_data     (dispatcher_bram_man_left_rd_data),
-        .i_man_right_rd_addr    (dispatcher_man_right_rd_addr),
-        .i_man_right_rd_en      (dispatcher_man_right_rd_en),
-        .o_man_right_rd_data    (dispatcher_bram_man_right_rd_data),
-        .i_exp_left_rd_addr     (dispatcher_exp_left_rd_addr),
-        .i_exp_left_rd_en       (dispatcher_exp_left_rd_en),
-        .o_exp_left_rd_data     (dispatcher_bram_exp_left_rd_data),
-        .i_exp_right_rd_addr    (dispatcher_exp_right_rd_addr),
-        .i_exp_right_rd_en      (dispatcher_exp_right_rd_en),
-        .o_exp_right_rd_data    (dispatcher_bram_exp_right_rd_data),
-        
-        // Exp packed read (for fetcher unpacking)
-        .i_exp_packed_rd_addr   (fetcher_exp_packed_rd_addr),
-        .i_exp_packed_rd_target (fetcher_exp_packed_rd_target),
-        .o_exp_packed_rd_data   (dispatcher_bram_exp_packed_rd_data)
+    flex_fifo #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .DEPTH(FIFO_DEPTH)
+    ) u_output_fifo (
+        .i_clk      (clk),
+        .i_reset_n  (reset_n),
+        .i_wr_data  (fifo_wr_data),
+        .i_wr_en    (fifo_wr_en),
+        .o_full     (fifo_full),
+        .o_afull    (fifo_afull),
+        .o_rd_data  (fifo_rd_data),
+        .i_rd_en    (fifo_rd_en),
+        .o_empty    (fifo_empty),
+        .o_count    (fifo_count)
     );
 
     // ====================================================================
-    // Golden Reference Storage
+    // Golden Reference Storage (loaded from hex files)
     // ====================================================================
-    logic [EXP_WIDTH-1:0]   golden_left_exp[0:511];
-    logic [MAN_WIDTH-1:0]   golden_left_man[0:511];
-    logic [EXP_WIDTH-1:0]   golden_right_exp[0:511];
-    logic [MAN_WIDTH-1:0]   golden_right_man[0:511];
+    logic [DATA_WIDTH-1:0] golden_left  [0:LINES_PER_BLOCK-1];
+    logic [DATA_WIDTH-1:0] golden_right [0:LINES_PER_BLOCK-1];
 
     // ====================================================================
-    // Tasks
+    // Hex File Loading Task
+    // ====================================================================
+    task automatic load_hex_file(
+        input string filename,
+        ref logic [DATA_WIDTH-1:0] storage [0:LINES_PER_BLOCK-1]
+    );
+        integer fd, line_idx, byte_idx, scan_result;
+        logic [7:0] bytes [0:31];
+        logic [DATA_WIDTH-1:0] packed_line;
+
+        fd = $fopen(filename, "r");
+        if (fd == 0) begin
+            $error("[HEX] Failed to open file: %s", filename);
+            return;
+        end
+
+        $display("[HEX] Loading %s...", filename);
+        line_idx = 0;
+
+        while (!$feof(fd) && line_idx < LINES_PER_BLOCK) begin
+            // Read 32 space-separated hex bytes per line
+            scan_result = $fscanf(fd, "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h\n",
+                bytes[0],  bytes[1],  bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
+                bytes[8],  bytes[9],  bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31]);
+
+            if (scan_result == 32) begin
+                // Pack bytes into 256-bit line (bytes[0] is LSB)
+                packed_line = '0;
+                for (byte_idx = 0; byte_idx < 32; byte_idx++) begin
+                    packed_line[byte_idx*8 +: 8] = bytes[byte_idx];
+                end
+                storage[line_idx] = packed_line;
+                line_idx++;
+            end
+        end
+
+        $fclose(fd);
+        $display("[HEX] Loaded %0d lines from %s", line_idx, filename);
+    endtask
+
+    // Note: Memory model auto-loads hex files from ../../hex/left.hex and ../../hex/right.hex
+    // Block 0: left.hex  (lines 0-527)
+    // Block 1: right.hex (lines 528-1055)
+
+    // ====================================================================
+    // Run Fetch Task
     // ====================================================================
     task automatic run_fetch(
         input logic [25:0] start_addr,
-        input logic        target,
+        input logic [15:0] num_lines,
         input string       test_name
     );
         integer start_cycle, duration;
@@ -228,15 +204,14 @@ module tb_fetcher;
         $display("\n========================================");
         $display("[TEST] %s", test_name);
         $display("[TEST] Address: 0x%07x (line %0d)", start_addr, start_addr);
-        $display("[TEST] Target: %s", target ? "RIGHT" : "LEFT");
+        $display("[TEST] Lines: %0d", num_lines);
         $display("========================================");
 
         start_cycle = cycle_count;
 
         // Issue fetch command
         fetch_addr = start_addr;
-        fetch_len = 16'd528;
-        fetch_target = target;
+        fetch_len = num_lines;
         fetch_en = 1'b1;
         @(posedge clk);
         fetch_en = 1'b0;
@@ -246,106 +221,56 @@ module tb_fetcher;
         @(posedge clk);
 
         duration = cycle_count - start_cycle;
-        $display("[TEST] Complete in %0d cycles (%.2f lines/cycle)", 
-                 duration, 528.0/duration);
-
-        if (target == 1'b0) fetch_left_cycles = duration;
-        else fetch_right_cycles = duration;
+        $display("[TEST] Complete in %0d cycles (%.2f lines/cycle)",
+                 duration, real'(num_lines)/real'(duration));
+        $display("[TEST] FIFO count: %0d", fifo_count);
 
         repeat(10) @(posedge clk);
     endtask
 
-    task automatic capture_golden(input logic is_left);
-        integer i;
-
-        $display("[GOLDEN] Capturing %s matrix...", is_left ? "left" : "right");
-
-        for (i = 0; i < 512; i++) begin
-            if (is_left) begin
-                dispatcher_exp_left_rd_addr = i[8:0];
-                dispatcher_exp_left_rd_en = 1'b1;
-                dispatcher_man_left_rd_addr = i[8:0];
-                dispatcher_man_left_rd_en = 1'b1;
-                @(posedge clk);
-                @(posedge clk);  // Extra cycle for registered BRAM output
-                golden_left_exp[i] = dispatcher_bram_exp_left_rd_data;
-                golden_left_man[i] = dispatcher_bram_man_left_rd_data;
-            end else begin
-                dispatcher_exp_right_rd_addr = i[8:0];
-                dispatcher_exp_right_rd_en = 1'b1;
-                dispatcher_man_right_rd_addr = i[8:0];
-                dispatcher_man_right_rd_en = 1'b1;
-                @(posedge clk);
-                @(posedge clk);  // Extra cycle for registered BRAM output
-                golden_right_exp[i] = dispatcher_bram_exp_right_rd_data;
-                golden_right_man[i] = dispatcher_bram_man_right_rd_data;
-            end
-        end
-        
-        dispatcher_exp_left_rd_en = 1'b0;
-        dispatcher_man_left_rd_en = 1'b0;
-        dispatcher_exp_right_rd_en = 1'b0;
-        dispatcher_man_right_rd_en = 1'b0;
-        
-        $display("[GOLDEN] Capture complete");
-    endtask
-
-    task automatic verify_bram(
-        input logic is_left,
+    // ====================================================================
+    // Drain FIFO and Verify Task
+    // ====================================================================
+    task automatic drain_and_verify(
+        ref logic [DATA_WIDTH-1:0] golden [0:LINES_PER_BLOCK-1],
+        input integer expected_lines,
         input string matrix_name
     );
-        integer errors = 0;
-        integer i;
+        integer idx, errors;
+        logic [DATA_WIDTH-1:0] actual;
 
-        $display("\n[VERIFY] Checking %s matrix...", matrix_name);
+        errors = 0;
+        idx = 0;
 
-        for (i = 0; i < 512; i++) begin
-            if (is_left) begin
-                dispatcher_exp_left_rd_addr = i[8:0];
-                dispatcher_exp_left_rd_en = 1'b1;
-                dispatcher_man_left_rd_addr = i[8:0];
-                dispatcher_man_left_rd_en = 1'b1;
-                @(posedge clk);
-                @(posedge clk);  // Extra cycle for registered BRAM output
+        $display("\n[VERIFY] Draining FIFO and checking %s data...", matrix_name);
 
-                if (dispatcher_bram_exp_left_rd_data !== golden_left_exp[i]) begin
-                    $error("[VERIFY] %s exp[%0d]: got 0x%02x, expected 0x%02x",
-                           matrix_name, i, dispatcher_bram_exp_left_rd_data, golden_left_exp[i]);
-                    errors++;
-                end
-                if (dispatcher_bram_man_left_rd_data !== golden_left_man[i]) begin
-                    $error("[VERIFY] %s man[%0d]: mismatch", matrix_name, i);
-                    errors++;
-                end
-            end else begin
-                dispatcher_exp_right_rd_addr = i[8:0];
-                dispatcher_exp_right_rd_en = 1'b1;
-                dispatcher_man_right_rd_addr = i[8:0];
-                dispatcher_man_right_rd_en = 1'b1;
-                @(posedge clk);
-                @(posedge clk);  // Extra cycle for registered BRAM output
+        while (!fifo_empty && idx < expected_lines) begin
+            // Request read
+            fifo_rd_en = 1'b1;
+            @(posedge clk);
+            fifo_rd_en = 1'b0;
+            @(posedge clk);  // 1-cycle read latency
 
-                if (dispatcher_bram_exp_right_rd_data !== golden_right_exp[i]) begin
-                    $error("[VERIFY] %s exp[%0d]: got 0x%02x, expected 0x%02x",
-                           matrix_name, i, dispatcher_bram_exp_right_rd_data, golden_right_exp[i]);
-                    errors++;
+            actual = fifo_rd_data;
+
+            if (actual !== golden[idx]) begin
+                if (errors < 10) begin
+                    $error("[VERIFY] %s line %0d mismatch:", matrix_name, idx);
+                    $error("  Got:      0x%064x", actual);
+                    $error("  Expected: 0x%064x", golden[idx]);
                 end
-                if (dispatcher_bram_man_right_rd_data !== golden_right_man[i]) begin
-                    $error("[VERIFY] %s man[%0d]: mismatch", matrix_name, i);
-                    errors++;
-                end
+                errors++;
             end
-
-            if (errors > 10) break;
+            idx++;
         end
-        
-        dispatcher_exp_left_rd_en = 1'b0;
-        dispatcher_man_left_rd_en = 1'b0;
-        dispatcher_exp_right_rd_en = 1'b0;
-        dispatcher_man_right_rd_en = 1'b0;
-        
+
+        if (idx != expected_lines) begin
+            $error("[VERIFY] %s: Only %0d lines drained (expected %0d)", matrix_name, idx, expected_lines);
+            errors++;
+        end
+
         if (errors == 0) begin
-            $display("[VERIFY] %s: PASS", matrix_name);
+            $display("[VERIFY] %s: PASS (%0d lines verified)", matrix_name, idx);
         end else begin
             $display("[VERIFY] %s: FAIL (%0d errors)", matrix_name, errors);
             test_errors += errors;
@@ -353,82 +278,79 @@ module tb_fetcher;
     endtask
 
     // ====================================================================
-    // Main Test
+    // Main Test Sequence
     // ====================================================================
     initial begin
+        // Initialize
         reset_n = 1'b0;
         test_errors = 0;
         cycle_count = 0;
         fetch_en = 1'b0;
         fetch_addr = '0;
         fetch_len = '0;
-        fetch_target = 1'b0;
-        
-        dispatcher_man_left_rd_addr = '0;
-        dispatcher_man_left_rd_en = 1'b0;
-        dispatcher_man_right_rd_addr = '0;
-        dispatcher_man_right_rd_en = 1'b0;
-        dispatcher_exp_left_rd_addr = '0;
-        dispatcher_exp_left_rd_en = 1'b0;
-        dispatcher_exp_right_rd_addr = '0;
-        dispatcher_exp_right_rd_en = 1'b0;
+        fifo_rd_en = 1'b0;
 
         $display("\n===============================================");
-        $display("FETCHER TESTBENCH - Golden Reference");
+        $display("FETCHER_2D TESTBENCH - Generic Block Reader");
         $display("===============================================\n");
 
+        // Load hex files into golden storage (absolute paths for simulation)
+        load_hex_file("/home/dev/Dev/elastix_gemm/hex/left.hex", golden_left);
+        load_hex_file("/home/dev/Dev/elastix_gemm/hex/right.hex", golden_right);
+
+        // Reset sequence
         repeat(10) @(posedge clk);
         reset_n = 1'b1;
         repeat(10) @(posedge clk);
 
-        // Test 1: Fetch left
-        run_fetch(26'd0, 1'b0, "FETCH LEFT (line 0)");
-        capture_golden(1'b1);
+        // Memory model auto-loads hex files, no manual loading needed
 
-        // Test 2: Fetch right
-        run_fetch(26'd528, 1'b1, "FETCH RIGHT (line 528)");
-        capture_golden(1'b0);
+        // =================================================================
+        // Test 1: Fetch block 0 (left data)
+        // =================================================================
+        $display("\n=== TEST 1: FETCH BLOCK 0 ===");
+        run_fetch(26'd0, 16'd528, "FETCH BLOCK 0");
+        drain_and_verify(golden_left, 528, "BLOCK_0");
 
-        // Verify
-        $display("\n===============================================");
-        $display("VERIFICATION");
-        $display("===============================================");
-        
-        run_fetch(26'd0, 1'b0, "VERIFY LEFT");
-        verify_bram(1'b1, "LEFT");
+        // =================================================================
+        // Test 2: Fetch block 1 (right data)
+        // =================================================================
+        $display("\n=== TEST 2: FETCH BLOCK 1 ===");
+        run_fetch(26'd528, 16'd528, "FETCH BLOCK 1");
+        drain_and_verify(golden_right, 528, "BLOCK_1");
 
-        run_fetch(26'd528, 1'b1, "VERIFY RIGHT");
-        verify_bram(1'b0, "RIGHT");
-
+        // =================================================================
         // Summary
+        // =================================================================
         $display("\n===============================================");
-        $display("PERFORMANCE SUMMARY");
+        $display("TEST SUMMARY");
         $display("===============================================");
-        $display("Left:  %0d cycles (%.2f lines/cycle)", 
-                 fetch_left_cycles, 528.0/fetch_left_cycles);
-        $display("Right: %0d cycles (%.2f lines/cycle)", 
-                 fetch_right_cycles, 528.0/fetch_right_cycles);
-        $display("Memory reads: %0d", mem_total_r_issued);
+        $display("Total AR received: %0d", mem_total_ar_received);
+        $display("Total R issued:    %0d", mem_total_r_issued);
         $display("===============================================");
 
         if (test_errors == 0) begin
-            $display("\n*** TEST PASSED ***\n");
+            $display("\n*** ALL TESTS PASSED ***\n");
         end else begin
-            $display("\n*** TEST FAILED (%0d errors) ***\n", test_errors);
+            $display("\n*** TESTS FAILED (%0d errors) ***\n", test_errors);
         end
 
         $finish;
     end
 
-    // Cycle counter
+    // ====================================================================
+    // Cycle Counter
+    // ====================================================================
     always @(posedge clk) begin
         if (reset_n) cycle_count <= cycle_count + 1;
         else cycle_count <= 0;
     end
 
-    // Timeout
+    // ====================================================================
+    // Timeout (500us = 200000 cycles @ 400MHz)
+    // ====================================================================
     initial begin
-        #(CLK_PERIOD * 100000);
+        #500000ns;
         $error("[TB] Timeout!");
         $finish;
     end

@@ -6,6 +6,10 @@
 //  - Write: 72-bit words (1 BFP8 block = 8 elements × 8 bits + 8-bit exponent)
 //  - Read:  144-bit words (2 BFP8 blocks)
 //  - Read data connects directly to MLP weight inputs via mlpram_dout2mlp
+//
+//  SIMULATION NOTE: When USE_BEHAVIORAL_BRAM is defined, uses a simple behavioral
+//  model because the ACX_BRAM72K mlpram_dout2mlp path doesn't work standalone
+//  without a connected MLP primitive in simulation.
 // ----------------------------------------------------------------------
 `default_nettype none
 
@@ -27,6 +31,55 @@ module weight_bram #(
   localparam integer native_data_width = 72;        // Native BRAM data width
   localparam integer native_addrhi_width = 10;      // Native BRAM address width
 
+// =============================================================================
+// BEHAVIORAL MODEL FOR SIMULATION
+// =============================================================================
+// The ACX_BRAM72K simulation model's mlpram_dout2mlp output doesn't work
+// correctly in standalone simulation (without connected MLP primitive).
+// Use a simple behavioral model for functional verification.
+// =============================================================================
+`ifdef USE_BEHAVIORAL_BRAM
+
+  // Simple behavioral dual-port asymmetric RAM
+  // Write: 72-bit at 10-bit address (1024 locations)
+  // Read: 144-bit at 9-bit address (512 locations, combining two 72-bit words)
+
+  reg [71:0] mem [0:1023];
+  reg [143:0] dout_reg;
+
+  // Write port
+  always @(posedge wrclk) begin
+    if (wren) begin
+      mem[wraddr] <= din;
+      `ifdef DEBUG_WEIGHT_BRAM
+      $display("[WT_BRAM_WR] @%0t wraddr=%0d din[71:64]=0x%02x din[63:0]=0x%016x",
+               $time, wraddr, din[71:64], din[63:0]);
+      `endif
+    end
+  end
+
+  // Read port - combinatorial read with registered output
+  // Read address N maps to: {mem[2*N+1], mem[2*N]}
+  wire [9:0] rd_addr_even = {rdaddr, 1'b0};  // 2*rdaddr
+  wire [9:0] rd_addr_odd  = {rdaddr, 1'b1};  // 2*rdaddr + 1
+
+  always @(posedge rdclk) begin
+    if (rden) begin
+      dout_reg <= {mem[rd_addr_odd], mem[rd_addr_even]};
+      `ifdef DEBUG_WEIGHT_BRAM
+      $display("[WT_BRAM_RD] @%0t rdaddr=%0d dout[143:72]=0x%018x dout[71:0]=0x%018x",
+               $time, rdaddr, mem[rd_addr_odd], mem[rd_addr_even]);
+      `endif
+    end
+  end
+
+  assign dout = dout_reg;
+
+`else // !USE_BEHAVIORAL_BRAM - Use ACX primitive
+// =============================================================================
+// ACX_BRAM72K PRIMITIVE FOR SYNTHESIS
+// =============================================================================
+
   // BRAM output to MLP connection
   wire [2*native_data_width-1 : 0] bram_to_mlp_dout;
 
@@ -36,9 +89,19 @@ module weight_bram #(
   //                 bram_to_mlp_dout[0 +: native_data_width] };                // Lower block
 
 
-  // Unconnected signal handling
-  wire Open;
-  ACX_FLOAT undriven(Open);
+  // Unconnected signal handling - use wire assign to avoid floating signals
+  (* keep = "true" *) wire Open = 1'b0;
+
+  // synthesis translate_off
+  `ifdef DEBUG_WEIGHT_BRAM
+  always @(posedge wrclk) begin
+      if (wren) begin
+          $display("[WT_BRAM_WR] @%0t wraddr=%0d din[71:64]=0x%02x din[63:0]=0x%016x",
+                   $time, wraddr, din[71:64], din[63:0]);
+      end
+  end
+  `endif
+  // synthesis translate_on
 
   // Achronix BRAM72K primitive instantiation
   ACX_BRAM72K #(
@@ -185,6 +248,8 @@ module weight_bram #(
       .sbit_error(),                     // Single-bit error
       .dbit_error()                      // Double-bit error
   );
+
+`endif // USE_BEHAVIORAL_BRAM
 
 // NOTE (jjf): eneing-placement uses simpler module:
 

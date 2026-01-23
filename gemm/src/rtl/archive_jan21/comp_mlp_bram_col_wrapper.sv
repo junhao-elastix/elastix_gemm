@@ -1,0 +1,807 @@
+// ------------------------------------------------------------------
+// MLP BRAM Column Controller - FIFO-Decoupled Architecture
+//
+// Architecture: 4 × mlp_bram_col stacked in parallel with FIFO decoupling
+//   - Each stack handles 32 elements (one 256-bit mantissa group + 8-bit exponent)
+//   - All 4 stacks process in parallel: 4× throughput
+//   - FIFOs between MLP outputs and adder tree for timing decoupling
+//   - Integer-domain FP adder pipeline sums partial results
+//
+// FIFO Architecture:
+//   - 32 FIFOs total (4 stacks × 8 MLPs)
+//   - Each FIFO is 48 bits wide (2 × FP24 for bank0 and bank1)
+//   - Depth: 4 entries (sufficient for timing jitter absorption)
+//   - FWFT (First Word Fall Through) for zero-latency read
+//   - Backpressure: MLP stalls if FIFOs full
+//
+// Data Flow:
+//   MLP Stack[s][m] → FIFO[s][m] → Adder Tree[m] → FP16 Output
+//
+// Weight Loading (SIMPLE COMBINATIONAL Interface - NO FSM):
+//   - External controller provides direct BRAM write signals
+//   - i_wt_wr_en: Immediate write enable (single cycle)
+//   - i_wt_mlp_sel[2:0]: Target MLP (0-7)
+//   - i_wt_stack_sel[1:0]: Target stack (0-3) for extraction and per-stack wren
+//   - i_wt_wr_addr[9:0]: Direct BRAM address
+//   - 64-bit mantissa extracted from 256-bit input based on stack_sel
+//   - Per-stack write enables ensure only selected stack is written
+//
+// Compute:
+//   - 4 cycles of streaming (vs 16 with single stack)
+//   - Each stack computes partial 32-element dot product
+//   - Results pushed to FIFOs when drain completes
+//   - Adder tree pops from FIFOs when all 4 stacks have data
+//
+// Output: 16 × FP16 results (packed as 8 × 32-bit words)
+//
+// Pipeline Latency:
+//   - MLP internal pipeline: 2 cycles
+//   - FIFO: 0 cycles (FWFT)
+//   - Adder pipeline: 4 cycles (1 fp_to_int + 1 adder + 2 int_to_fp)
+//
+// FSM States (Continuous Operation Architecture):
+//   - COMP_IDLE: Waiting for first activation data (i_act_valid)
+//   - COMP_RUNNING: Continuous B×C×V operation, streaming activations through MLP
+//   - COMP_FINAL_DRAIN: Only after truly last dot product (i_last_matmul=1)
+//
+// Key optimization: No per-dot-product DRAIN bubbles.
+// Results are captured via pipeline delay and pushed to FIFO every V×4 cycles.
+//
+// Critical Implementation Detail (comp_cycle_cnt):
+//   - Cycle counter ONLY advances when act_handshake is true (valid data transfer)
+//   - Counter freezes during gaps between batches (no valid activation data)
+//   - This prevents spurious DOT_COMPLETE pulses from triggering extra FIFO pushes
+//   - Without this gating, counter would free-run and produce wrong result count
+//
+// REFACTORED: Jan 2026 - Simple combinational weight loading interface
+//             (replaces complex FSM with per-stack write enables)
+// BUGFIX: Jan 2026 - Gate comp_cycle_cnt with act_handshake to prevent spurious results
+//
+// Author: Refactored for FIFO-based decoupling + simple weight interface
+// Date: Jan 20, 2026
+// ------------------------------------------------------------------
+
+`timescale 1ps / 1ps
+`default_nettype none
+
+module comp_mlp_bram_col_wrapper #(
+    parameter integer NUM_MLPS = 8,
+    parameter integer NUM_STACKS = 4,           // 4 parallel stacks
+    parameter integer CYCLES_PER_NV = 4,        // 4 cycles per NV (32 elements / 8 per cycle)
+    parameter integer PIPELINE_LATENCY = 2,     // MLP pipeline latency for load timing
+    parameter integer FIFO_DEPTH = 4            // FIFO depth for timing decoupling
+) (
+    // Clock and Reset
+    input  logic        clk,
+    input  logic        rstn,
+
+    // =========================================================================
+    // Base Address Configuration
+    // =========================================================================
+    input  logic [9:0]  i_rd_base_addr,       // Read base address (from TILE command)
+
+    // =========================================================================
+    // Weight Loading Interface (DIRECT WRITE - NO HANDSHAKE)
+    // =========================================================================
+    // Direct BRAM Write Interface
+    //   - External controller drives write signals directly
+    //   - No handshake (no ready/valid protocol) - just write when data present
+    //   - i_wt_wr_en: Write enable (simple pulse, not handshake)
+    //   - i_nv_right_man: 256-bit mantissa (distributed to 4 stacks via depack)
+    //   - i_nv_right_exp: 8-bit exponent (broadcast to 4 stacks)
+    //   - i_wt_mlp_sel: Target MLP Column (0-7)
+    //   - i_wt_wr_addr: Direct BRAM write address
+    input  logic         i_wt_wr_en,          // Write enable (no handshake)
+    input  logic [255:0] i_nv_right_man,      // 256-bit mantissa (distributed to 4 stacks)
+    input  logic [7:0]   i_nv_right_exp,      // 8-bit exponent (broadcast to 4 stacks)
+    input  logic [2:0]   i_wt_mlp_sel,        // Target MLP Column (0-7)
+    input  logic [9:0]   i_wt_wr_addr,        // Direct BRAM write address
+
+    // =========================================================================
+    // Compute/Activation Interface (upstream)
+    // =========================================================================
+    input  logic        i_act_valid,          // Activation data valid
+    output logic        o_act_ready,          // Ready to accept activation data
+    input  logic [255:0] i_nv_left_man,       // 256-bit mantissa (distributed to 4 stacks)
+    input  logic [7:0]   i_nv_left_exp,       // 8-bit exponent (broadcast to 4 stacks)
+    input  logic        i_new_dot,            // Start new dot product (reset accumulator)
+    input  logic        i_last_nv,            // This is the last NV of the current dot product
+    input  logic        i_last_matmul,        // Truly last dot product of entire TILE (triggers final drain)
+
+    // =========================================================================
+    // Result Interface (downstream)
+    // =========================================================================
+    output logic [71:0] o_dout [NUM_MLPS-1:0], // MLP outputs (combined from 4 stacks)
+    output logic        o_dout_valid,          // Results valid
+    input  logic        i_dout_ready           // Downstream ready
+);
+
+    // =========================================================================
+    // Address Space Constants
+    // =========================================================================
+    localparam WRADDR_WIDTH = 10;
+    localparam RDADDR_WIDTH = 9;
+    localparam NV_SIZE_IN_WORDS = 4;
+    localparam FIFO_WIDTH = 48;  // 2 × FP24 (bank0 + bank1)
+
+    // =========================================================================
+    // State Machine Definitions (3-state continuous operation)
+    // =========================================================================
+    typedef enum logic [1:0] {
+        COMP_IDLE        = 2'b00,  // Waiting for first activation
+        COMP_RUNNING     = 2'b01,  // Continuous B×C×V operation
+        COMP_FINAL_DRAIN = 2'b10   // Only after truly last dot product
+    } comp_state_t;
+
+    // =========================================================================
+    // Internal Signal Declarations
+    // =========================================================================
+
+    // Weight Loading Signals (DIRECT WRITE - NO HANDSHAKE)
+    logic          wt_loading;            // True during weight write (single cycle)
+    logic [71:0]   wt_bram_din;           // BRAM write data {exp, man}
+
+    // Compute FSM Signals
+    comp_state_t comp_state_reg, comp_state_next;
+    logic [1:0] comp_cycle_cnt;
+    logic [2:0] drain_cnt;
+    logic [6:0] nv_index;       // Which NV we're processing (0 to V-1)
+    logic [6:0] next_nv_index;  // Combinational: nv_index value AFTER handshake
+    logic [1:0] chunk_cnt;      // Which chunk within current NV (0-3)
+    logic [1:0] next_chunk_cnt; // Combinational: chunk_cnt value AFTER handshake
+    logic [255:0]  act_man_reg;
+    logic [7:0]    act_exp_reg;
+    logic          new_dot_reg;
+    logic [1:0]    new_dot_delay;  // Shift register to delay new_dot by PIPELINE_LATENCY cycles
+    logic          last_nv_reg;
+
+    // Per-Stack Data Extraction Signals (for activations)
+    logic [63:0] act_man_chunk [NUM_STACKS-1:0];
+    logic [7:0]  act_exp_chunk [NUM_STACKS-1:0];
+    logic [71:0] din_stack [NUM_STACKS-1:0];
+
+    // Per-Stack Weight Write Enable (only selected stack gets written)
+    logic [NUM_MLPS-1:0] wt_wren_stack [NUM_STACKS-1:0];
+
+    // MLP BRAM Column Interface Signals
+    logic [9:0]          mlp_wraddr;
+    logic [8:0]          mlp_rdaddr;
+    logic                mlp_ce;
+    logic                mlp_load;
+    logic                mlp_accumulate;
+    logic [8:0]          wt_rd_base_addr;
+
+    // Stack Output Signals
+    logic [71:0] stack_dout [NUM_STACKS-1:0][NUM_MLPS-1:0];
+
+    // =========================================================================
+    // FIFO Signals (NEW: FIFO-based decoupling)
+    // =========================================================================
+    // FIFO data: 48 bits = {fp24_bank1[23:0], fp24_bank0[23:0]}
+    logic [FIFO_WIDTH-1:0] fifo_din  [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic [FIFO_WIDTH-1:0] fifo_dout [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic                  fifo_push [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic                  fifo_pop  [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic                  fifo_full [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic                  fifo_empty[NUM_STACKS-1:0][NUM_MLPS-1:0];
+
+    // FIFO synchronization signals
+    logic fifo_any_full;      // Any FIFO is full (backpressure)
+    logic fifo_all_ready;     // All FIFOs have data (can pop)
+    logic fifo_pop_enable;    // Pop from all FIFOs
+
+    // Adder Pipeline Signals (from FIFOs instead of direct stack output)
+    logic [23:0] fifo_fp24_bank0 [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic [23:0] fifo_fp24_bank1 [NUM_STACKS-1:0][NUM_MLPS-1:0];
+    logic [NUM_STACKS-1:0][23:0] adder_input_bank0 [NUM_MLPS-1:0];
+    logic [NUM_STACKS-1:0][23:0] adder_input_bank1 [NUM_MLPS-1:0];
+    logic [15:0] final_bank0 [NUM_MLPS-1:0];
+    logic [15:0] final_bank1 [NUM_MLPS-1:0];
+
+    // Valid pipeline for adder output
+    logic adder_input_valid;
+    logic adder_output_valid;
+
+    // Drain and output signals
+    logic drain_valid;
+    logic fifo_push_valid;
+
+    // Registered last_matmul for final drain detection
+    logic last_matmul_reg;
+
+    // Capture delay pipeline: accounts for MLP 2-cycle pipeline latency
+    // When a dot product completes (last_nv at cycle 3), we wait 2 cycles for result
+    logic [1:0] capture_delay;
+    logic dot_complete_pulse;
+
+    // Named conditions for clearer logic
+    logic in_running;
+    logic in_final_drain;
+    logic first_cycle_of_new_dot;
+
+    // =========================================================================
+    // Named Conditions
+    // =========================================================================
+    assign in_running     = (comp_state_reg == COMP_RUNNING);
+    assign in_final_drain = (comp_state_reg == COMP_FINAL_DRAIN);
+    assign first_cycle_of_new_dot = new_dot_reg && (comp_cycle_cnt == 2'd0);
+
+    // Dot product completion detection: true when at last cycle of last NV
+    logic dot_complete_condition;
+    assign dot_complete_condition = in_running && (comp_cycle_cnt == 2'd3) && last_nv_reg &&
+                                    !last_matmul_reg && !fifo_any_full;
+
+    // Dot product completion pulse: edge detect to fire only once when condition becomes true
+    // This triggers capture delay pipeline for INTERMEDIATE results only
+    logic dot_complete_condition_d;
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            dot_complete_condition_d <= 1'b0;
+        end else begin
+            dot_complete_condition_d <= dot_complete_condition;
+        end
+    end
+
+    // Rising edge detection: pulse fires once when we first reach the end of a dot product
+    assign dot_complete_pulse = dot_complete_condition && !dot_complete_condition_d;
+
+    // =========================================================================
+    // NOTE: Weight write address sequencing is handled by external controller
+    // (no internal cycle counter needed - direct addressing via i_wt_wr_addr)
+
+    // =========================================================================
+    // Weight Loading: Data Slicing & Addressing
+    // =========================================================================
+    // 1. Data Slicing: Distribute 256-bit input to 4 stacks (64-bit each)
+    logic [63:0] wt_man_slice [NUM_STACKS-1:0];
+    
+    // Per-stack slicing of the incoming 256-bit chunk
+    assign wt_man_slice[0] = i_nv_right_man[63:0];
+    assign wt_man_slice[1] = i_nv_right_man[127:64];
+    assign wt_man_slice[2] = i_nv_right_man[191:128];
+    assign wt_man_slice[3] = i_nv_right_man[255:192];
+
+    // 2. Weight BRAM Data Construction
+    // Each stack gets its slice + the BROADCAST exponent
+    // NOTE: This logic is replicated per stack in the generation loop below
+    
+    // Weight loading is active when write enable is asserted (no handshake)
+    assign wt_loading = i_wt_wr_en;
+
+    // Per-stack write enables: ALL stacks are written simultaneously for the target MLP
+    genvar s;
+    generate
+        for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_wt_wren
+            always_comb begin
+                if (wt_loading) begin
+                    // Enable write for the selected MLP column across ALL stacks
+                    wt_wren_stack[s] = ({{(NUM_MLPS-1){1'b0}}, 1'b1} << i_wt_mlp_sel);
+                end else begin
+                    wt_wren_stack[s] = {NUM_MLPS{1'b0}};
+                end
+            end
+        end
+    endgenerate
+
+    // =========================================================================
+    // Per-Stack Data Extraction: Activation Data
+    // =========================================================================
+    generate
+        for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_act_extract
+            always_comb begin
+                // Activation Slicing:
+                // Input i_nv_left_man is 256 bits (one chunk).
+                // During compute (RUNNING), we consume one chunk per cycle.
+                // The slicing logic must map the 256-bit input to the 4 stacks.
+                
+                // Correction: The input i_nv_left_man is ALREADY the 256-bit chunk for the current cycle.
+                // We don't need to index into it with comp_cycle_cnt. 
+                // We just distribute it to the stacks.
+                
+                act_man_chunk[s] = act_man_reg[s*64 +: 64];
+                act_exp_chunk[s] = act_exp_reg; // Broadcast exponent
+            end
+            assign din_stack[s] = {act_exp_chunk[s], act_man_chunk[s]};
+        end
+    endgenerate
+
+    // =========================================================================
+    // MLP BRAM Column Signal Muxing (SIMPLIFIED)
+    // =========================================================================
+    // Weight write address construction:
+    // Base NV Index (9 bits) + Cycle Offset (2 bits) -> 11 bits?
+    // Wait, BRAM is addressed by LINES. 1 NV = 4 Lines.
+    // So address = (nv_idx * 4) + cycle_cnt.
+    // Direct BRAM write address from external controller
+    // External controller manages address sequencing (no auto-increment here)
+    assign mlp_wraddr = wt_loading ? i_wt_wr_addr : 10'b0;
+    
+    // mlp_wren is now per-stack (handled in stack instantiation)
+    // CRITICAL: Use next_nv_index (combinational) to align base address with incoming NV
+    // nv_index is registered and lags by one cycle at NV boundaries
+    assign wt_rd_base_addr = i_rd_base_addr[9:1] + {next_nv_index[6:0], 2'd0};
+
+    always_comb begin
+        if (wt_loading) begin
+            mlp_rdaddr = 9'b0;
+        end else if (in_running || (comp_state_reg == COMP_IDLE && act_handshake)) begin
+            // Compute rdaddr when:
+            // 1. In RUNNING state (continuous streaming), OR
+            // 2. Transitioning from IDLE to RUNNING (first handshake)
+            // Read 4 consecutive addresses per NV: base+0, base+1, base+2, base+3
+            // Base address = nv_index * 4 (shifted by 2 bits)
+            // CRITICAL: Use next_chunk_cnt (combinational) to align rdaddr with activation data
+            // chunk_cnt is registered and lags by one cycle, so we must use the pre-computed
+            // next value to match the incoming activation chunk number
+            mlp_rdaddr = wt_rd_base_addr + {7'd0, next_chunk_cnt};
+        end else begin
+            mlp_rdaddr = 9'b0;
+        end
+    end
+
+    // =========================================================================
+    // Backpressure: Check if any FIFO is full
+    // =========================================================================
+    always_comb begin
+        fifo_any_full = 1'b0;
+        for (int ss = 0; ss < NUM_STACKS; ss++) begin
+            for (int mm = 0; mm < NUM_MLPS; mm++) begin
+                fifo_any_full = fifo_any_full | fifo_full[ss][mm];
+            end
+        end
+    end
+
+    // Handshake signal for cleaner logic
+    logic act_handshake;
+    assign act_handshake = o_act_ready && i_act_valid;
+
+    // CRITICAL: Compute next_chunk_cnt and next_nv_index combinationally for rdaddr alignment
+    // These values must reflect the CURRENT handshake, not the PREVIOUS one.
+    // The registered counters update AFTER posedge, so mlp_rdaddr would be off-by-one.
+    // Solution: Compute what the counters WILL become and use those for rdaddr.
+
+    // next_nv_index: Tracks which NV we're processing
+    always_comb begin
+        if (!act_handshake) begin
+            // No handshake: keep current value
+            next_nv_index = nv_index;
+        end else if (i_new_dot) begin
+            // New dot product: reset to 0
+            next_nv_index = 7'd0;
+        end else if (chunk_cnt == 2'd3) begin
+            // Completed 4 chunks: move to next NV
+            next_nv_index = nv_index + 7'd1;
+        end else begin
+            // Within same NV
+            next_nv_index = nv_index;
+        end
+    end
+
+    // next_chunk_cnt: Tracks which chunk within current NV (0-3)
+    always_comb begin
+        if (!act_handshake) begin
+            // No handshake: keep current value
+            next_chunk_cnt = chunk_cnt;
+        end else if (i_new_dot) begin
+            // New dot product: reset to 0
+            next_chunk_cnt = 2'd0;
+        end else if (chunk_cnt == 2'd3) begin
+            // Wrapped around: reset to 0
+            next_chunk_cnt = 2'd0;
+        end else begin
+            // Normal increment
+            next_chunk_cnt = chunk_cnt + 2'd1;
+        end
+    end
+
+    // Stall condition: waiting for data at NV boundary (cycle 3)
+    // REMOVED for optimization: We assume data is always available once streaming starts
+    // Stall when we're at cycle 3 in RUNNING but no valid data is available
+    // Exception: If we are finishing the tile (last_nv && last_matmul), we don't stall, we go to DRAIN
+    logic stalling;
+    assign stalling = 1'b0; // FORCE NO STALL
+
+    // MLP enable gated by backpressure only (NOT stalling - MLP needs to finish pipeline during stalls)
+    assign mlp_ce = (wt_loading || in_running || in_final_drain) && !fifo_any_full;
+
+    // Load signal: initialize accumulator at start of new dot product
+    // Fires PIPELINE_LATENCY cycles after new_dot arrives (when chunk 2 is being processed)
+    // new_dot_delay[1] is the delayed new_dot signal, high at the correct load timing
+    assign mlp_load = in_running && new_dot_delay[1] && !fifo_any_full;
+
+    // Accumulate signal: active during streaming and final drain
+    // Per MLP reference: accumulate=0 ONLY at cycle 0 of new_dot, accumulate=1 for all other cycles
+    // CRITICAL: accumulate and load CAN both be 1 simultaneously at cycle 2 (per Python reference)
+    // Simplified: always accumulate unless backpressured.
+    // The primitive handles load taking precedence over accumulate for the accumulator reset.
+    assign mlp_accumulate = (in_final_drain || in_running) && !fifo_any_full;
+
+    // =========================================================================
+    // Weight Loading: DIRECT WRITE (no handshake)
+    // =========================================================================
+    // Weight loading signals:
+    // - wt_loading = i_wt_wr_en (external controller drives)
+    // - mlp_wraddr = i_wt_wr_addr (external controller provides address)
+    // - wt_bram_din = {exp, man_chunk} (combinational extraction/depack)
+    // - wt_wren_stack[s] = per-stack write enable based on mlp_sel
+
+    // =========================================================================
+    // Compute FSM: State Transition Logic (3-state continuous operation)
+    // =========================================================================
+    always_comb begin
+        comp_state_next = comp_state_reg;
+
+        case (comp_state_reg)
+            COMP_IDLE: begin
+                // Start running on first valid activation (when not loading weights)
+                if (i_act_valid && !wt_loading && !fifo_any_full) begin
+                    comp_state_next = COMP_RUNNING;
+                end
+            end
+
+            COMP_RUNNING: begin
+                // Stay in RUNNING between dot products
+                // Only exit on truly last NV of last dot product (i_last_matmul=1)
+                if (!fifo_any_full && comp_cycle_cnt == 2'd3 && last_nv_reg && last_matmul_reg) begin
+                    comp_state_next = COMP_FINAL_DRAIN;
+                end
+                // Otherwise: stay in RUNNING (including between dot products)
+            end
+
+            COMP_FINAL_DRAIN: begin
+                // Final drain only happens once at the very end
+                if (!fifo_any_full && drain_cnt == 3'd2) begin
+                    comp_state_next = COMP_IDLE;
+                end
+            end
+
+            default: begin
+                comp_state_next = COMP_IDLE;
+            end
+        endcase
+    end
+
+    // =========================================================================
+    // Compute FSM: Sequential State Update (with backpressure)
+    // =========================================================================
+    // logic act_handshake; // Moved up to signal declarations
+    // assign act_handshake = o_act_ready && i_act_valid; // Moved up
+
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            comp_state_reg   <= COMP_IDLE;
+            comp_cycle_cnt   <= 2'd0;
+            drain_cnt        <= 3'd0;
+            act_man_reg      <= 256'b0;
+            act_exp_reg      <= 8'b0;
+            new_dot_reg      <= 1'b0;
+            new_dot_delay    <= 2'b00;
+            last_nv_reg      <= 1'b0;
+            last_matmul_reg  <= 1'b0;
+            nv_index         <= 7'd0;
+            chunk_cnt        <= 2'd0;
+            capture_delay    <= 2'b00;
+        end else if (!fifo_any_full) begin
+            // Only advance state when not stalled by backpressure
+            comp_state_reg <= comp_state_next;
+
+            // Capture delay pipeline: shift register for dot product completion
+            capture_delay <= {capture_delay[0], dot_complete_pulse};
+
+            // Unified Activation Latching
+            if (act_handshake) begin
+                act_man_reg     <= i_nv_left_man;
+                act_exp_reg     <= i_nv_left_exp;
+                new_dot_reg     <= i_new_dot;
+                // Shift register for new_dot: delays by PIPELINE_LATENCY cycles
+                // Uses OLD new_dot_reg value (before this cycle's i_new_dot update)
+                new_dot_delay   <= {new_dot_delay[0], new_dot_reg};
+                last_nv_reg     <= i_last_nv;
+                last_matmul_reg <= i_last_matmul;
+                
+                // Proper chunk tracking: 4 chunks per NV
+                if (i_new_dot) begin
+                    // Start of new dot product: reset both counters
+                    nv_index  <= 7'd0;
+                    chunk_cnt <= 2'd0;
+                end else if (chunk_cnt == 2'd3) begin
+                    // Completed 4 chunks, move to next NV
+                    chunk_cnt <= 2'd0;
+                    nv_index  <= nv_index + 7'd1;
+                end else begin
+                    // Still within same NV
+                    chunk_cnt <= chunk_cnt + 2'd1;
+                end
+
+                `ifdef SIMULATION
+                $display("[WRAPPER_DBG] @%0t ACT_LATCH: i_last_nv=%0b i_new_dot=%0b nv_idx=%0d chunk=%0d",
+                         $time, i_last_nv, i_new_dot,
+                         i_new_dot ? 7'd0 : (chunk_cnt == 2'd3 ? nv_index + 7'd1 : nv_index),
+                         i_new_dot ? 2'd0 : (chunk_cnt == 2'd3 ? 2'd0 : chunk_cnt + 2'd1));
+                `endif
+            end
+
+            case (comp_state_reg)
+                COMP_IDLE: begin
+                    comp_cycle_cnt   <= 2'd0;
+                    drain_cnt        <= 3'd0;
+                    capture_delay    <= 2'b00;
+                end
+
+                COMP_RUNNING: begin
+                    // Only advance cycle counter when valid data is being processed
+                    // This prevents spurious DOT_COMPLETE pulses during gaps between batches
+                    if (act_handshake) begin
+                        if (comp_cycle_cnt == 2'd3) begin
+                            comp_cycle_cnt <= 2'd0;
+                        end else begin
+                            comp_cycle_cnt <= comp_cycle_cnt + 2'd1;
+                        end
+                    end
+                    // When no valid data, counter freezes (stall)
+                end
+
+                COMP_FINAL_DRAIN: begin
+                    // Final drain: only happens once at very end
+                    drain_cnt <= drain_cnt + 3'd1;
+                end
+
+                default: begin
+                    // No updates
+                end
+            endcase
+        end
+        // When fifo_any_full, counters freeze (backpressure)
+    end
+
+    // =========================================================================
+    // Ready-Valid Signals (with backpressure)
+    // =========================================================================
+    // o_wt_line_ready assigned earlier from wt_state_reg
+
+    // o_act_ready: Assert continuously in RUNNING to receive 1 chunk/cycle
+    // Architecture requires activation chunks to arrive synchronously with rdaddr cycling
+    // - Cycle 0: chunk 0 activations × weights at rdaddr 0
+    // - Cycle 1: chunk 1 activations × weights at rdaddr 1
+    // - etc.
+    assign o_act_ready = !wt_loading && !fifo_any_full &&
+                         ((comp_state_reg == COMP_IDLE) || in_running);
+
+    // =========================================================================
+    // FIFO Push Signal: Push when dot product result is ready
+    // =========================================================================
+    // Two cases for FIFO push:
+    // 1. Intermediate dot products: use capture_delay pipeline (2 cycles after last_nv)
+    //    - Suppress when in FINAL_DRAIN to avoid double-push for final result
+    // 2. Final dot product: push during FINAL_DRAIN at drain_cnt==2
+    assign drain_valid = in_final_drain && !fifo_any_full;
+    assign fifo_push_valid = (!fifo_any_full) &&
+                             ((capture_delay[1] && !in_final_drain) ||      // Intermediate results only
+                              (in_final_drain && (drain_cnt == 3'd2)));     // Final result
+
+    // =========================================================================
+    // MLP BRAM Column Instances (4 stacks)
+    // =========================================================================
+    generate
+        for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_mlp_stack
+            logic [71:0] stack_din;
+            assign stack_din = (wt_loading || !in_running) ? 72'b0 : din_stack[s];
+
+            logic [7:0] stack_expb;
+            assign stack_expb = (wt_loading || !in_running) ? 8'b0 : act_exp_chunk[s];
+
+            // Weight BRAM Data Muxing
+            // When loading: {broadcast_exp, slice_man}
+            logic [71:0] stack_bram_din;
+            assign stack_bram_din = wt_loading ? {i_nv_right_exp, wt_man_slice[s]} : 72'b0;
+
+            comp_mlp_bram_col #(
+                .NUM_MLPS(NUM_MLPS)
+            ) u_mlp_bram_col (
+                .clk(clk),
+                .rstn(rstn),
+                .ce(mlp_ce),
+                .din(stack_din),
+                .load(mlp_load),
+                .accumulate(mlp_accumulate),
+                .expb(stack_expb),
+                .bram_din(stack_bram_din),        // SIMPLIFIED: Per-stack data construction
+                .wraddr(mlp_wraddr),
+                .wren(wt_wren_stack[s]),          // SIMPLIFIED: Per-stack write enable
+                .rdaddr(mlp_rdaddr),
+                .dout(stack_dout[s])
+            );
+        end
+    endgenerate
+
+    // =========================================================================
+    // FIFO Instances: Decouple MLP outputs from Adder Tree
+    // =========================================================================
+    generate
+        for (s = 0; s < NUM_STACKS; s = s + 1) begin : gen_fifo_stack
+            for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_fifo_mlp
+                // FIFO data: pack both FP24 values
+                // stack_dout[s][m][23:0]  = Bank CD (even columns)
+                // stack_dout[s][m][47:24] = Bank AB (odd columns)
+                assign fifo_din[s][m] = stack_dout[s][m][47:0];
+
+                // Push to FIFO when drain completes
+                assign fifo_push[s][m] = fifo_push_valid;
+
+                // Pop from FIFO when all FIFOs have data and downstream ready
+                assign fifo_pop[s][m] = fifo_pop_enable;
+
+                comp_stack_fifo #(
+                    .DATA_WIDTH(FIFO_WIDTH),
+                    .DEPTH(FIFO_DEPTH)
+                ) u_stack_fifo (
+                    .clk(clk),
+                    .rstn(rstn),
+                    .i_data(fifo_din[s][m]),
+                    .i_push(fifo_push[s][m]),
+                    .o_full(fifo_full[s][m]),
+                    .o_data(fifo_dout[s][m]),
+                    .i_pop(fifo_pop[s][m]),
+                    .o_empty(fifo_empty[s][m]),
+                    .o_count()  // Not used
+                );
+
+                // Extract FP24 values from FIFO output
+                // MLP output mapping (verified by simulation):
+                //   dout[47:24] = DOT_PRODUCT_0 (from BRAM[71:0] = EVEN addresses)
+                //   dout[23:0]  = DOT_PRODUCT_1 (from BRAM[143:72] = ODD addresses)
+                // bank0 = EVEN column results, bank1 = ODD column results
+                assign fifo_fp24_bank0[s][m] = fifo_dout[s][m][47:24];  // EVEN col from upper bits
+                assign fifo_fp24_bank1[s][m] = fifo_dout[s][m][23:0];   // ODD col from lower bits
+            end
+        end
+    endgenerate
+
+    // =========================================================================
+    // FIFO Consumption Logic: Pop when ALL FIFOs have data
+    // =========================================================================
+    always_comb begin
+        fifo_all_ready = 1'b1;
+        for (int ss = 0; ss < NUM_STACKS; ss++) begin
+            for (int mm = 0; mm < NUM_MLPS; mm++) begin
+                fifo_all_ready = fifo_all_ready & ~fifo_empty[ss][mm];
+            end
+        end
+    end
+
+    // Pop from all FIFOs when all have data and downstream is ready
+    assign fifo_pop_enable = fifo_all_ready && i_dout_ready;
+
+    // =========================================================================
+    // Repack FIFO Outputs for Adder Pipeline
+    // =========================================================================
+    generate
+        for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_repack
+            for (genvar ss = 0; ss < NUM_STACKS; ss = ss + 1) begin : gen_stack_repack
+                assign adder_input_bank0[m][ss] = fifo_fp24_bank0[ss][m];
+                assign adder_input_bank1[m][ss] = fifo_fp24_bank1[ss][m];
+            end
+        end
+    endgenerate
+
+    // =========================================================================
+    // Adder Input Valid: When FIFOs are being consumed
+    // =========================================================================
+    assign adder_input_valid = fifo_pop_enable;
+
+    // =========================================================================
+    // Integer-Domain FP Adder Pipeline: Combine 4 partial results per column
+    // =========================================================================
+    generate
+        for (genvar m = 0; m < NUM_MLPS; m = m + 1) begin : gen_adder_tree
+            logic adder_valid_bank0, adder_valid_bank1;
+
+            comp_fp_adder_pipeline #(
+                .NUM_INPUTS(4),
+                .FP_IN_WIDTH(24),
+                .FP_OUT_WIDTH(16),
+                .INT_WIDTH(64),
+                .FRAC_BITS(32),
+                .SEG_LEN(2)
+            ) u_adder_bank0 (
+                .clk(clk),
+                .rst_n(rstn),
+                .en(1'b1),
+                .i_fp(adder_input_bank0[m]),
+                .i_valid(adder_input_valid),
+                .o_fp(final_bank0[m]),
+                .o_valid(adder_valid_bank0)
+            );
+
+            comp_fp_adder_pipeline #(
+                .NUM_INPUTS(4),
+                .FP_IN_WIDTH(24),
+                .FP_OUT_WIDTH(16),
+                .INT_WIDTH(64),
+                .FRAC_BITS(32),
+                .SEG_LEN(2)
+            ) u_adder_bank1 (
+                .clk(clk),
+                .rst_n(rstn),
+                .en(1'b1),
+                .i_fp(adder_input_bank1[m]),
+                .i_valid(adder_input_valid),
+                .o_fp(final_bank1[m]),
+                .o_valid(adder_valid_bank1)
+            );
+
+            // Combine into output format
+            assign o_dout[m] = {40'd0, final_bank1[m], final_bank0[m]};
+
+            // Use adder valid from MLP 0 for overall output valid
+            if (m == 0) begin : gen_valid
+                assign adder_output_valid = adder_valid_bank0;
+            end
+        end
+    endgenerate
+
+    // =========================================================================
+    // Output Valid: From adder pipeline valid signal
+    // =========================================================================
+    assign o_dout_valid = adder_output_valid;
+
+    // =========================================================================
+    // Debug Output
+    // =========================================================================
+    // synthesis translate_off
+    logic [1:0] comp_state_prev;
+    logic       wt_loading_prev;
+    logic       fifo_push_prev;
+
+    always @(posedge clk) begin
+        comp_state_prev <= comp_state_reg;
+        wt_loading_prev <= wt_loading;  // Use internal signal (not external input)
+        fifo_push_prev  <= fifo_push_valid;
+
+        // Report FIFO push events
+        if (fifo_push_valid && !fifo_push_prev) begin
+            $display("[MLP_FIFO] @%0t PUSH: capture_delay=%b drain_cnt=%0d, any_full=%b last_nv=%b last_matmul=%b",
+                     $time, capture_delay, drain_cnt, fifo_any_full, last_nv_reg, last_matmul_reg);
+        end
+
+        // Report dot_complete_pulse
+        if (dot_complete_pulse) begin
+            $display("[MLP_DOT] @%0t DOT_COMPLETE: last_nv=%b last_matmul=%b cycle=%d state=%d",
+                     $time, last_nv_reg, last_matmul_reg, comp_cycle_cnt, comp_state_reg);
+        end
+
+        // Report FIFO pop events
+        if (fifo_pop_enable) begin
+            $display("[MLP_FIFO] @%0t POP: all_ready=%b, dout_ready=%b",
+                     $time, fifo_all_ready, i_dout_ready);
+        end
+
+        // Report backpressure events
+        if (fifo_any_full && (in_running || in_final_drain)) begin
+            $display("[MLP_FIFO] @%0t BACKPRESSURE: state=%0d, any_full=%b",
+                     $time, comp_state_reg, fifo_any_full);
+        end
+
+        // Report output valid
+        if (o_dout_valid) begin
+            $display("[MLP_FIFO] @%0t DOUT_VALID: MLP0 bank0=0x%04x bank1=0x%04x",
+                     $time, final_bank0[0], final_bank1[0]);
+        end
+
+        // Report raw FP24 from FIFO when popping (before adder tree)
+        if (fifo_pop_enable) begin
+            $display("[MLP_RAW] @%0t FP24 inputs to adder MLP0 bank0: s0=0x%06x s1=0x%06x s2=0x%06x s3=0x%06x",
+                     $time, adder_input_bank0[0][0], adder_input_bank0[0][1],
+                     adder_input_bank0[0][2], adder_input_bank0[0][3]);
+            $display("[MLP_RAW] @%0t FP24 inputs to adder MLP0 bank1: s0=0x%06x s1=0x%06x s2=0x%06x s3=0x%06x",
+                     $time, adder_input_bank1[0][0], adder_input_bank1[0][1],
+                     adder_input_bank1[0][2], adder_input_bank1[0][3]);
+        end
+    end
+    // synthesis translate_on
+
+endmodule
+
+`default_nettype wire
+
+

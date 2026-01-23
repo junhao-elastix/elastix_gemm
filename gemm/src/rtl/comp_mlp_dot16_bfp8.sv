@@ -447,8 +447,8 @@ module comp_mlp_dot16_bfp8 #(
                                                                    // 2'b00: Output format will be FP24 based
                                                                    // 2'b01: Output format will be BF16 based
                                                                    // 2'b10: Output format will be FP16 based Disable FPADD_AB rounding
-    parameter logic        add_accum_ab_bypass           = 1'b1,   // bypass to the AB accumulator output
-                                                                   // 1'b0 – integer AB accumulator value is used
+    parameter logic        add_accum_ab_bypass           = 1'b0,   // USE AB accumulator (not bypass) for BFP accumulation
+                                                                   // 1'b0 – integer AB accumulator value is used ★ ENABLED
                                                                    // 1'b1 – bypass integer AB accumulator or FPADD_AB accumulator
     parameter logic        accum_ab_reg_din_sel          = 1'b1,   // Select between integer (or bypass) and floating-point AB result
                                                                    // 1'b0 – Value from integer AB accumulator block (or bypass)
@@ -468,8 +468,8 @@ module comp_mlp_dot16_bfp8 #(
                                                                    // 2'b00: Output format will be FP24 based
                                                                    // 2'b01: Output format will be BF16 based
                                                                    // 2'b10: Output format will be FP16 based Disable FPADD_CD rounding
-    parameter logic        add_accum_cd_bypass           = 1'b1,   // Select to bypass the CD accumulator output
-                                                                   // 1'b0 – CD accumulator value is used.
+    parameter logic        add_accum_cd_bypass           = 1'b0,   // USE CD accumulator (not bypass) for BFP accumulation
+                                                                   // 1'b0 – CD accumulator value is used ★ ENABLED
                                                                    // 1'b1 – Bypass CD accumulator and use signal selected with  fpadd_cd_dina_sel
   // Each half-MLP computes its own dot-product and produces half of the LRAM value
 //   localparam logic   fpadd_ab_bypass   = 1'b0;   // Use AB accumulator

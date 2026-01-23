@@ -1,0 +1,240 @@
+# ---------------------------------------------------------------------
+# Makefile for 2-D GEMM Full Integration Simulation
+#
+# Purpose: Validate the complete 2-D GEMM architecture with:
+#   - engine_top_2d (top-level)
+#   - master_control_2d (command processor)
+#   - 16 x dispatcher_control_2d (per-row GDDR6 fetch/dispatch)
+#   - 16 x compute_engine_2d (per-row MLP compute)
+#   - result_collector_2d (cross-row reduction)
+#
+# Configuration: B=4, C=4, V=32 with 16 hex file pairs
+#
+# Author: Junhao Pan
+# Date: Jan 22, 2026
+# ---------------------------------------------------------------------
+
+# Simulation settings
+SIM_TOP := tb_gemm2d
+DEVICE := AC7t1500
+BASE_NAME := ac7t1500
+LOG_FILE := sim_gemm2d.log
+
+# Achronix environment setup
+export ACX_DEVICE_INSTALL_DIR := $(ACE_INSTALL_DIR)/system/data/$(DEVICE)
+DSM_INCLUDE_FILE := $(ACX_DEVICE_INSTALL_DIR)/sim/$(BASE_NAME)_dsm_incdirs.f
+DSM_COMPILE_FILE := $(ACX_DEVICE_INSTALL_DIR)/sim/$(BASE_NAME)_dsm_filelist.v
+DEVICE_MODELS := $(ACE_INSTALL_DIR)/libraries/device_models/$(DEVICE)_simmodels.sv
+
+# Achronix Speedster7t library paths
+ACX_LIB_S7T := $(ACE_INSTALL_DIR)/libraries/speedster7t
+
+# Source directories
+GEMM_RTL := ../../src/rtl
+GEMM_INC := ../../src/include
+GEMM_TB := ../../src/tb
+SIM_DIR := .
+
+# Compilation flags
+VLOG_OPTIONS := +define+SIMULATION +define+SPEEDSTER7T_SIMULATION +define+ACX_ENABLE_MLP_SIM +define+ACX_ENABLE_BRAM_SIM +define+ACX_ENABLE_PRIMITIVE_SIM
+VLOG_OPTIONS += -sv
+VLOG_OPTIONS += -timescale "1ps/1ps"
+
+# =========================================================================
+# BRAM Model Selection - Enable behavioral model for weight_bram
+# The ACX_BRAM72K mlpram_dout2mlp path doesn't work standalone in simulation
+# =========================================================================
+VLOG_OPTIONS += +define+USE_BEHAVIORAL_BRAM
+
+# =========================================================================
+# Debug Macros - Uncomment to enable verbose output per module
+# =========================================================================
+# VLOG_OPTIONS += +define+DEBUG_DISPATCHER        # dispatcher_2d.sv
+# VLOG_OPTIONS += +define+DEBUG_FETCHER           # fetcher_2d.sv
+# VLOG_OPTIONS += +define+DEBUG_DISPATCHER_CTRL   # dispatcher_control_2d.sv
+# VLOG_OPTIONS += +define+DEBUG_MASTER_CTRL       # master_control_2d.sv
+# VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStack_oFIFO.sv
+# VLOG_OPTIONS += +define+DEBUG_COMPUTE           # compute_engine_2d.sv
+# VLOG_OPTIONS += +define+DEBUG_WEIGHT_BRAM       # weight_bram.sv (quiet mode)
+# =========================================================================
+VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal
+VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/
+VLOG_OPTIONS += +incdir+$(ACX_DEVICE_INSTALL_DIR)/sim
+VLOG_OPTIONS += +incdir+$(ACX_LIB_S7T)/common
+VLOG_OPTIONS += +incdir+$(GEMM_INC)
+VLOG_OPTIONS += -f $(DSM_INCLUDE_FILE)
+VLOG_OPTIONS += -msg 0
+
+# Default target
+all: run
+
+# Create work library
+create_library:
+	@echo "Creating work library..." | tee $(LOG_FILE)
+	@vlib work >> $(LOG_FILE) 2>&1
+
+# Compile design
+compile: create_library
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "  2-D GEMM Full Integration Compilation Started: $$(date)" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "Compiling Achronix primitives..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(DSM_COMPILE_FILE) \
+		$(DEVICE_MODELS) \
+		$(ACX_LIB_S7T)/common/acx_integer.sv \
+		$(ACX_LIB_S7T)/common/acx_floating_point.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: ACX library compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling package and include files..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_INC)/gemm_pkg.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Package compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling MLP primitives..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
+		$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
+		$(GEMM_RTL)/weight_bram.sv \
+		$(GEMM_RTL)/comp_MLP.sv \
+		$(GEMM_RTL)/comp_MLPRow.sv \
+		$(GEMM_RTL)/comp_stack_fifo.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: MLP primitives compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling FP arithmetic modules..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/fp_to_int.sv \
+		$(GEMM_RTL)/int_to_fp.sv \
+		$(GEMM_RTL)/int_adder_tree.sv \
+		$(GEMM_RTL)/comp_fp_adder_pipeline.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: FP arithmetic compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling FIFO and BRAM modules..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/flex_fifo.sv \
+		$(GEMM_RTL)/comp_row_bram.sv \
+		$(GEMM_RTL)/comp_MLPStack.sv \
+		$(GEMM_RTL)/comp_MLPStack_oFIFO.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: FIFO/BRAM compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling Fetcher and Dispatcher modules..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/fetcher_2d.sv \
+		$(GEMM_RTL)/dispatcher_2d.sv \
+		$(GEMM_RTL)/dispatcher_control_2d.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Fetcher/Dispatcher compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling Compute Engine and Control modules..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/compute_engine_2d.sv \
+		$(GEMM_RTL)/cmd_fifo.sv \
+		$(GEMM_RTL)/master_control_2d.sv \
+		$(GEMM_RTL)/result_collector_2d.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Control modules compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling Top-level module..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(GEMM_RTL)/engine_top_2d.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Top-level compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling Memory Models..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(SIM_DIR)/tb_mem_model_parameterized.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Memory model compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compiling testbench..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vlog $(VLOG_OPTIONS) \
+		$(SIM_DIR)/tb_gemm2d.sv >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Testbench compilation failed. See $(LOG_FILE)" && exit 1)
+	@echo "Compilation completed successfully" | tee -a $(LOG_FILE)
+	@echo ""
+
+# Run simulation
+run_vsim: compile
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "  2-D GEMM Full Integration Simulation Started: $$(date)" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "Running 2-D GEMM simulation..." | tee -a $(LOG_FILE)
+	@export LD_LIBRARY_PATH="" && \
+	vsim -c -asdb_skip -do "run -all; quit -force" work.$(SIM_TOP) >> $(LOG_FILE) 2>&1 || \
+		(echo "ERROR: Simulation failed. See $(LOG_FILE)" && exit 1)
+	@echo "" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "  2-D GEMM Full Integration Simulation Completed: $$(date)" | tee -a $(LOG_FILE)
+	@echo "======================================================================" | tee -a $(LOG_FILE)
+	@echo "" | tee -a $(LOG_FILE)
+	@echo "Extracting test summary..." | tee -a $(LOG_FILE)
+	@grep -E "PASS|FAIL|ALL TESTS|Test|SUMMARY|ERROR|MATCH" $(LOG_FILE) | tail -40 || echo "Warning: Could not find test summary"
+	@echo ""
+	@echo "Full log available in: $(LOG_FILE)"
+
+# Run tests
+run: run_vsim
+
+# Debug with GUI
+debug: compile
+	@echo "=== Running 2-D GEMM Debug Simulation ==="
+	@export LD_LIBRARY_PATH="" && \
+	vsim -gui work.$(SIM_TOP) &
+
+# View full simulation log
+view-log:
+	@if [ -f $(LOG_FILE) ]; then \
+		less +G $(LOG_FILE); \
+	else \
+		echo "Error: $(LOG_FILE) not found. Run 'make run' first."; \
+	fi
+
+# Show test summary only
+summary:
+	@if [ -f $(LOG_FILE) ]; then \
+		echo ""; \
+		echo "Test Results from $(LOG_FILE):"; \
+		echo "======================================"; \
+		grep -E "PASS|FAIL|Test|SUMMARY|ERROR" $(LOG_FILE) | tail -50; \
+		echo ""; \
+	else \
+		echo "Error: $(LOG_FILE) not found. Run 'make run' first."; \
+	fi
+
+# Clean up
+clean:
+	@echo "=== Cleaning Simulation Files ==="
+	@rm -rf work/
+	@rm -f transcript
+	@rm -f *.wlf
+	@rm -f *.log
+	@rm -f *.vcd
+	@rm -f *.asdb
+	@rm -f *.tmp
+	@echo "Clean complete"
+
+# Help
+help:
+	@echo "========================================================================"
+	@echo "  Makefile for 2-D GEMM Full Integration Simulation"
+	@echo "========================================================================"
+	@echo ""
+	@echo "Purpose: Test the complete 2-D GEMM architecture with:"
+	@echo "  - engine_top_2d (top-level)"
+	@echo "  - master_control_2d (command processor)"
+	@echo "  - 16 x dispatcher_control_2d (per-row GDDR6 fetch/dispatch)"
+	@echo "  - 16 x compute_engine_2d (per-row MLP compute)"
+	@echo "  - result_collector_2d (cross-row reduction)"
+	@echo ""
+	@echo "Configuration: B=4, C=4, V=32 with 16 hex file pairs"
+	@echo ""
+	@echo "Targets:"
+	@echo "  make             - Compile and run simulation (outputs to $(LOG_FILE))"
+	@echo "  make run         - Compile and run simulation (same as make)"
+	@echo "  make compile     - Compile only (no simulation)"
+	@echo "  make debug       - Run with GUI for debugging"
+	@echo "  make summary     - Show test results summary"
+	@echo "  make view-log    - View full simulation log"
+	@echo "  make clean       - Remove all generated files"
+	@echo "  make help        - Show this help message"
+	@echo ""
+	@echo "========================================================================"
+
+.PHONY: all create_library compile run_vsim run debug view-log summary clean help

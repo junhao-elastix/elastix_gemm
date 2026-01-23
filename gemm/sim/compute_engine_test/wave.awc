@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="awc" version="2">
+	<waveform>
+		<browser type="events"/>
+		<view active="true">
+			<cursors>
+				<cursor name="Default cursor" id="-1" time="166125ns+3" lock="0" tip="1"/>
+				<active name="Default cursor" time="166125ns+3"/>
+			</cursors>
+			<signalspart/>
+			<firstvisiblesignal number="0"/>
+			<timesynchronization value="1"/>
+			<cursorssynchronization value="1"/>
+			<time beginvisible="0fs" endvisible="0fs"/>
+		</view>
+		<bookmarks/>
+		<time beginvisible="0fs" endvisible="10994500002fs"/>
+		<timeunit name="auto"/>
+		<grid type="onwholewaveform" starttime="0fs" endtime="0fs" period="10ns" count="0"/>
+		<cursors>
+			<cursor name="Default cursor" id="-1" time="0fs+0" lock="0" tip="1"/>
+			<active name="Default cursor" time="0fs+0"/>
+		</cursors>
+		<hierarchy_depth value="0"/>
+	</waveform>
+</document>

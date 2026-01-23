@@ -1,0 +1,27 @@
+asim -t 10ps -dataset {/home/dev/Dev/elastix_gemm/gemm/sim/compute_engine_test} -datasetname {sim} work.tb_compute_engine_mlp +access +r
+wave {sim:/tb_compute_engine_mlp/clk}
+wave {sim:/tb_compute_engine_mlp/reset_n}
+wave {sim:/tb_compute_engine_mlp/tile_en}
+wave {sim:/tb_compute_engine_mlp/tile_start}
+wave {sim:/tb_compute_engine_mlp/tile_done}
+wave {sim:/tb_compute_engine_mlp/disp_start}
+wave {sim:/tb_compute_engine_mlp/disp_done}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/din}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/accumulate}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/load}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/wraddr}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/bram_din}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/wren}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_bram_col_wrapper/gen_mlp_stack[0]/u_mlp_bram_col/rdaddr}
+wave sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_disp_col_start
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_disp_tile_addr}
+wave sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_disp_ugd_vec_size
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_disp_man_nv_cnt}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/o_wt_base_addr}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/o_wt_loading}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/o_wt_nv_idx}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/o_wt_valid}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_disp_broadcast}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/o_nv_right_rd_idx}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_nv_right_man}
+wave {sim:/tb_compute_engine_mlp/dut/u_mlp_dispatch/i_nv_right_exp}

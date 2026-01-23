@@ -6,14 +6,23 @@ This file provides high-level guidance for the GEMM engine sub-project.
 
 ## Project Overview
 
-The **gemm/** directory contains the production MS2.0 GEMM (General Matrix Multiply) engine for the Achronix AC7t1500 Speedster7t FPGA. This is the primary active development project focused on high-performance matrix multiplication acceleration.
+The **gemm/** directory contains the production MS2.0 GEMM (General Matrix Multiply) engine for the Achronix AC7t1500 Speedster7t FPGA.
+
+**Current Objective: 2-D MultiRow GEMM Architecture**
+
+The project is transitioning from single-row multi-tile to a full 2-D array architecture:
+- **Target**: 16 rows × 16 columns (256 compute tiles)
+- **Memory**: Each row connected to one GDDR6 channel (8 channels total, 2 rows per channel)
+- **Compute**: ACX_MLP72 primitives for GFP8 dot products
+- **Reference Design**: AMD GEMM architecture patterns adapted for Achronix hardware
 
 ## Core Philosophy
 
 - **Production-Ready Code**: This is the main production GEMM engine - all code should be robust and validated
 - **Modular Architecture**: MS2.0 design with clear module boundaries and interfaces
 - **Incremental Development**: Build, test, and validate incrementally - never make large untested changes
-- **Reference-Based Design**: Always consult SINGLE_ROW_REFERENCE.md and STATE_TRANSITIONS_REFERENCE.md
+- **Reference-Based Design**: Always consult MULTI_ROW_REFERENCE.md and AMD_GEMM_REFERENCE.md for architectural patterns
+- **AMD Design Patterns**: Adopt ready-valid handshaking, FIFO decoupling, and coding conventions from AMD reference
 
 ## Critical Terminology (MUST READ)
 
@@ -39,10 +48,22 @@ The **gemm/** directory contains the production MS2.0 GEMM (General Matrix Multi
 - **Right UGD length (C/column/dim_c/right_ugd_len)**: Number of UGD vectors to process on right
 - **UGD vector length (V/inner dimension/dim_v/vec_len)**: Number of Native Vectors per UGD
 
-**Architecture Terms:**
-- **Row**: A row of compute engine tiles in 2-D architecture (mapped to one DDR channel)
-- **Column**: A single compute tile (in single-row architecture) or column of tiles (in 2-D architecture)
-  - CRITICAL: In single-row mode, "column" = "compute tile" = one compute engine
+**Architecture Terms (2-D MultiRow):**
+- **Row**: A row of compute tiles, each row has its own row_bram for activations (mapped to GDDR6 channel)
+- **Column**: A column of compute tiles, all columns share weight data from mlp_bram
+- **Tile**: Single compute unit at intersection of row and column
+- **num_rows_gp**: Number of rows in the array (default: 16)
+- **num_cols_gp**: Number of columns in the array (default: 16)
+
+**Memory Block (128 NVs):**
+- **Format**: 16 exponent lines + 512 mantissa lines = 528 lines total (256-bit wide)
+- **Exponent**: 128 NVs × 4 bytes = 512 bytes → 16 lines
+- **Mantissa**: 128 NVs × 128 bytes = 16384 bytes → 512 lines
+
+**V/C Distribution (Work Partitioning):**
+- **V across rows**: First (V % num_rows) rows get (V / num_rows + 1) NVs
+- **C across columns**: First (C % num_cols) columns get (C / num_cols + 1) NVs
+- **Pattern**: Distribute evenly, remainder goes to lower-indexed partitions
 
 **Memory Management Rule:**
 - **Maximum safe back-to-back FETCH-DISPATCH operations = Number of Columns**
@@ -88,15 +109,16 @@ The GEMM hardware is actively used by the **model_converter** project (`/home/wo
 - **Circular Buffer Pattern**: Dual-pointer management (rd_ptr/wr_ptr) for streaming results
 - **Hierarchical Buffering**: Multiple BRAM levels to decouple processing stages
 
-### MS2.0 Design Principles
-- **Modular Compute Engine**: Hierarchical components with clear interfaces
-- **Multi-Tile Architecture**: Supports 1-24 parallel compute tiles (currently 2 tiles instantiated)
-  - Single-tile mode (col_en=0x000001): Works as original single compute engine
-  - Multi-tile mode (col_en=0x000003): Distributes work across 2 tiles
-  - Incremental fallback: Setting col_en=0x000001 seamlessly falls back to single-tile
-- **Command-Driven Architecture**: 5-opcode microcode for flexible matrix operations
-- **Dual BRAM Interface**: Parallel left/right matrix reads for improved throughput
-- **Pipeline Decoupling**: Each stage can operate independently with FIFO interfaces
+### MS2.0 → 2-D MultiRow Design Principles
+- **2-D Tile Array**: 16×16 compute tiles with row/column organization
+- **Separate Memory Paths**:
+  - **row_bram**: Per-row activation storage (left matrix), one per row
+  - **mlp_bram**: Shared weight storage (right matrix), broadcast to all columns
+- **Ready-Valid Handshaking**: All inter-module communication uses ready/valid protocol
+- **FIFO Decoupling**: FIFOs between pipeline stages for flow control and timing isolation
+- **V/C Work Distribution**: Automatic partitioning across rows (V) and columns (C)
+- **Column Adder Tree**: FP accumulation across rows within each column
+- **Output Buffer**: Synchronizes results from all columns before output
 
 ### State Machine Philosophy
 - **Master Control FSM**: Centralized command parsing and orchestration
@@ -124,23 +146,15 @@ The GEMM hardware is actively used by the **model_converter** project (`/home/wo
 - **Result Validation**: Never assume - always verify against references
 - **Sanity Checks**: Run `test_registers` after every hardware operation
 
-### Multi-Tile Testing Status (Nov 10, 2025)
-- **Current Implementation**: 2 tiles instantiated (NUM_TILES=2 in engine_top.sv)
-- **Verified Modes**:
-  - Single-tile (col_en=0x000001): All 10 standard tests passing with golden comparison
-  - Two-tile (col_en=0x000003): B2_C4_V2_2T test passing (result count verified)
-- **Dispatcher Modes Working**:
-  - BROADCAST: Replicates data to all enabled tiles (for left matrix/activations)
-  - DISTRIBUTE: Round-robin distribution at batch granularity (for right matrix/weights)
-- **Note**: Multi-tile tests currently skip golden comparison (no reference files generated yet)
-
 ## When to Update This File
 
 Update CLAUDE.md only for:
-- Major architectural shifts (e.g., MS1.0 → MS2.0 migration)
+- Major architectural shifts (e.g., MS2.0 → 2-D MultiRow migration)
 - Changes in development philosophy or workflow
 - New integration points with other projects
 - Critical operational procedure changes
+
+**Current Status**: Transitioning from single-row multi-tile to 2-D MultiRow architecture. Reference manuals (MULTI_ROW_REFERENCE.md, AMD_GEMM_REFERENCE.md) define target architecture.
 
 For technical details, specifications, and implementation notes, update README.md instead.
 
@@ -151,10 +165,20 @@ For technical details, specifications, and implementation notes, update README.m
 - **Technical Documentation**: See [REFERENCES.md](REFERENCES.md)
 
 ### Key Reference Documents
+
+**Primary References (2-D MultiRow):**
+- **[MULTI_ROW_REFERENCE.md](MULTI_ROW_REFERENCE.md)**: Complete 2-D array architecture, memory layout, data flow, ready-valid patterns
+- **[AMD_GEMM_REFERENCE.md](AMD_GEMM_REFERENCE.md)**: AMD reference design analysis, reusable patterns, coding conventions to adopt
+
+**Legacy References (Single-Row):**
 - **[STATE_TRANSITIONS_REFERENCE.md](STATE_TRANSITIONS_REFERENCE.md)**: FSM state transitions and command flow
-- **[SINGLE_ROW_REFERENCE.md](SINGLE_ROW_REFERENCE.md)**: Multi-tile architecture specification (24-tile expansion plan)
+- **[SINGLE_ROW_REFERENCE.md](SINGLE_ROW_REFERENCE.md)**: Single-row multi-tile architecture (basis for 2-D expansion)
 - **[RESULT_BUFFER_REFERENCE.md](RESULT_BUFFER_REFERENCE.md)**: Result buffering and arbitration
 - **[MULTI_TILE_DISPATCH_REFERENCE.md](MULTI_TILE_DISPATCH_REFERENCE.md)**: Tile dispatch mechanisms
+
+**External References:**
+- **AMD GEMM RTL**: `/home/dev/Dev/elastix_gemm/amd_gemm/ip/` - Reference implementation (READ-ONLY)
+- **AMD Common IP**: `/home/dev/Dev/elastix_gemm/amd_gemm/ip/common/` - Reusable FIFO, adapter, BRAM modules
 
 ---
 

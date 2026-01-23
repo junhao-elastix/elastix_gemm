@@ -37,6 +37,7 @@ MLP_RTL := $(GEMM_RTL)
 
 # Compilation flags
 VLOG_OPTIONS := +define+SIMULATION
+VLOG_OPTIONS += +define+SPEEDSTER7T_SIMULATION
 VLOG_OPTIONS += -sv
 VLOG_OPTIONS += -timescale "1ps/1ps"
 VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal
@@ -76,6 +77,7 @@ compile: create_library
 		$(MLP_RTL)/weight_bram.sv \
 		$(MLP_RTL)/comp_mlp_bram.sv \
 		$(MLP_RTL)/comp_mlp_bram_col.sv \
+		$(MLP_RTL)/comp_stack_fifo.sv \
 		$(MLP_RTL)/fp24_add.sv \
 		$(MLP_RTL)/fp_to_int.sv \
 		$(MLP_RTL)/int_to_fp.sv \
@@ -84,9 +86,9 @@ compile: create_library
 		$(MLP_RTL)/comp_mlp_bram_col_wrapper.sv \
 		$(MLP_RTL)/comp_row_bram.sv \
 		$(MLP_RTL)/comp_bram_fill_ctrl.sv \
-		$(MLP_RTL)/comp_mlp_dispatch.sv \
 		$(MLP_RTL)/comp_mlp_col_ctrl.sv \
 		$(MLP_RTL)/fp24_to_fp16.sv \
+		$(MLP_RTL)/comp_mlp_dispatch.sv \
 		$(MLP_RTL)/compute_engine_mlp.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: MLP RTL compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling testbench..." | tee -a $(LOG_FILE)

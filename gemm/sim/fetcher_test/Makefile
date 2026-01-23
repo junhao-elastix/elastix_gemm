@@ -20,15 +20,21 @@ GEMM_TB = ../../src/tb
 # Include paths
 INCLUDES = +incdir+$(GEMM_INC) +incdir+$(ACE_INSTALL_DIR)/libraries/
 
+# =========================================================================
+# Debug Macros - Uncomment to enable verbose output per module
+# =========================================================================
+DEBUG_OPTIONS := +define+DEBUG_FETCHER           # fetcher_2d.sv (enabled by default for unit test)
+# =========================================================================
+
 # Testbench sources
 TB_SOURCES = \
 	$(GEMM_TB)/tb_memory_model_realistic.sv \
 	tb_fetcher.sv
 
-# RTL sources (minimal set for fetcher + BRAM)
+# RTL sources (minimal set for fetcher_2d + FIFO)
 RTL_SOURCES = \
-	$(GEMM_RTL)/fetcher_opt.sv \
-	$(GEMM_RTL)/dispatcher_bram.sv
+	$(GEMM_RTL)/fetcher_2d.sv \
+	$(GEMM_RTL)/flex_fifo.sv
 
 # NAP wrapper (contains t_AXI4 interface)
 NAP_WRAPPER = $(GEMM_RTL)/nap_responder_wrapper.sv
@@ -52,7 +58,7 @@ compile: $(WORK)
 		$(GEMM_INC)/gemm_pkg.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: Package compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling testbench and RTL..." | tee -a $(LOG_FILE)
-	@$(VLOG) -sv $(INCLUDES) +define+SIMULATION \
+	@$(VLOG) -sv $(INCLUDES) +define+SIMULATION $(DEBUG_OPTIONS) \
 		-err VCP2675 W1 \
 		-work $(WORK) \
 		$(NAP_WRAPPER) \

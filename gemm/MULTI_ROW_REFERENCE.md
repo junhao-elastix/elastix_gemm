@@ -6,9 +6,11 @@
    - [GFP8 Number Format](#gfp8-number-format)
    - [Terminology and Default Configurations](#terminology-and-default-configurations)
 2. [General Interpretation of Compute Pattern](#general-interpretation-of-compute-pattern)
+   - [Partition Functions](#partition-functions)
    - [Normal GEMM Compute Pattern](#normal-gemm-compute-pattern)
-   - [1-D GEMM (one-row) Compute Pattern](#1-d-gemm-one-row-compute-pattern)
-   - [2-D GEMM (multi-row) Compute Pattern](#2-d-gemm-multi-row-compute-pattern)
+   - [1-D GEMM (One-Row) Compute Pattern](#1-d-gemm-one-row-compute-pattern)
+   - [2-D GEMM (Multi-Row) Compute Pattern](#2-d-gemm-multi-row-compute-pattern)
+   - [Hardware Implementation: Per-Row Memory Model](#hardware-implementation-per-row-memory-model)
    - [Compute Pattern Summary](#compute-pattern-summary)
 3. [Architecture Overview](#architecture-overview)
    - [Master Control (MC)](#master-control-mc)
@@ -22,7 +24,7 @@
    - [master_control](#master_control)
    - [Dispatcher Control](#dispatcher-control)
    - [Fetcher](#fetcher)
-   - [MLP Dispatch Controller](#mlp-dispatch-controller)
+   - [Dispatcher](#dispatcher)
    - [Compute Engine (MLP-Based)](#compute-engine-mlp-based)
    - [MLP BRAM Column Wrapper](#mlp-bram-column-wrapper-comp_mlp_bram_col_wrapper)
    - [Dispatcher Control and Compute Engine Overview](#dispatcher-control-and-compute-engine-overview)
@@ -112,104 +114,168 @@ The signals on the interfaces should generally follow this naming convention:
   - Default: 16 rows, fixed to the number of available DDR6 channels.
 ---
 ## General Interpretation of Compute Pattern
-### Normal GEMM Compute Pattern:
+
+This section describes the mathematical computation patterns, progressing from basic GEMM to the parallelized 2-D architecture. The Python model (`gemm/src/py/multi-row_gemm.py`) implements these patterns and serves as the verification reference.
+
+### Partition Functions
+
+Both 1-D and 2-D GEMM use the same distribution algorithm for partitioning work:
+
+```cpp
+// Partition function: distributes 'total' items across 'num_partitions' units
+// First (total % num_partitions) units get (total / num_partitions + 1) items
+// Remaining units get (total / num_partitions) items
+void get_partition(int idx, int total, int num_partitions, 
+                   int* start, int* count) {
+    int base = total / num_partitions;
+    int rem = total % num_partitions;
+    if (idx < rem) {
+        *count = base + 1;
+        *start = idx * (base + 1);
+    } else {
+        *count = base;
+        *start = rem * (base + 1) + (idx - rem) * base;
+    }
+}
+```
+
+### Normal GEMM Compute Pattern
+
 ```cpp
 // GEMM: O = A * W
-// Activation has dimensions B x V (B rows, V columns)
-// Weights has dimensions V x C (V rows, C columns)  
-// Outputs has dimensions B x C (B rows, C columns)
+// Activation A has dimensions B x V (B batches, V inner dimension)
+// Weights W has dimensions V x C (V inner dimension, C columns)  
+// Output O has dimensions B x C (B batches, C columns)
 for (int b = 0; b < B; ++b) {
-  for (int c = 0; c < C; ++c) {
-    float sum = 0.0;
-    for (int v = 0; v < V; ++v) {
-      sum += A[b][v] * W[v][c];
-    }
-    O[b][c] = sum;
-  }
-}
-```
-
-### 1-D GEMM (one-row) Compute Pattern:
-```cpp
-int c_per_tile = C / num_tiles;
-for (int c = 0; c < num_tiles; ++c) {
-  // Below is unrolled by the factor of num_tiles per row
-  // Each tile handles c_per_tile contiguous columns
-  // num_tiles * c_per_tile = C (total columns)
-  for (int b = 0; b < B; ++b) {
-    for (int cc = 0; cc < c_per_tile; ++cc) {
-      float sum = 0.0;
-      int actual_col = c * c_per_tile + cc;  
-      // Tile c handles columns [c*c_per_tile, (c+1)*c_per_tile)
-      for (int v = 0; v < V; ++v) {
-        sum += A[b][v] * W[v][actual_col];
-      }
-      O[b][actual_col] = sum;
-    }
-  }
-}
-```
-
-### 2-D GEMM (multi-row) Compute Pattern:
-```cpp
-// Need to initialize O to zero.
-for (int r = 0; r < num_rows; ++r) {
-  // Determine V range for row r.
-  // Corresponds to 'UGD Length' distribution in hardware (see Command 0xF0).
-  // Logic: First (V % num_rows) rows get (V / num_rows) + 1 elements.
-  //        Remaining rows get (V / num_rows) elements.
-  int v_base = V / num_rows;
-  int v_rem = V % num_rows;
-  int v_count, v_start;
-  if (r < v_rem) {
-    v_count = v_base + 1;
-    v_start = r * (v_base + 1);
-  } else {
-    v_count = v_base;
-    v_start = v_rem * (v_base + 1) + (r - v_rem) * v_base;
-  }
-
-  for (int c = 0; c < num_tiles; ++c) {
-    // Determine C range for tile c.
-    // Corresponds to 'Right UGD Length' (C) distribution across tiles.
-    // Logic: First (C % num_tiles) tiles get (C / num_tiles) + 1 columns.
-    //        Remaining tiles get (C / num_tiles) columns.
-    int c_base = C / num_tiles;
-    int c_rem = C % num_tiles;
-    int c_count, c_start;
-    if (c < c_rem) {
-      c_count = c_base + 1;
-      c_start = c * (c_base + 1);
-    } else {
-      c_count = c_base;
-      c_start = c_rem * (c_base + 1) + (c - c_rem) * c_base;
-    }
-
-    for (int b = 0; b < B; ++b) {
-      for (int cc = 0; cc < c_count; ++cc) {
-        float partial_sum = 0.0;
-        int actual_col = c_start + cc;  
-        
-        for (int vv = 0; vv < v_count; ++vv) {
-          int actual_v = v_start + vv;
-          partial_sum += A[b][actual_v] * W[actual_v][actual_col];
+    for (int c = 0; c < C; ++c) {
+        float sum = 0.0;
+        for (int v = 0; v < V; ++v) {
+            sum += A[b][v] * W[v][c];
         }
-        // Accumulate partial sum (reduction across rows needed)
-        O[b][actual_col] += partial_sum;
-      }
+        O[b][c] = sum;
     }
-  }
 }
 ```
-This pseudo code is verified [here](/home/dev/Dev/elastix_gemm/gemm/src/py/multi-row_gemm.py).
+
+### 1-D GEMM (One-Row) Compute Pattern
+
+Parallelizes across the column dimension using `num_tiles` compute tiles. Each tile handles a subset of output columns computed by `get_partition()`.
+
+```cpp
+// PARALLEL across num_tiles (each tile executes independently)
+parallel_for (int tile = 0; tile < num_tiles; ++tile) {
+    // Determine C range for this tile using partition function
+    int c_start, c_count;
+    get_partition(tile, C, num_tiles, &c_start, &c_count);
+    
+    // Sequential computation within tile
+    for (int b = 0; b < B; ++b) {
+        for (int cc = 0; cc < c_count; ++cc) {
+            float sum = 0.0;
+            int actual_col = c_start + cc;
+            for (int v = 0; v < V; ++v) {
+                sum += A[b][v] * W[v][actual_col];
+            }
+            O[b][actual_col] = sum;
+        }
+    }
+}
+```
+
+### 2-D GEMM (Multi-Row) Compute Pattern
+
+Parallelizes across both rows (V dimension) and tiles (C dimension). Each row computes partial sums that must be reduced to produce final results.
+
+```cpp
+// Initialize output to zero (required for accumulation)
+for (int b = 0; b < B; ++b)
+    for (int c = 0; c < C; ++c)
+        O[b][c] = 0.0;
+
+// PARALLEL across num_rows (each row executes independently)
+parallel_for (int row = 0; row < num_rows; ++row) {
+    // Determine V range for this row
+    int v_start, v_count;
+    get_partition(row, V, num_rows, &v_start, &v_count);
+    
+    // PARALLEL across num_tiles (each tile executes independently)
+    parallel_for (int tile = 0; tile < num_tiles; ++tile) {
+        // Determine C range for this tile
+        int c_start, c_count;
+        get_partition(tile, C, num_tiles, &c_start, &c_count);
+        
+        // Sequential computation within (row, tile)
+        for (int b = 0; b < B; ++b) {
+            for (int cc = 0; cc < c_count; ++cc) {
+                float partial_sum = 0.0;
+                int actual_col = c_start + cc;
+                
+                for (int vv = 0; vv < v_count; ++vv) {
+                    int actual_v = v_start + vv;
+                    partial_sum += A[b][actual_v] * W[actual_v][actual_col];
+                }
+                // ATOMIC: Accumulate partial sum (reduction across rows)
+                O[b][actual_col] += partial_sum;
+            }
+        }
+    }
+}
+```
+
+### Hardware Implementation: Per-Row Memory Model
+
+In hardware, each row has its own GDDR6 channel with **pre-partitioned data**. This eliminates the need to compute `v_start` at runtime:
+
+```cpp
+// Hardware model: Each row has its own memblk with pre-partitioned data
+// Row r's memblk contains ONLY that row's V slice
+// Therefore: v_start = 0, and data is accessed sequentially
+
+parallel_for (int row = 0; row < num_rows; ++row) {
+    // V partition for this row (calculated by Master Control)
+    int v_count = get_v_count_for_row(row, V, num_rows);
+    
+    // Row's local data: A_local[B][v_count], W_local[v_count][c_count]
+    // Accessed with v_start = 0 (data is pre-partitioned in per-row memblk)
+    
+    parallel_for (int tile = 0; tile < num_tiles; ++tile) {
+        int c_count = get_c_count_for_tile(tile, C, num_tiles);
+        
+        for (int b = 0; b < B; ++b) {
+            for (int cc = 0; cc < c_count; ++cc) {
+                float partial_sum = 0.0;
+                for (int v = 0; v < v_count; ++v) {  // Local v index, not global
+                    partial_sum += A_local[b][v] * W_local[v][cc];
+                }
+                result_fifo.push(partial_sum);  // Sent to Result Collection
+            }
+        }
+    }
+}
+
+// Result Collection: Reduce partial sums from all rows
+for (int b = 0; b < B; ++b) {
+    for (int c = 0; c < C; ++c) {
+        O[b][c] = sum_across_all_rows(b, c);
+    }
+}
+```
+
+This compute pattern is implemented and verified in the Python model at `gemm/src/py/multi-row_gemm.py`.
 
 ### Compute Pattern Summary
 
-**Normal GEMM**: Computes a full matrix multiplication O = A × W where A is B×V, W is V×C, and O is B×C. For each output element O[b][c], the entire dot product across all V elements is computed serially.
+| Pattern | Parallelism | Reduction Required | Key Characteristic |
+|---------|-------------|-------------------|-------------------|
+| **Normal GEMM** | None | No | Sequential O = A x W |
+| **1-D GEMM** | num_tiles (C dimension) | No | Each tile computes complete dot products |
+| **2-D GEMM** | num_rows x num_tiles | Yes (across rows) | Each row computes partial sums |
 
-**1-D GEMM (One-Row)**: Parallelizes across the column dimension. The `num_tiles` compute tiles each handle `c_per_tile = C/num_tiles` contiguous output columns. Each tile independently computes the full dot product (across all V) for its assigned columns. No reduction is needed since each output element is computed entirely by one tile. This organization is already implemented.
-
-**2-D GEMM (Multi-Row)**: Parallelizes across both the column dimension (via tiles) and the V dimension (via rows). The 1-D GEMM (one-row) hardware is roughly replicated `num_rows` times, with minor tweaks in the controllers.  Each of the `num_rows` rows handles a slice of `v_per_row = V/num_rows` elements from the V dimension. Each of the `num_tiles` tiles per row handles `c_per_tile = C/num_tiles` contiguous columns. Since the dot product is split across rows, each row computes a partial sum for each output element. These partial sums must be accumulated (reduced) across all rows to produce the final output. The output must be initialized to zero before computation begins. This organization still outputs the same number of outputs (num_tiles) at once, the same as the 1-D GEMM organization, after the reduction on each column.
+**Key Points:**
+- **Partition Function**: Both V (across rows) and C (across tiles) use the same remainder-distribution algorithm
+- **Per-Row Memblk**: Each row has pre-partitioned data, so local V indices start at 0
+- **Reduction**: 2-D GEMM requires summing partial results across all rows for each output element
+- **B Loop**: The batch dimension (B) is always sequential, not parallelized
 
 --- 
 
@@ -224,7 +290,7 @@ It is the global control unit group. The components in this group decode the com
 It consists of the Fetcher and Dispatcher. It serves the FETCH and DISPATCH commands. Briefly speaking, the Fetcher fetches a memory block from DDR and pushes into a FIFO. The Dispatcher consumes that FIFO and routes to the local buffers in the compute engines. There is one DC per row. 
 
 ### Compute Engine (CE)
-Each compute engine is a 1-D array of compute tiles, or compute columns. The compute engine serves the MATMUL (or TILE) command. The compute unit is called Machine Learning Processor (MLP) in Achronix FPGAs. Under the current configuration, each MLP computes two columns. Logically, one MLP represents two compute tiles. Each row in the 2-D GEMM has one compute engine, and each CE computes multiple columns, therefore constituting the 2-D organization. 
+Each compute engine is a 1-D array of compute tiles, or compute columns, organized into a shared Activation Buffer (`row_bram`) and a compute array (`comp_mlp_bram_col_wrapper`). The compute engine serves the MATMUL (or TILE) command. The compute unit is called Machine Learning Processor (MLP) in Achronix FPGAs. Under the current configuration, each MLP computes two columns. Logically, one MLP represents two compute tiles. Each row in the 2-D GEMM has one compute engine, and each CE computes multiple columns, therefore constituting the 2-D organization. 
 
 ### Result Collection (RC)
 It sits outside of the rows and collects all the results from each CE columns. It serves the READOUT command. If we have a 2-D GEMM with 16 rows and 32 columns, each compute engine will output 32 results in parallel, and there are 16 compute engines. RC will need to reduce all rows on the column, as we have discussed in the Compute Pattern section. Therefore, RC will also only produce 32 results, one for each column. There is only one RC globally. **IMPORTANT** There are cases where not all rows have meaningful results, in which case these rows needs to be turned off when performing the reduction. We will discuss these cases later.
@@ -419,7 +485,7 @@ Efficiently manages high-bandwidth data transfers from GDDR6 memory to a Streami
 - **Data Unpacking**: Separates Exponents and Mantissas from the memory block.
 - **Destination**: Writes to the Streaming FIFO interface instead of addressing `row_bram` directly.
 
-### MLP Dispatch Controller
+### Dispatcher
 #### Functionality
 Consumes the Fetch FIFO and manages the writing of **Activation** data to the `row_bram` and **Weight** data directly into the distributed `mlp_bram`.
 
@@ -433,10 +499,21 @@ Consumes the Fetch FIFO and manages the writing of **Activation** data to the `r
 
 ### Compute Engine (MLP-Based)
 #### Functionality
-The top-level execution unit for a row. It contains the local activation storage (`row_bram`) and the compute array.
+The top-level execution unit for a row. It is organized into two primary components:
+1. **row_bram**: A shared Activation Buffer for storing the "Left" matrix data.
+2. **comp_mlp_bram_col_wrapper**: The compute array consisting of multiple compute columns and their local weight buffers (`mlp_bram`).
+
+#### Inputs and Control
+The Compute Engine receives two distinct types of inputs:
+- **Control Path**: Decoded arguments and parameters from the `MATMUL` (or `TILE`) command, provided by Master Control.
+- **Data Path**: Two **identical** data paths from Dispatcher Control. One path fills the `row_bram` with activations, and the other fills the distributed `mlp_bram` with weights.
 
 #### Implementation Details
-- **Left-Only Storage**: `row_bram` serves **only** as the Activation Buffer. It stores the "Left" matrix data reused across columns.
+- **Memory Primitives**: Both `row_bram` and `mlp_bram` are essentially based on `ACX_BRAM72K` memory primitives.
+- **Direct Write**: The write operation to both `row_bram` and `mlp_bram` is driven directly by Dispatcher Control line-by-line during `DISPATCH` phases.
+- **Activation Buffer (`row_bram`)**:
+  - Serves **only** as the Activation Buffer for Left matrix data reused across columns.
+  - Implemented using inferred memory logic, which is suitable for the shared activation access pattern.
 - **Command Handling**:
   - `FETCH` (Left): Fills `row_bram` via the Dispatcher.
   - `FETCH` (Right) + `DISPATCH`: Operates as a streaming pipeline. The Dispatcher streams data from the Fetch FIFO directly into the `comp_mlp_bram_col_wrapper` (local buffer).
@@ -450,10 +527,18 @@ The core computational kernel comprising 16 Compute Columns (derived from 8 MLPs
 - **4-Stack Architecture**: Each column contains 4 parallel "stacks". This increases throughput 4x compared to a single-stack design.
   - **Loading**: Accepts 4 chunks of data (128 elements total) in parallel during DISPATCH, completing an NV in 4 cycles.
   - **Computing**: Streams 4 partial dot products in parallel during TILE.
-- **Pipeline**: Features an integer-domain adder pipeline to sum the partial results from the 4 stacks, improving accuracy before the final FP16 rounding (FP24 -> Int -> Sum -> FP16).
+- **Result Production and the Adder Tree**:
+  - Each of the 16 columns produces exactly **one final result** for the entire dot product calculation (summing across all $V$ elements).
+  - The **Integer-Domain Adder Tree** (Pipeline) sits at the end of the stacks. It reduces the 4 partial products (one from each stack) into a single high-precision intermediate value for the column.
+- **Two-Stage Accumulation**:
+  - **Stage 1 (Internal)**: Accumulation over the inner dimension ($V$) happens inside the MLP primitives using the `accumulate` signal.
+  - **Stage 2 (Parallel)**: Summation across the 4 parallel stacks happens in the external adder pipeline.
+- **Rounding and Output**:
+  - The pipeline performs a single rounding operation at the very end (FP24 -> Int -> Sum -> FP16) to minimize precision loss.
+  - Results are output as **FP16** values.
 - **MLP and mlp_bram Relation**: 
   - Each `MLP` is tightly coupled with its own `mlp_bram` (local buffer). 
-  - The `mlp_bram` provides the "Right" matrix data (weights) directly to the MLP multipliers via dedicated internal buses, bypassing the shared `row_bram`.
+  - The `mlp_bram` provides the "Right" matrix data (weights) directly to the MLP multipliers via dedicated internal buses.
   - In a 2-bank configuration, one `mlp_bram` word (144 bits) serves two logical columns (72 bits each), enabling one MLP to process two columns simultaneously.
 
 > **IMPORTANT**: The files `comp_mlp_bram_col.sv`, `comp_mlp_bram.sv`, and all modules below them are verified low-level primitives and **SHOULD NEVER BE MODIFIED**. Any architectural changes should be implemented at the `comp_mlp_bram_col_wrapper.sv` level or above.

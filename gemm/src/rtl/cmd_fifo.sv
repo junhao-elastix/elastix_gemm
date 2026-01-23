@@ -29,7 +29,7 @@ import gemm_pkg::*;
     output logic                        o_empty,
 
     // Status
-    output logic [6:0]                  o_count,
+    output logic [12:0]                 o_count,
 
     // Debug
     output logic [15:0]                 o_total_writes  // Total writes ever (for debug)
@@ -167,7 +167,7 @@ import gemm_pkg::*;
     assign o_full  = full_reg;
     assign o_empty = empty_reg;
     assign o_afull = afull_reg;
-    assign o_count = count_reg;
+    assign o_count = {6'b0, count_reg};  // Zero-extend to match interface
     assign o_total_writes = total_writes;
 
     // ===================================================================

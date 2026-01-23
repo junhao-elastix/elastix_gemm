@@ -28,6 +28,11 @@ def get_v_partition(r, V, num_rows):
     """
     v_base = V // num_rows
     v_rem = V % num_rows
+    # If num_rows == 16, we can compute division and modulus using only
+    # shifts and subtracts which are cheaper on some hardware:
+    #   v_base = V >> 4            # divide by 16
+    #   v_rem  = V - (v_base << 4) # modulus by 16
+    # This produces the same results as '//' and '%' for num_rows==16.
     if r < v_rem:
         v_count = v_base + 1
         v_start = r * (v_base + 1)
