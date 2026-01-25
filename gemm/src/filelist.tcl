@@ -1,8 +1,6 @@
 set rtl_verilog_files {
 # Package must be compiled first
 ../include/gemm_pkg.sv
-# Top level
-elastix_gemm_top.sv
 # FLR responder block
 flr_responder.sv
 # MSI-X interrupt support
@@ -21,19 +19,11 @@ nap_responder_wrapper.sv
 # Elastix GEMM Engine - Command/Control
 cmd_fifo.sv
 csr_to_fifo_bridge.sv
-master_control.sv
-# Elastix GEMM Engine - Memory Hierarchy
-dispatcher_control.sv
+# Elastix GEMM Engine - Memory/Result Path
 dma_bram_bridge.sv
-fetcher.sv
-# Elastix GEMM Engine - Result Path
 flex_fifo.sv
 result_to_dma.sv
-result_fifo_to_simple_bram.sv
 shift_reg.sv
-# Elastix GEMM Engine - MLP Compute (Single-Row Architecture - Legacy)
-engine_top.sv
-compute_engine_mlp.sv
 # Elastix GEMM Engine - 2D Multi-Row Architecture (16 rows x 16 cols)
 engine_top_2d.sv
 master_control_2d.sv
@@ -43,23 +33,19 @@ fetcher_2d.sv
 compute_engine_2d.sv
 result_collector_2d.sv
 comp_row_bram.sv
-comp_bram_fill_ctrl.sv
-comp_mlp_col_ctrl.sv
 weight_bram.sv
-comp_mlp_bram.sv
-comp_mlp_bram_col.sv
-comp_stack_fifo.sv
-comp_mlp_bram_col_wrapper.sv
+comp_MLP.sv
+comp_MLPRow.sv
+comp_MLPStack.sv
+comp_MLPStack_oFIFO.sv
 comp_mlp_dot16_bfp8.sv
-comp_mlp_dot16_int8.sv
-# FP Arithmetic
-fp24_add.sv
-fp24_to_fp16.sv
 # Integer-Domain FP Adder Pipeline (for improved numerical accuracy)
 fp_to_int.sv
 int_to_fp.sv
 int_adder_tree.sv
 comp_fp_adder_pipeline.sv
+# Top level - must be compiled last (after all dependencies)
+elastix_gemm_top.sv
 }
 
 # WARNING: do not modify the files below this line unless you know what you are doing

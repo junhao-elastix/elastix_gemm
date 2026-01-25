@@ -75,7 +75,6 @@ compile: create_library
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
 		$(GEMM_INC)/gemm_pkg.sv \
-		$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
 		$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
 		$(GEMM_RTL)/weight_bram.sv \
 		$(GEMM_RTL)/comp_MLP.sv \

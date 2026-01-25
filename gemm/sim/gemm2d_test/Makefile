@@ -99,7 +99,6 @@ compile: create_library
 	@echo "Compiling MLP primitives..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
-		$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
 		$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
 		$(GEMM_RTL)/weight_bram.sv \
 		$(GEMM_RTL)/comp_MLP.sv \
@@ -202,7 +201,6 @@ compile_multi: create_library
 	@echo "Compiling MLP primitives..." | tee -a $(LOG_FILE_MULTI)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
-		$(GEMM_RTL)/comp_mlp_dot16_int8.sv \
 		$(GEMM_RTL)/comp_mlp_dot16_bfp8.sv \
 		$(GEMM_RTL)/weight_bram.sv \
 		$(GEMM_RTL)/comp_MLP.sv \

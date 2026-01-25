@@ -157,6 +157,17 @@ import gemm_pkg::*;
     logic [6:0]           nv_left_rd_idx;
 
     // =========================================================================
+    // BRAM Pipeline Signals (for 1-cycle read latency)
+    // =========================================================================
+    logic        bram_rd_issued;       // Read address presented to BRAM
+    logic        bram_data_valid;      // BRAM data valid (1 cycle after rd_issued)
+    logic        new_dot_d1;           // Delayed control signals to match data
+    logic        last_nv_d1;
+    logic        last_matmul_d1;
+    logic [1:0]  l_cnt_d1;             // Delayed l_cnt for mux selection
+    logic [9:0]  rd_base_addr_d1;      // Delayed MLP read base address
+
+    // =========================================================================
     // MLPStack Signals
     // =========================================================================
     logic [15:0] mlp_result_fp16 [NUM_COLUMNS-1:0];
@@ -195,6 +206,7 @@ import gemm_pkg::*;
                     state_next = CE_RUNNING;
             end
             CE_RUNNING: begin
+                // Use current last_matmul - counter values match the current output
                 if (act_valid && act_ready && last_matmul)
                     state_next = CE_IDLE;
             end
@@ -205,10 +217,67 @@ import gemm_pkg::*;
     // =========================================================================
     // Control Signal Generation (combinational)
     // =========================================================================
-    assign act_valid   = (state_reg == CE_RUNNING);
+    // bram_rd_issued: We issue a read when in RUNNING state and downstream is ready
+    // (or when starting the first read before handshake)
+    assign bram_rd_issued = (state_reg == CE_RUNNING) && (act_ready || !bram_data_valid);
+
+    // Control signals computed from current counter state (before BRAM latency)
     assign new_dot     = (v_cnt == 8'd0) && (l_cnt == 2'd0);
     assign last_nv     = (v_cnt == (V_reg - 8'd1)) && (l_cnt == 2'd3);
     assign last_matmul = (b_cnt == (B_reg - 8'd1)) && (cg_cnt == (num_col_groups - 4'd1)) && last_nv;
+
+    // act_valid: For registered BRAM reads, gate with bram_data_valid
+    // This ensures we wait for valid data after NV transitions
+    assign act_valid   = (state_reg == CE_RUNNING) && bram_data_valid;
+
+    // =========================================================================
+    // NV Transition Detection
+    // =========================================================================
+    // Detect when we're finishing an NV and need new data
+    // Stall when l=3 handshake UNLESS it's the last operation (last_matmul)
+    // After l=3, counters update but BRAM read was with old counters - need to wait
+    logic nv_transition;
+    assign nv_transition = (l_cnt == 2'd3) && (act_valid && act_ready) && !last_matmul;
+
+    // =========================================================================
+    // BRAM Pipeline Registers (for 1-cycle read latency)
+    // =========================================================================
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            bram_data_valid  <= 1'b0;
+            new_dot_d1       <= 1'b0;
+            last_nv_d1       <= 1'b0;
+            last_matmul_d1   <= 1'b0;
+            l_cnt_d1         <= 2'd0;
+            rd_base_addr_d1  <= 10'd0;
+        end else begin
+            // Pipeline the data valid and control signals to match BRAM latency
+            if (state_reg == CE_IDLE) begin
+                // Clear pipeline when not running
+                bram_data_valid  <= 1'b0;
+                new_dot_d1       <= 1'b0;
+                last_nv_d1       <= 1'b0;
+                last_matmul_d1   <= 1'b0;
+                l_cnt_d1         <= 2'd0;
+                rd_base_addr_d1  <= 10'd0;
+            end else if (nv_transition) begin
+                // When transitioning to a new NV, invalidate current data
+                // Wait for new read with updated counters
+                bram_data_valid  <= 1'b0;
+            end else if (bram_rd_issued) begin
+                // Advance pipeline when read is issued
+                bram_data_valid  <= 1'b1;
+                new_dot_d1       <= new_dot;
+                last_nv_d1       <= last_nv;
+                last_matmul_d1   <= last_matmul;
+                l_cnt_d1         <= l_cnt;
+                rd_base_addr_d1  <= rd_base_addr_eff;
+            end else if (act_valid && act_ready) begin
+                // Data consumed, wait for next
+                bram_data_valid <= 1'b0;
+            end
+        end
+    end
 
     // =========================================================================
     // Sequential Logic: State Update, Counters, Parameter Registration
@@ -358,6 +427,7 @@ import gemm_pkg::*;
 
     // =========================================================================
     // Activation Payload Mux (select line within NV based on l_cnt)
+    // Use current l_cnt - BRAM outputs all chunks, we select based on current counter
     // =========================================================================
     always_comb begin
         case (l_cnt)
@@ -416,6 +486,7 @@ import gemm_pkg::*;
     ) u_mlp_stack (
         .clk(i_clk),
         .rstn(i_reset_n),
+        // Use current address - matches the current counter state
         .i_rd_base_addr(rd_base_addr_eff),
         .i_wt_wr_en(i_wt_wr_en),
         .i_nv_right_man(i_wt_wr_man),
@@ -426,6 +497,7 @@ import gemm_pkg::*;
         .o_act_ready(act_ready),
         .i_nv_left_man(act_payload_man),
         .i_nv_left_exp(act_payload_exp),
+        // Use current control signals - BRAM outputs all chunks, counter matches current output
         .i_new_dot(new_dot),
         .i_last_nv(last_nv),
         .i_last_matmul(last_matmul),

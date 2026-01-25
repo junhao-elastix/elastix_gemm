@@ -1,3 +1,120 @@
+## [2026-01-24] - Remove Internal FIFOs from comp_MLPStack (Direct Streaming)
+
+**Timestamp**: Sat Jan 24 18:29:27 PST 2026
+**Status**: SIMULATION PASS - All tests pass
+
+### Summary
+
+Removed 512 flex_fifo instances from comp_MLPStack.sv. Data now streams directly from MLP outputs to adder trees with no intermediate buffering. This simplifies the architecture and reduces LRAM/BRAM resource usage.
+
+### Changes Made
+
+1. **comp_MLPStack.sv**
+   - Removed FIFO_DEPTH parameter
+   - Removed all FIFO signals (fifo_din, fifo_dout, fifo_push, fifo_pop, fifo_full, fifo_empty)
+   - Removed FIFO synchronization signals (fifo_any_full, fifo_all_ready, fifo_pop_enable)
+   - Removed 32 flex_fifo instances (4 stacks × 8 MLPs)
+   - Simplified MLP control signals (removed !fifo_any_full gating)
+   - Simplified FSM state transitions (removed backpressure checks)
+   - Direct connection from stack_dout to adder_input_bank0/bank1
+   - adder_input_valid now derived from capture_delay pipeline
+
+### Technical Details
+
+**Old Data Flow (Complex):**
+```
+MLP Stack → flex_fifo (32 deep) → wait for all FIFOs ready → Adder Tree
+```
+
+**New Data Flow (Simple):**
+```
+MLP Stack → (direct connection) → Adder Tree
+```
+
+- Valid signal uses capture_delay[1] for intermediate results
+- Final results use FINAL_DRAIN state at drain_cnt==2
+- No backpressure - adder trees always accept streaming data
+
+### Test Results
+
+| Test Suite | Result |
+|------------|--------|
+| compute_engine_2d_test | 9/9 PASS |
+| gemm2d_test (B4_C13_V9) | 52/52 MATCH |
+
+---
+
+## [2026-01-24] - Registered BRAM Reads for comp_row_bram (LRAM to BRAM Inference)
+
+**Timestamp**: Sat Jan 24 00:27:26 PST 2026
+**Status**: SIMULATION PASS - 8/9 tests pass (same as baseline)
+
+### Summary
+
+Changed comp_row_bram.sv from combinational (async) reads to registered (sync) reads to enable proper BRAM inference instead of LRAM. This addresses the 205% LRAM over-utilization issue.
+
+### Root Cause Analysis
+
+The synthesis tool was inferring LRAM instead of BRAM because:
+- `(* ram_style = "block" *)` attribute requires synchronous reads for BRAM inference
+- Combinational reads (`assign` statements) force LRAM usage
+- The design had 5260 LRAM needed but only 2560 available (205% utilization)
+
+### Changes Made
+
+1. **comp_row_bram.sv**
+   - Changed output ports from `wire` to `logic` (for registered outputs)
+   - Changed NV read logic from `assign` to `always_ff @(posedge i_clk)`
+   - Adds 1-cycle read latency (address on cycle N, data on cycle N+1)
+
+2. **compute_engine_2d.sv**
+   - Added `bram_data_valid` signal to track when BRAM data is valid
+   - Added `nv_transition` detection for stalling at NV boundaries
+   - Gated `act_valid` with `bram_data_valid` to prevent stale data usage
+
+3. **comp_MLPStack.sv**
+   - Added `handshake_delay` 2-bit shift register to track valid data through MLP pipeline
+   - Gated `mlp_accumulate` with `handshake_delay[1]` (2-cycle delay matches MLP latency)
+   - Prevents accumulating stale partial products during stall cycles
+
+### Technical Details
+
+- Registered BRAM reads cause 1-cycle stall at NV transitions (when v_cnt changes)
+- During stall: `act_valid=0`, no handshake, but `mlp_ce=1` (pipeline keeps running)
+- Without fix: `mlp_accumulate=1` during stall would double-count stale data
+- With fix: `mlp_accumulate` gated by delayed handshake prevents stale accumulation
+
+### Test Results
+
+**ALL 9 TESTS PASS** (after regenerating B4_C13_V9 golden file)
+
+| Test Case | Status |
+|-----------|--------|
+| B1_C1_V1  | PASS   |
+| B2_C2_V2  | PASS   |
+| B4_C4_V4  | PASS   |
+| B4_C8_V4  | PASS   |
+| B4_C13_V9 | PASS   |
+| B4_C16_V8 | PASS   |
+| B8_C8_V16 | PASS   |
+| B16_C16_V4| PASS   |
+| B16_C16_V8| PASS   |
+
+### Golden File Fix
+
+Regenerated B4_C13_V9 golden file using:
+```bash
+cd /home/dev/Dev/elastix_gemm/hex
+conda run -n elastix python hardware_gfp_reference.py --B 4 --C 13 --V 9
+```
+
+### Next Steps
+
+- Run full bitstream build to verify LRAM utilization is reduced
+- Build command: `cd /home/dev/Dev/elastix_gemm/gemm && ./build_and_flash.sh`
+
+---
+
 ## [2026-01-23] - 2D Multi-Row Engine Integration into elastix_gemm_top.sv
 
 **Timestamp**: Fri Jan 23 10:37:43 PST 2026

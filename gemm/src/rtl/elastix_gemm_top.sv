@@ -507,10 +507,22 @@ module elastix_gemm_top
     localparam NUM_ROWS_2D = 16;  // 16 rows in 2D array
 
     // NAP placement mapping arrays (column/row per GDDR6 channel)
-    // West side (rows 0-7): NOC column 3, rows 3-10
-    // East side (rows 8-15): NOC column 8, rows 3-10
-    localparam int NAP_COL [0:15] = '{3, 3, 3, 3, 3, 3, 3, 3, 8, 8, 8, 8, 8, 8, 8, 8};
-    localparam int NAP_ROW [0:15] = '{3, 4, 5, 6, 7, 8, 9, 10, 3, 4, 5, 6, 7, 8, 9, 10};
+    // -------------------------------------------------------------------------
+    // OPTIMIZATION: Place NAPs closest to target GDDR controllers for lowest latency
+    //   - West side (rows 0-7): NOC column 1 (closest to west-edge GDDR0-3)
+    //   - East side (rows 8-15): NOC column 10 (closest to east-edge GDDR4-7)
+    //
+    // Reference: GDDR6_NAP_GUIDE.md, Section "Physical Layout":
+    //   "Columns 1-5: West side of device (closer to GDDR0-3)"
+    //   "Columns 6-10: East side of device (closer to GDDR4-7)"
+    //
+    // Reference: Speedster7t GDDR6 Reference Design Guide (RD017):
+    //   "NAP locations should be chosen to be adjacent to the target GDDR6 subsystem"
+    //
+    // NOTE: NoC rows 9-10 do not exist on device - valid range is 1-8
+    // -------------------------------------------------------------------------
+    localparam int NAP_COL [0:15] = '{1, 1, 1, 1, 1, 1, 1, 1, 10, 10, 10, 10, 10, 10, 10, 10};
+    localparam int NAP_ROW [0:15] = '{1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
 
 
     // =====================================================================

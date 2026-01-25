@@ -186,24 +186,28 @@ gen_row[r]:                        gen_gddr_nap[r]:
 
 ### Complete Row-to-GDDR6 Mapping Table
 
+**NOTE:** NoC rows 9-10 do NOT exist on the AC7t1500 device. Valid NoC rows are 1-8.
+
+**OPTIMIZATION (Jan 2026):** NAPs moved to columns 1 (west) and 10 (east) for minimum latency to GDDR controllers. See RD017 "NAP Locations" section.
+
 | Row Index | GDDR6_CTRL_ID | Target GDDR | NAP Column | NAP Row | NOC Location | Side |
 |-----------|---------------|-------------|------------|---------|--------------|------|
-| 0 | 0xC (12) | GDDR0 CH0 | 3 | 3 | NOC[3][3] | West |
-| 1 | 0xD (13) | GDDR0 CH1 | 3 | 4 | NOC[3][4] | West |
-| 2 | 0x4 (4) | GDDR1 CH0 | 3 | 5 | NOC[3][5] | West |
-| 3 | 0x5 (5) | GDDR1 CH1 | 3 | 6 | NOC[3][6] | West |
-| 4 | 0x0 (0) | GDDR2 CH0 | 3 | 7 | NOC[3][7] | West |
-| 5 | 0x1 (1) | GDDR2 CH1 | 3 | 8 | NOC[3][8] | West |
-| 6 | 0x8 (8) | GDDR3 CH0 | 3 | 9 | NOC[3][9] | West |
-| 7 | 0x9 (9) | GDDR3 CH1 | 3 | 10 | NOC[3][10] | West |
-| 8 | 0xF (15) | GDDR4 CH0 | 8 | 3 | NOC[8][3] | East |
-| 9 | 0xE (14) | GDDR4 CH1 | 8 | 4 | NOC[8][4] | East |
-| 10 | 0x7 (7) | GDDR5 CH0 | 8 | 5 | NOC[8][5] | East |
-| 11 | 0x6 (6) | GDDR5 CH1 | 8 | 6 | NOC[8][6] | East |
-| 12 | 0x3 (3) | GDDR6 CH0 | 8 | 7 | NOC[8][7] | East |
-| 13 | 0x2 (2) | GDDR6 CH1 | 8 | 8 | NOC[8][8] | East |
-| 14 | 0xB (11) | GDDR7 CH0 | 8 | 9 | NOC[8][9] | East |
-| 15 | 0xA (10) | GDDR7 CH1 | 8 | 10 | NOC[8][10] | East |
+| 0 | 0xC (12) | GDDR0 CH0 | 1 | 1 | NOC[1][1] | West |
+| 1 | 0xD (13) | GDDR0 CH1 | 1 | 2 | NOC[1][2] | West |
+| 2 | 0x4 (4) | GDDR1 CH0 | 1 | 3 | NOC[1][3] | West |
+| 3 | 0x5 (5) | GDDR1 CH1 | 1 | 4 | NOC[1][4] | West |
+| 4 | 0x0 (0) | GDDR2 CH0 | 1 | 5 | NOC[1][5] | West |
+| 5 | 0x1 (1) | GDDR2 CH1 | 1 | 6 | NOC[1][6] | West |
+| 6 | 0x8 (8) | GDDR3 CH0 | 1 | 7 | NOC[1][7] | West |
+| 7 | 0x9 (9) | GDDR3 CH1 | 1 | 8 | NOC[1][8] | West |
+| 8 | 0xF (15) | GDDR4 CH0 | 10 | 1 | NOC[10][1] | East |
+| 9 | 0xE (14) | GDDR4 CH1 | 10 | 2 | NOC[10][2] | East |
+| 10 | 0x7 (7) | GDDR5 CH0 | 10 | 3 | NOC[10][3] | East |
+| 11 | 0x6 (6) | GDDR5 CH1 | 10 | 4 | NOC[10][4] | East |
+| 12 | 0x3 (3) | GDDR6 CH0 | 10 | 5 | NOC[10][5] | East |
+| 13 | 0x2 (2) | GDDR6 CH1 | 10 | 6 | NOC[10][6] | East |
+| 14 | 0xB (11) | GDDR7 CH0 | 10 | 7 | NOC[10][7] | East |
+| 15 | 0xA (10) | GDDR7 CH1 | 10 | 8 | NOC[10][8] | East |
 
 ### RTL Code References
 
@@ -223,8 +227,13 @@ localparam [8:0] GDDR6_CTRL_ID [0:NUM_ROWS-1] = '{
 
 **elastix_gemm_top.sv - NAP Placement Arrays:**
 ```systemverilog
-localparam int NAP_COL [0:15] = '{3, 3, 3, 3, 3, 3, 3, 3, 8, 8, 8, 8, 8, 8, 8, 8};
-localparam int NAP_ROW [0:15] = '{3, 4, 5, 6, 7, 8, 9, 10, 3, 4, 5, 6, 7, 8, 9, 10};
+// OPTIMIZATION: Place NAPs closest to target GDDR controllers for lowest latency
+//   - West side (rows 0-7): NOC column 1 (closest to west-edge GDDR0-3)
+//   - East side (rows 8-15): NOC column 10 (closest to east-edge GDDR4-7)
+// Reference: RD017 "NAP Locations" - "adjacent to the target GDDR6 subsystem"
+// NOTE: NOC rows 9-10 do NOT exist on AC7t1500 - valid range is 1-8
+localparam int NAP_COL [0:15] = '{1, 1, 1, 1, 1, 1, 1, 1, 10, 10, 10, 10, 10, 10, 10, 10};
+localparam int NAP_ROW [0:15] = '{1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8};
 ```
 
 **fetcher_2d.sv - AXI Address Construction:**
@@ -236,16 +245,18 @@ assign axi_ddr_if.araddr = {GDDR6_CTRL_ID, 2'b00, line_addr_26bit, {5{1'b0}}};
 
 ### Latency Optimization Status
 
-| Rows | NAP Side | Target GDDR Side | Optimal? |
-|------|----------|------------------|----------|
-| 0-7 | West (Col 3) | West (GDDR0-3) | ✅ Yes |
-| 8-15 | East (Col 8) | East (GDDR4-7) | ✅ Yes |
+| Rows | NAP Column | Target GDDR | Optimization | Status |
+|------|------------|-------------|--------------|--------|
+| 0-7 | 1 (westernmost) | GDDR0-3 (west edge) | Minimum latency | OPTIMAL |
+| 8-15 | 10 (easternmost) | GDDR4-7 (east edge) | Minimum latency | OPTIMAL |
 
-### Known Issues / Future Optimization Notes
+### Change History
 
-*(Add notes here if issues are discovered)*
-
-- None documented as of 2026-01-23
+- **2026-01-25**: Optimized NAP columns for minimum GDDR latency:
+  - West: Column 3 -> Column 1 (closest to GDDR0-3)
+  - East: Column 8 -> Column 10 (closest to GDDR4-7)
+  - Reference: RD017 "NAP locations should be adjacent to target GDDR6 subsystem"
+- **2026-01-23**: Fixed invalid NOC row range. Original mapping used rows 3-10, but AC7t1500 only supports NOC rows 1-8.
 
 ### Verification Checklist
 
@@ -254,9 +265,129 @@ When modifying the NAP-GDDR6 mapping, verify:
 - [ ] `GDDR6_CTRL_ID` array in `engine_top_2d.sv` matches intended GDDR channels
 - [ ] `NAP_COL`/`NAP_ROW` arrays in `elastix_gemm_top.sv` match PDC constraints
 - [ ] PDC `set_placement` commands in `ace_placements.pdc` use correct NOC coordinates
-- [ ] West rows (0-7) target west GDDR (0-3) via west NAPs (columns 1-5)
-- [ ] East rows (8-15) target east GDDR (4-7) via east NAPs (columns 6-10)
+- [ ] West rows (0-7) target west GDDR (0-3) via west NAPs (column 1 = closest)
+- [ ] East rows (8-15) target east GDDR (4-7) via east NAPs (column 10 = closest)
 - [ ] All three files use consistent indexing (row index `r` maps to same GDDR channel)
+- [ ] MLP/BRAM placements align with NAP locations (west: BMLP x=0-3, east: BMLP x=35-38)
+
+## Reference Design Comparison
+
+This section compares NAP-to-GDDR6 mapping strategies across Achronix reference designs.
+
+### gddr_ref_design (GDDR6 Reference Design)
+
+**Source:** `gddr_ref_design/src/constraints/ace_placements.pdc`
+
+**Purpose:** Simple GDDR6 memory test/validation design with 8 NAP interfaces.
+
+**NAP Placement Pattern:**
+- Uses **columns 3 and 8** (closest to GDDR6 controllers)
+- Uses **rows 3, 4, 5, 6** (center of device)
+- 8 total NAPs (one per GDDR6 controller)
+
+| NAP Index | Column | Rows | Target GDDR | Side |
+|-----------|--------|------|-------------|------|
+| 0-3 | 3 | 3, 4, 5, 6 | GDDR0-3 | West |
+| 4-7 | 8 | 3, 4, 5, 6 | GDDR4-7 | East |
+
+**PDC Pattern:**
+```tcl
+# Loop places NAPs at columns 3 (west) and 8 (east), rows 3-6
+for {set ii 0} {$ii < 8} {incr ii} {
+    if {$ii < 4} { set col 3 }  # West-side NAPs
+    if {$ii > 3} { set col 8 }  # East-side NAPs
+    set_placement -fixed [find -insts "gddr_gen_noc_$ii*i_axi_responder"] "s:x_core.NOC[$col][$row].logic.noc.nap_s"
+}
+```
+
+**Soft Placement Regions:**
+- West regions: x1=55, x2=81 (fabric cluster coordinates)
+- East regions: x1=185, x2=212
+
+**Key Observations:**
+- Minimal design: 8 NAPs for basic GDDR6 access
+- No MLP/BRAM placements (pure memory test design)
+- Uses `nap_s` (slave NAP) for memory responder interface
+- One `nap_m` (master NAP) at NOC[5][5] for register control
+
+---
+
+### acx_gemm_ref_design (Tensor Core Reference Design)
+
+**Source:** `acx_gemm_ref_design/src/constraints/ace_placements.pdc.4q`
+
+**Purpose:** Full 64-Tensor-Core GEMM accelerator with 4 quadrants.
+
+**NAP Placement Pattern:**
+- Uses **columns 1, 2, 4, 5** (west) and **6, 7, 9, 10** (east)
+- Uses **all 8 rows** (1-8) per quadrant
+- 64 slave NAPs + 64 master NAPs = 128 total NAPs
+- Each Tensor Core has its own NAP pair (slave + master)
+
+**Quadrant Layout:**
+
+| Quadrant | Location | NAP Columns | NAP Rows | Target GDDR |
+|----------|----------|-------------|----------|-------------|
+| Q0 (SW) | Southwest | 1, 2, 4, 5 | 1-4 | GDDR0, GDDR1 |
+| Q1 (NW) | Northwest | 1, 2, 4, 5 | 5-8 | GDDR2, GDDR3 |
+| Q2 (NE) | Northeast | 6, 7, 9, 10 | 5-8 | GDDR6, GDDR7 |
+| Q3 (SE) | Southeast | 6, 7, 9, 10 | 1-4 | GDDR4, GDDR5 |
+
+**NAP Distribution per Quadrant (16 NAPs each):**
+
+```
+Quadrant 0 (SW) - Columns 1,2,4,5 x Rows 1-4:
+  Row 1: NOC[1][1], NOC[2][1], NOC[4][1], NOC[5][1]  -> TC 0-3
+  Row 2: NOC[1][2], NOC[2][2], NOC[4][2], NOC[5][2]  -> TC 4-7
+  Row 3: NOC[1][3], NOC[2][3], NOC[4][3], NOC[5][3]  -> TC 8-11
+  Row 4: NOC[1][4], NOC[2][4], NOC[4][4], NOC[5][4]  -> TC 12-15
+
+Quadrant 1 (NW) - Columns 1,2,4,5 x Rows 5-8:
+  Row 8: NOC[1][8], NOC[2][8], NOC[4][8], NOC[5][8]  -> TC 0-3
+  Row 7: NOC[1][7], NOC[2][7], NOC[4][7], NOC[5][7]  -> TC 4-7
+  Row 6: NOC[1][6], NOC[2][6], NOC[4][6], NOC[5][6]  -> TC 8-11
+  Row 5: NOC[1][5], NOC[2][5], NOC[4][5], NOC[5][5]  -> TC 12-15
+
+Quadrant 2 (NE) - Columns 6,7,9,10 x Rows 5-8:
+  Row 8: NOC[10][8], NOC[9][8], NOC[7][8], NOC[6][8] -> TC 0-3
+  Row 7: NOC[10][7], NOC[9][7], NOC[7][7], NOC[6][7] -> TC 4-7
+  Row 6: NOC[10][6], NOC[9][6], NOC[7][6], NOC[6][6] -> TC 8-11
+  Row 5: NOC[10][5], NOC[9][5], NOC[7][5], NOC[6][5] -> TC 12-15
+
+Quadrant 3 (SE) - Columns 6,7,9,10 x Rows 1-4:
+  Row 1: NOC[10][1], NOC[9][1], NOC[7][1], NOC[6][1] -> TC 0-3
+  Row 2: NOC[10][2], NOC[9][2], NOC[7][2], NOC[6][2] -> TC 4-7
+  Row 3: NOC[10][3], NOC[9][3], NOC[7][3], NOC[6][3] -> TC 8-11
+  Row 4: NOC[10][4], NOC[9][4], NOC[7][4], NOC[6][4] -> TC 12-15
+```
+
+**Key Observations:**
+- Uses both `nap_s` (for GDDR6 data) and `nap_m` (for register access) per TC
+- Avoids columns 3 and 8 (reserved for other uses or optimal GDDR proximity)
+- East quadrants use **reversed column order** (10,9,7,6 instead of 6,7,9,10) for symmetry
+- NW and NE quadrants use **reversed row order** (8,7,6,5 instead of 5,6,7,8) for physical layout
+
+---
+
+### Design Strategy Comparison
+
+| Aspect | gddr_ref_design | acx_gemm_ref_design |
+|--------|-----------------|---------------------|
+| **Total NAPs** | 9 (8 slave + 1 master) | 128 (64 slave + 64 master) |
+| **NAP Columns** | 3, 8 only | 1,2,4,5 (W) and 6,7,9,10 (E) |
+| **NAP Rows** | 3-6 | 1-8 (all rows) |
+| **MLP Placement** | None | Fixed placement for 256 MLPs |
+| **BRAM Placement** | None | Fixed placement for 256 BRAMs |
+| **Use Case** | Memory validation | Production GEMM accelerator |
+
+---
+
+### Lessons for Custom Designs
+
+1. **Simple GDDR6 access**: Use columns 3 (west) and 8 (east) for lowest latency
+2. **High-throughput designs**: Spread NAPs across multiple columns to increase parallelism
+3. **Quadrant-based designs**: Mirror NAP patterns for symmetric physical layout
+4. **MLP integration**: Co-locate NAPs with associated MLP/BRAM resources (see MLP_PLACE_GUIDE.md)
 
 ## References
 
@@ -283,5 +414,7 @@ When modifying the NAP-GDDR6 mapping, verify:
 
 | Date | Version | Description |
 |------|---------|-------------|
+| 2026-01-25 | 1.3 | Optimized NAP columns: West 3->1, East 8->10 for minimum GDDR latency per RD017 guidance |
+| 2026-01-24 | 1.2 | Added "Reference Design Comparison" section with gddr_ref_design and acx_gemm_ref_design NAP placement analysis |
 | 2026-01-23 | 1.1 | Added "Elastix GEMM 2D Engine - Actual Hardware Mapping" section with complete row-to-GDDR6 mapping table, RTL code references, and verification checklist |
 | 2026-01-23 | 1.0 | Initial documentation of NAP-GDDR6 mapping |

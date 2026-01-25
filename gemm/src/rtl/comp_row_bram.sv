@@ -16,11 +16,13 @@
 //  - Writes are automatically packed into NV format internally
 //
 // Read Interface:
-//  - Native Vector interface for single-cycle NV reads
-//  - Combinational (0-latency) access to complete NVs
+//  - Native Vector interface with REGISTERED (1-cycle latency) reads
+//  - Address presented on cycle N, data available on cycle N+1
+//  - Synchronous reads enable proper BRAM inference
 //
 // REFACTORED: Jan 2026 - Removed right (weight) write/read ports
 //             Weights now written directly to mlp_bram_col
+// UPDATED: Jan 2026 - Changed to registered reads for BRAM inference
 //
 // Original Author: Junhao Pan
 // Date: 10/31/2024
@@ -55,29 +57,35 @@ module comp_row_bram #(
 
     // ====================================================================
     // Native Vector Read Interface (Activations ONLY - Left Side)
-    // Combinational reads - complete NV in single cycle
+    // COMBINATIONAL reads - for debugging
     // ====================================================================
     input  wire [6:0]                  i_nv_left_rd_idx,
-    output wire [31:0]                 o_nv_left_exp,         // Packed exponents
-    output wire [MAN_WIDTH-1:0]        o_nv_left_man [0:3]    // 4 mantissa groups
+    output logic [31:0]                o_nv_left_exp,         // Packed exponents (registered)
+    output logic [MAN_WIDTH-1:0]       o_nv_left_man [0:3]    // 4 mantissa groups (registered)
 );
 
     // ===================================================================
     // NV-PACKED STORAGE (128 Native Vectors for activations)
+    // Split 3D array into 4 separate 2D BRAMs to enable proper BRAM inference
+    // Each BRAM supports 2 ports; 4 parallel reads require 4 separate BRAMs
     // ===================================================================
-    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_left [0:127][0:3];
+    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_group0 [0:127];
+    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_group1 [0:127];
+    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_group2 [0:127];
+    (* ram_style = "block" *) reg [MAN_WIDTH-1:0] nv_man_group3 [0:127];
     (* ram_style = "block" *) reg [31:0]          nv_exp_left [0:127];       // 128 NVs x packed exp
 
     // ===================================================================
     // SIMULATION NOTE: Memory initialization
     // ===================================================================
     // Zero-initialize for simulation (prevents X/Z values)
-    integer i, j;
+    integer i;
     initial begin
         for (i = 0; i < 128; i = i + 1) begin
-            for (j = 0; j < 4; j = j + 1) begin
-                nv_man_left[i][j] = {MAN_WIDTH{1'b0}};
-            end
+            nv_man_group0[i] = {MAN_WIDTH{1'b0}};
+            nv_man_group1[i] = {MAN_WIDTH{1'b0}};
+            nv_man_group2[i] = {MAN_WIDTH{1'b0}};
+            nv_man_group3[i] = {MAN_WIDTH{1'b0}};
             nv_exp_left[i] = 32'b0;
         end
     end
@@ -86,11 +94,28 @@ module comp_row_bram #(
     // WRITE LOGIC - Pack line-based writes into NV format
     // ===================================================================
     // Left mantissa write - pack into NV format
+    // Split into 4 separate always blocks for proper BRAM inference
     always @(posedge i_clk) begin
-        if (i_man_left_wr_en) begin
-            // Calculate NV index and group within NV
-            // NV index (addr/4), Group within NV [0-3]
-            nv_man_left[i_man_left_wr_addr[8:2]][i_man_left_wr_addr[1:0]] <= i_man_left_wr_data;
+        if (i_man_left_wr_en && (i_man_left_wr_addr[1:0] == 2'd0)) begin
+            nv_man_group0[i_man_left_wr_addr[8:2]] <= i_man_left_wr_data;
+        end
+    end
+
+    always @(posedge i_clk) begin
+        if (i_man_left_wr_en && (i_man_left_wr_addr[1:0] == 2'd1)) begin
+            nv_man_group1[i_man_left_wr_addr[8:2]] <= i_man_left_wr_data;
+        end
+    end
+
+    always @(posedge i_clk) begin
+        if (i_man_left_wr_en && (i_man_left_wr_addr[1:0] == 2'd2)) begin
+            nv_man_group2[i_man_left_wr_addr[8:2]] <= i_man_left_wr_data;
+        end
+    end
+
+    always @(posedge i_clk) begin
+        if (i_man_left_wr_en && (i_man_left_wr_addr[1:0] == 2'd3)) begin
+            nv_man_group3[i_man_left_wr_addr[8:2]] <= i_man_left_wr_data;
         end
     end
 
@@ -110,14 +135,18 @@ module comp_row_bram #(
     end
 
     // ===================================================================
-    // NV READ LOGIC - Combinational (0-latency)
+    // NV READ LOGIC - REGISTERED (1-cycle latency for BRAM inference)
     // ===================================================================
-    // Left NV read - output complete Native Vector
-    assign o_nv_left_exp = nv_exp_left[i_nv_left_rd_idx];
-    assign o_nv_left_man[0] = nv_man_left[i_nv_left_rd_idx][0];
-    assign o_nv_left_man[1] = nv_man_left[i_nv_left_rd_idx][1];
-    assign o_nv_left_man[2] = nv_man_left[i_nv_left_rd_idx][2];
-    assign o_nv_left_man[3] = nv_man_left[i_nv_left_rd_idx][3];
+    // Left NV read - output complete Native Vector with 1-cycle latency
+    // Synchronous reads allow proper BRAM (not LRAM) inference
+    // Each group read from its own 2D BRAM (enables 4 parallel reads)
+    always_ff @(posedge i_clk) begin
+        o_nv_left_exp    <= nv_exp_left[i_nv_left_rd_idx];
+        o_nv_left_man[0] <= nv_man_group0[i_nv_left_rd_idx];
+        o_nv_left_man[1] <= nv_man_group1[i_nv_left_rd_idx];
+        o_nv_left_man[2] <= nv_man_group2[i_nv_left_rd_idx];
+        o_nv_left_man[3] <= nv_man_group3[i_nv_left_rd_idx];
+    end
 
 endmodule
 
