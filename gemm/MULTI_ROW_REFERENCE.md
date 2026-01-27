@@ -19,14 +19,16 @@
    - [Result Collection (RC)](#result-collection-rc)
    - [Overall Architecture Summary](#overall-architecture-summary)
 4. [Core Architecture](#core-architecture)
-   - [csr_to_fifo_bridge](#csr_to_fifo_bridge)
+   - [Command Submission Flow (DMA-Based)](#command-submission-flow-dma-based)
+   - [dma_cmd_in_bram](#dma_cmd_in_bram)
+   - [cmd_bram_fifo_bridge](#cmd_bram_fifo_bridge)
    - [cmd_fifo](#cmd_fifo)
-   - [master_control](#master_control)
+   - [master_control_2d](#master_control_2d)
    - [Dispatcher Control](#dispatcher-control)
    - [Fetcher](#fetcher)
    - [Dispatcher](#dispatcher)
    - [Compute Engine (MLP-Based)](#compute-engine-mlp-based)
-   - [MLP BRAM Column Wrapper](#mlp-bram-column-wrapper-comp_mlp_bram_col_wrapper)
+   - [comp_MLPStack](#comp_mlpstack)
    - [Dispatcher Control and Compute Engine Overview](#dispatcher-control-and-compute-engine-overview)
 5. [Microcode Command Reference](#microcode-command-reference)
    - [Command Organization](#command-organization)
@@ -108,7 +110,7 @@ The signals on the interfaces should generally follow this naming convention:
   - Used in column group processing: each column group processes V NVs per column
 - Column:
   - MLP columns within the compute engine
-  - Default: 16 columns
+  - Configurable via `NUM_COLS` parameter (= `NUM_MLPS * 2`)
 - Row:
   - A row of compute engines in 2-D architecture
   - Default: 16 rows, fixed to the number of available DDR6 channels.
@@ -290,13 +292,13 @@ It is the global control unit group. The components in this group decode the com
 It consists of the Fetcher and Dispatcher. It serves the FETCH and DISPATCH commands. Briefly speaking, the Fetcher fetches a memory block from DDR and pushes into a FIFO. The Dispatcher consumes that FIFO and routes to the local buffers in the compute engines. There is one DC per row. 
 
 ### Compute Engine (CE)
-Each compute engine is a 1-D array of compute tiles, or compute columns, organized into a shared Activation Buffer (`row_bram`) and a compute array (`comp_mlp_bram_col_wrapper`). The compute engine serves the MATMUL (or TILE) command. The compute unit is called Machine Learning Processor (MLP) in Achronix FPGAs. Under the current configuration, each MLP computes two columns. Logically, one MLP represents two compute tiles. Each row in the 2-D GEMM has one compute engine, and each CE computes multiple columns, therefore constituting the 2-D organization. 
+Each compute engine is a 1-D array of compute tiles, or compute columns, organized into a shared Activation Buffer (`row_bram`) and a compute array (`comp_MLPStack`). The compute engine serves the MATMUL (or TILE) command. The compute unit is called Machine Learning Processor (MLP) in Achronix FPGAs. Each MLP computes two columns. Logically, one MLP represents two compute tiles. Each row in the 2-D GEMM has one compute engine, and each CE computes `NUM_COLS` columns, therefore constituting the 2-D organization. 
 
 ### Result Collection (RC)
-It sits outside of the rows and collects all the results from each CE columns. It serves the READOUT command. If we have a 2-D GEMM with 16 rows and 32 columns, each compute engine will output 32 results in parallel, and there are 16 compute engines. RC will need to reduce all rows on the column, as we have discussed in the Compute Pattern section. Therefore, RC will also only produce 32 results, one for each column. There is only one RC globally. **IMPORTANT** There are cases where not all rows have meaningful results, in which case these rows needs to be turned off when performing the reduction. We will discuss these cases later.
+It sits outside of the rows and collects all the results from each CE columns. It serves the READOUT command. Each compute engine outputs `NUM_COLS` results in parallel, and there are `NUM_ROWS` compute engines. RC reduces all rows on each column, as discussed in the Compute Pattern section. Therefore, RC produces `NUM_COLS` results, one for each column. There is only one RC globally. **IMPORTANT** There are cases where not all rows have meaningful results, in which case these rows needs to be turned off when performing the reduction. We will discuss these cases later.
 
 ### Overall Architecture Summary
-This is a graph of the 2-D GEMM organization with 16 rows and 32 columns.
+This is a graph of the 2-D GEMM organization (example with `NUM_ROWS` rows).
 
 ```mermaid
 graph LR
@@ -313,7 +315,7 @@ graph LR
             DC0[Dispatcher 0] --> CE0
             subgraph CE0 [Compute Engine 0]
                 direction LR
-                MLP0_1[MLP: Col 0-1] --- MLP0_Dots[...] --- MLP0_N[MLP: Col 30-31]
+                MLP0_1[MLP: Col 0-1] --- MLP0_Dots[...] --- MLP0_N[MLP: Col N-1,N]
             end
         end
 
@@ -323,19 +325,19 @@ graph LR
             DC1[Dispatcher 1] --> CE1
             subgraph CE1 [Compute Engine 1]
                 direction LR
-                MLP1_1[MLP: Col 0-1] --- MLP1_Dots[...] --- MLP1_N[MLP: Col 30-31]
+                MLP1_1[MLP: Col 0-1] --- MLP1_Dots[...] --- MLP1_N[MLP: Col N-1,N]
             end
         end
 
-        Row_Dots[ . . . 16 Rows Total . . . ]
+        Row_Dots[ . . . NUM_ROWS Total . . . ]
 
-        %% Row 15 Detail
-        subgraph Row15 [Row 15]
+        %% Row N Detail
+        subgraph RowN [Row N]
             direction LR
-            DC15[Dispatcher 15] --> CE15
-            subgraph CE15 [Compute Engine 15]
+            DCN[Dispatcher N] --> CEN
+            subgraph CEN [Compute Engine N]
                 direction LR
-                MLP15_1[MLP: Col 0-1] --- MLP15_Dots[...] --- MLP15_N[MLP: Col 30-31]
+                MLPN_1[MLP: Col 0-1] --- MLPN_Dots[...] --- MLPN_N[MLP: Col N-1,N]
             end
         end
     end
@@ -347,22 +349,22 @@ graph LR
     end
 
     %% Control Flow (Dashed)
-    MC -.-> DC0 & DC1 & DC15
+    MC -.-> DC0 & DC1 & DCN
     MC -.-> RC_Unit
 
     %% Data Flow (Solid)
-    DDR ==> DC0 & DC1 & DC15
+    DDR ==> DC0 & DC1 & DCN
     
     CE0 ==> Sum
     CE1 ==> Sum
-    CE15 ==> Sum
+    CEN ==> Sum
     
     Sum --> RC_Unit
-    RC_Unit ==> Output[/32 Column Results/]
+    RC_Unit ==> Output[/NUM_COLS Column Results/]
 
     %% Styling
     classDef dashed fill:#fff,stroke:#666,stroke-dasharray: 5 5;
-    class CE0,CE1,CE15 dashed;
+    class CE0,CE1,CEN dashed;
 
     style MC fill:#f9f,stroke:#333
     style DDR fill:#eee,stroke:#333
@@ -371,96 +373,291 @@ graph LR
 
 ## Core Architecture
 
-### csr_to_fifo_bridge
+### Command Submission Flow (DMA-Based)
+
+The command submission system uses DMA transfers for high-throughput command batching. This replaces the legacy CSR-based word-by-word command submission.
+
+#### Architecture Overview
+
+```
+Host                    FPGA
+-----                   ----
+  |                       |
+  |-- DMA Write --------->| dma_cmd_in_bram (512 x 256-bit)
+  |                       |     |
+  |-- CSR: DMA_CMD_CNT -->|     | (internal read port)
+  |-- CSR: DMA_CMD_VALID->|     v
+  |                       | cmd_bram_fifo_bridge
+  |<-- Poll DMA_CMD_VALID-|     |
+  |                       |     v
+  |                       | cmd_fifo (512 x 128-bit)
+  |                       |     |
+  |                       |     v
+  |                       | master_control_2d
+```
+
+#### Host-to-FPGA Communication Protocol
+
+**Registers:**
+| Register | Offset | Description |
+|----------|--------|-------------|
+| DMA_CMD_CNT | 0x3C | Number of commands in BRAM (written by host) |
+| DMA_CMD_VALID | 0x40 | Start signal: host writes 1, bridge clears to 0 when done |
+| DMA_CMD_RD_ADDR | 0x44 | Debug: current read address (read-only) |
+
+**Batch Submission Sequence:**
+1. **Host DMAs N commands** to `dma_cmd_in_bram` (addresses 0 to N-1)
+2. **Host writes** `DMA_CMD_CNT = N`
+3. **Host writes** `DMA_CMD_VALID = 1` (triggers bridge)
+4. **Bridge transfers** commands from BRAM to FIFO
+5. **Bridge clears** `DMA_CMD_VALID` when all N commands transferred
+6. **Host polls** `DMA_CMD_VALID`, sees 0, can DMA next batch
+
+**Safety Conditions:**
+- **Host can DMA new commands**: When `DMA_CMD_VALID == 0` (bridge idle)
+- **Bridge can read BRAM**: When `DMA_CMD_VALID == 1` (host finished writing)
+- **Bridge stops reading**: When `cmd_fifo` is almost full (backpressure)
+
+#### Command Format in BRAM
+
+Each BRAM line is 256 bits, but only the lower 128 bits are used for the command:
+```
+BRAM Line [255:0]:
+  [255:128] = Unused (upper 128 bits)
+  [127:96]  = word0 (header: {reserved[15:0], cmd_id[7:0], cmd_op[7:0]})
+  [95:64]   = word1 (payload)
+  [63:32]   = word2 (payload)
+  [31:0]    = word3 (payload)
+```
+
+### dma_cmd_in_bram
+
 #### Functionality
-It will bridge the CSRs where the host submits the command with the cmd_fifo. It reads one command and forwards it to the cmd_fifo.
+DMA-accessible BRAM for command batch storage. Host writes commands via DMA, `cmd_bram_fifo_bridge` reads them internally.
 
 #### Implementation Details
-The host submits commands in 32-bit word format (see `issue_command` in [vp815_gemm_device.hpp](/home/dev/Dev/elastix_gemm/gemm/sw_test/vp815_gemm_device.hpp) . Each command takes 4 words 128 bits. The output is therefore 128-bit wide to encapsulate one command. 
+- Uses `dma_bram_bridge` with NAP at column 3, row 6
+- 512 entries x 256 bits (internal BRAM size)
+- Internal write port: tied off (host writes via DMA only)
+- Internal read port: connected to `cmd_bram_fifo_bridge`
+
+### cmd_bram_fifo_bridge
+
+#### Functionality
+Simple 2-state FSM that reads batched commands from `dma_cmd_in_bram` and pushes them to `cmd_fifo`. No data manipulation - pure transfer.
+
+#### Implementation Details
+
+**FSM States:**
+- **ST_IDLE**: Waits for rising edge on `DMA_CMD_VALID`. On valid edge with non-zero count, captures `DMA_CMD_CNT` and transitions to `ST_READ_BRAM`.
+- **ST_READ_BRAM**: Reads BRAM sequentially, pushes 128-bit commands to FIFO. If FIFO almost full, holds position (backpressure). When count reaches 0, pulses `cmd_valid_clr` and returns to `ST_IDLE`.
+
+**Timing:**
+- BRAM read latency: 1 cycle
+- FIFO push: when `bram_data_valid && !fifo_afull`
+- Transfer rate: 1 command per cycle (when FIFO not backpressured)
+
+**Signals:**
+| Signal | Direction | Description |
+|--------|-----------|-------------|
+| i_cmd_cnt | Input | Number of commands to transfer |
+| i_cmd_valid | Input | Start signal (rising edge triggers) |
+| o_cmd_valid_clr | Output | Pulse to clear DMA_CMD_VALID when done |
+| o_bridge_busy | Output | High when actively transferring |
 
 ### cmd_fifo
+
 #### Functionality
-This module implements a FIFO to buffer the commands (microcode) from the host. Master Control reads each command from this FIFO and forward the arguments to the other components.
+FIFO buffer for incoming commands. Decouples DMA batch rate from command consumption rate.
 
 #### Implementation Details
-The cmd_fifo takes one command from csr_to_fifo_bridge and pushes it into a FIFO. The FIFO is 128-bit wide and 512 entry deep. Master Control will consume the commands from this cmd_fifo. 
+- Wrapper around `flex_fifo`
+- Width: 128 bits (one full command per entry)
+- Depth: 512 entries
+- Read latency: 1 cycle (synchronous BRAM)
+- Almost-full threshold: ~461 entries (triggers backpressure)
 
+### master_control_2d
 
-### master_control
 #### Functionality
-1. Parses Command MicroCodes
-2. Routes Commands to Fetcher, Dispatcher, Compute Engine, and Result Collection. 
-3. Orchestrates and Synchronizes the operations of each component
+1. Parses 128-bit command MicroCodes in a single cycle
+2. Partitions V dimension across 16 rows
+3. Routes commands to Fetcher, Dispatcher, Compute Engine, and Result Collection
+4. Orchestrates and synchronizes operations with per-row acknowledgments
 
 #### Implementation Details
-The Master Control unit operates as a Finite State Machine (FSM) that parses the 4-word command structure and executes the appropriate operations.
+
+The Master Control operates as a simplified FSM that reads 128-bit commands from `cmd_fifo` and decodes them in a single cycle.
 
 **States and Transitions:**
 
-- **ST_IDLE**
-  - **Action**: Waits for non-empty command FIFO.
+- **ST_IDLE** (0)
+  - **Action**: Waits for non-empty command FIFO and no backpressure (result FIFO not full).
   - **Transition**:
-    - If FIFO not empty -> `ST_DECODE` (Reads Command Header)
+    - If FIFO not empty and no backpressure -> `ST_WAIT_DATA` (asserts rd_en)
     - Else -> `ST_IDLE`
 
-- **ST_DECODE**
-  - **Action**: Decodes the Opcode (Command Header) and routes the arguments in the command to the appropriate component and enters the corresponding executing state.
-  - **Transition**:
-    - `OPC_FETCH` (0xF0) -> `ST_EXEC_FETCH`
-    - `OPC_DISPATCH` (0xF1) -> `ST_EXEC_DISP`
-    - `OPC_MATMUL` (0xF2) -> `ST_EXEC_TILE`
-    - `OPC_WAIT_DISPATCH` (0xF3) -> `ST_WAIT_DISP`
-    - `OPC_WAIT_MATMUL` (0xF4) -> `ST_WAIT_TILE`
-    - `OPC_READOUT` (0xF5) -> `ST_EXEC_READOUT`
-    - Unknown Opcode -> `ST_CMD_COMPLETE`
+- **ST_WAIT_DATA** (1)
+  - **Action**: Waits 1 cycle for FIFO read latency. Data will be valid next cycle.
+  - **Transition**: Always -> `ST_DECODE`
 
-**ST_EXEC_FETCH**
-  - **Action**: Triggers Fetcher unit with parameters (Address, Length).
-  - **Transition**: Always -> `ST_WAIT_FETCH`
+- **ST_DECODE** (2)
+  - **Action**: Extracts all 4 command words from 128-bit `i_cmd_fifo_rdata` in single cycle. Performs V-partitioning and populates per-row payload registers. Routes to appropriate EXEC state based on opcode.
+  - **128-bit Layout**: `[127:96]=word0, [95:64]=word1, [63:32]=word2, [31:0]=word3`
+  - **Transition** (based on `i_cmd_fifo_rdata[103:96]`):
+    - `0xF0` -> `ST_EXEC_FETCH`
+    - `0xF1` -> `ST_EXEC_DISP`
+    - `0xF2` -> `ST_EXEC_MATMUL`
+    - `0xF3` -> `ST_WAIT_DISP`
+    - `0xF4` -> `ST_WAIT_MATMUL`
+    - `0xF5` -> `ST_EXEC_READOUT`
+    - Unknown -> `ST_IDLE`
 
-**ST_WAIT_FETCH**
-  - **Action**: Waits for Fetcher to signal completion (`i_dc_fetch_done`).
-  - **Transition**:
-    - If Done -> `ST_CMD_COMPLETE`
-    - Else -> `ST_WAIT_FETCH`
+- **ST_EXEC_FETCH** (3)
+  - **Action**: Waits for ALL 16 rows to acknowledge FETCH (`all_dc_ack_fetch`).
+  - **Transition**: If all ACKs received -> `ST_IDLE`
 
-**ST_EXEC_DISP**
-  - **Action**: Triggers Dispatch operation directly to Compute Engine. Records Command ID as `pending_disp_id`.
-  - **Transition**: Always -> `ST_CMD_COMPLETE` (Async execution)
+- **ST_EXEC_DISP** (4)
+  - **Action**: Waits for ALL 16 rows to acknowledge DISPATCH (`all_dc_ack_disp`).
+  - **Transition**: If all ACKs received -> `ST_IDLE`
 
-**ST_EXEC_TILE**
-  - **Action**: Triggers MATMUL operation in Compute Engine. Records Command ID as `pending_tile_id`.
-  - **Transition**: Always -> `ST_CMD_COMPLETE` (Async execution)
+- **ST_EXEC_MATMUL** (5)
+  - **Action**: Waits for ALL 16 rows to acknowledge MATMUL (`all_ce_ack_matmul`).
+  - **Transition**: If all ACKs received -> `ST_CMD_COMPLETE`
 
-**ST_WAIT_DISP**
-  - **Action**: Wait barrier for DISPATCH command. Checks if `wait_id` matches completed dispatch.
-  - **Transition**:
-    - For MS2.0: Checks if Dispatcher Controller is IDLE (`i_dc_state == 0`).
-    - If IDLE -> `ST_CMD_COMPLETE`
-    - Else -> `ST_WAIT_DISP`
+- **ST_WAIT_DISP** (6)
+  - **Action**: Barrier for DISPATCH. Waits until all rows have `dc_id >= wait_id`.
+  - **Transition**: If all rows complete -> `ST_CMD_COMPLETE`
 
-**ST_WAIT_TILE**
-  - **Action**: Wait barrier for MATMUL command. Checks if `wait_id` matches completed tile op.
-  - **Transition**:
-    - For MS2.0: Checks if Compute Engine is IDLE (`i_ce_state == 0`).
-    - If IDLE -> `ST_CMD_COMPLETE`
-    - Else -> `ST_WAIT_TILE`
+- **ST_WAIT_MATMUL** (7)
+  - **Action**: Barrier for MATMUL. Waits until all rows have `ce_id >= wait_id`.
+  - **Transition**: If all rows complete -> `ST_CMD_COMPLETE`
 
-**ST_EXEC_READOUT**
-  - **Action**: Triggers Result Arbiter/DMA to read results.
-  - **Transition**: Always -> `ST_WAIT_READOUT`
+- **ST_EXEC_READOUT** (8)
+  - **Action**: Waits for Result Collector acknowledgment (`rc_ack_readout`).
+  - **Transition**: If ACK received -> `ST_CMD_COMPLETE`
 
-**ST_WAIT_READOUT**
-  - **Action**: Waits for Readout completion (`i_readout_done`).
-  - **Transition**:
-      - If Done -> `ST_CMD_COMPLETE`
-      - Else -> `ST_WAIT_READOUT`
-
-**ST_CMD_COMPLETE**
-  - **Action**: Final cleanup, ready for next command.
+- **ST_CMD_COMPLETE** (9)
+  - **Action**: Clears opcode, ready for next command.
   - **Transition**: Always -> `ST_IDLE`
 
-### Dispatcher Control
+**Key Improvement over Legacy:**
+- Old: 4 cycles to read 4 x 32-bit words (ST_READ_HDR, ST_READ_PAYLOAD1/2/3)
+- New: 1 cycle to decode full 128-bit command (ST_DECODE directly uses FIFO data)
+
+### Command-Path and Data-Path
+
+#### Command Path: Host -> Compute Engine
+
+The command path flows from the host through DMA to the compute engines:
+
+```
+Host (DMA)
+    |
+    v
+dma_cmd_in_bram (NAP[3][6])
+    |  - Host DMAs batch of 128-bit commands to BRAM addresses 0..N-1
+    |  - Each BRAM line is 256-bit, lower 128 bits contain the command
+    |  - Host writes DMA_CMD_CNT=N and DMA_CMD_VALID=1 to trigger transfer
+    v
+cmd_bram_fifo_bridge
+    |  - Monitors dma_cmd_valid_reg
+    |  - FSM: IDLE -> READ_BRAM -> IDLE (2-state)
+    |  - Reads 256-bit from BRAM, extracts lower 128-bit command
+    |  - Pushes to FIFO; pauses on almost-full backpressure
+    |  - Auto-clears DMA_CMD_VALID when all commands transferred
+    v
+cmd_fifo (inside engine_top_2d)
+    |  - Wrapper around flex_fifo (512 deep x 128 wide)
+    |  - Buffers commands until consumed by master_control_2d
+    v
+master_control_2d
+    |  - FSM: IDLE -> WAIT_DATA -> DECODE -> ST_EXEC_*
+    |  - Reads 128-bit command, extracts opcode and payload
+    |  - Dispatches to per-row execution units based on opcode:
+    |      OPC_FETCH (0xF0)   -> dispatcher_control_2d[0:15]
+    |      OPC_DISPATCH (0xF1)-> dispatcher_control_2d[0:15]
+    |      OPC_MATMUL (0xF2)  -> compute_engine_2d[0:15]
+    |      OPC_READOUT (0xF5) -> result_collector_2d
+    v
+Per-Row Execution Units (x16)
+```
+
+**Command Format (128-bit):**
+```
+[127:96] = word0: {16'b0, cmd_id[7:0], cmd_op[7:0]}
+[95:64]  = word1: payload (varies by opcode)
+[63:32]  = word2: payload (varies by opcode)
+[31:0]   = word3: payload (varies by opcode)
+```
+
+#### Data Path: GDDR6 -> Results
+
+The data path flows from GDDR6 memory through computation to result output:
+
+```
+GDDR6 Memory (8 controllers, 16 channels)
+    |
+    v
+NAP Responders (16x, one per row)
+    |  - NAP[r] at column 1 (west, rows 0-7) or 10 (east, rows 8-15)
+    |  - AXI4 interface to NoC for memory access
+    v
+dispatcher_control_2d[r] - Fetcher Stage
+    |  - Triggered by OPC_FETCH command
+    |  - Issues AXI read bursts to GDDR6 via NAP
+    |  - Receives 256-bit data lines from memory
+    |  - Unpacks BF16 mantissa (256-bit) and exponent (8-bit)
+    |  - Writes to internal FIFO for dispatcher stage
+    v
+dispatcher_control_2d[r] - Dispatcher Stage
+    |  - Triggered by OPC_DISPATCH command (or pipelined after fetch)
+    |  - Routes data to compute engine BRAMs:
+    |      Left path:  row_bram (activations/inputs)
+    |      Right path: weight BRAMs (per MLP column)
+    |  - Left path signals: dc_left_man_wr_*, dc_left_exp_wr_*
+    |  - Right path signals: dc_right_wr_*, dc_right_man_wr_*, dc_right_exp_wr_*
+    v
+compute_engine_2d[r]
+    |  - Triggered by OPC_MATMUL command
+    |  - Contains: row_bram, MLPStack (NUM_MLPS x STACK_DEPTH MLPs), result FIFOs
+    |  - Reads activations from row_bram, weights from MLP weight BRAMs
+    |  - Performs BF16 dot products via MLP primitives
+    |  - Accumulates partial sums across V iterations
+    |  - Outputs FP16 results to per-column result FIFOs
+    |  - Result interface: o_result_data[NUM_COLS-1:0] (FP16 per column)
+    v
+result_collector_2d
+    |  - Triggered by OPC_READOUT command
+    |  - Reads FP16 results from all 16 rows x NUM_COLS compute engines
+    |  - Performs row-wise reduction (sum across V partitions)
+    |  - Packs 16 FP16 values into 256-bit output lines
+    |  - Ready-valid interface to result_to_dma
+    v
+result_to_dma
+    |  - Converts ready-valid to BRAM write interface
+    |  - o_bram_wr_en, o_bram_wr_addr (9-bit), o_bram_wr_data (256-bit)
+    v
+dma_data_out_bram (NAP[3][5])
+    |  - Internal write ports receive engine results
+    |  - Host DMAs read results via PCIe
+    v
+Host (DMA Read)
+```
+
+**Data Widths Summary:**
+
+| Stage | Signal | Width | Description |
+|-------|--------|-------|-------------|
+| GDDR6 -> NAP | AXI RDATA | 256-bit | Memory read data |
+| Fetcher -> FIFO | Internal | 256-bit + 8-bit | Mantissa + exponent |
+| Dispatcher -> CE | Left path | 256-bit + 8-bit | Activations |
+| Dispatcher -> CE | Right path | 256-bit + 8-bit | Weights (per-col) |
+| CE -> RC | Result FIFO | 16-bit | FP16 per column |
+| RC -> DMA | Output | 256-bit | 16 x FP16 packed |
+| DMA -> Host | BRAM | 256-bit | Result lines |
+
+### Dispatcher Control (Detailed)
 #### Functionality (Revised Architecture)
 Acts as the central router for the row's data ingress. It couples the `Fetcher` with the `Dispatcher` logic via a streaming FIFO interface, eliminating the need for intermediate storage for weights.
 
@@ -469,12 +666,12 @@ Acts as the central router for the row's data ingress. It couples the `Fetcher` 
 - **Fetcher Role**: Pure DMA engine. Reads from GDDR6 and pushes raw data into the FIFO. It is agnostic to the data's destination (Left vs. Right).
 - **Dispatcher Role**: Consumes the FIFO and performs routing based on the command type:
   - **Left Data (Activations)**: Routed to `row_bram`.
-  - **Right Data (Weights)**: Routed directly to `mlp_bram` inside the Compute Columns via round-robin distribution, bypassing `row_bram` entirely.
-  - **Right Distribution**: Since intermediate buffering is skipped, the dispatcher logic distributes the weights directly to the local memories (`mlp_bram`) of the compute columns.
+  - **Right Data (Weights)**: Routed directly to `weight_bram` inside the Compute Columns via round-robin distribution, bypassing `row_bram` entirely.
+  - **Right Distribution**: Since intermediate buffering is skipped, the dispatcher logic distributes the weights directly to the local memories (`weight_bram`) of the compute columns.
 
 #### Key Architectural Differences
-- **No Intermediate Buffer for Weights**: The concept of an "Intermediate Weight Buffer" in `row_bram` is removed. Weights stream from Memory -> FIFO -> Dispatcher -> `mlp_bram`, reducing latency and eliminating double-buffering.
-- **Dedicated Activation Buffer**: `row_bram` is dedicated solely to storing activations (Left Matrix) which need to be reused (broadcasted) across many compute tiles during the `TILE` operation.
+- **No Intermediate Buffer for Weights**: The concept of an "Intermediate Weight Buffer" in `row_bram` is removed. Weights stream from Memory -> FIFO -> Dispatcher -> `weight_bram`, reducing latency and eliminating double-buffering.
+- **Dedicated Activation Buffer**: `row_bram` is dedicated solely to storing activations (Left Matrix) which need to be reused (broadcasted) across many compute tiles during the `MATMUL` operation.
 
 ### Fetcher
 #### Functionality
@@ -487,48 +684,48 @@ Efficiently manages high-bandwidth data transfers from GDDR6 memory to a Streami
 
 ### Dispatcher
 #### Functionality
-Consumes the Fetch FIFO and manages the writing of **Activation** data to the `row_bram` and **Weight** data directly into the distributed `mlp_bram`.
+Consumes the Fetch FIFO and manages the writing of **Activation** data to the `row_bram` and **Weight** data directly into the distributed `weight_bram`.
 
 #### Implementation Details
 - **2-Stage Stream**: For both left (Activation) and right (Weight) data, the Dispatcher always processes data in units of one memory block (528 256-bit lines). "2-Stage" refers to:
   - **Stage-1 (Exponents)**: Reading and buffering the first 16 lines (exponents) to a local exponent BRAM (512 exponents).
-  - **Stage-2 (Mantissas)**: Reading the remaining 512 lines (mantissas). For each line, the Dispatcher attaches the corresponding exponent buffered in Stage-1 and forwards the packet to the correct destination: `row_bram` for Left/Activation, or `mlp_bram` for Right/Weight.
+  - **Stage-2 (Mantissas)**: Reading the remaining 512 lines (mantissas). For each line, the Dispatcher attaches the corresponding exponent buffered in Stage-1 and forwards the packet to the correct destination: `row_bram` for Left/Activation, or `weight_bram` for Right/Weight.
 - **Distribution Logic**:
-  - **Right Data**: Uses `col_start` to Round-Robin distribute the stream to specific columns' `mlp_bram`. **Always Distributes** (no broadcast mode).
+  - **Right Data**: Uses `col_start` to Round-Robin distribute the stream to specific columns' `weight_bram`. **Always Distributes** (no broadcast mode).
   - **Left Data**: Writes are redirected to the `row_bram` write ports.
 
 ### Compute Engine (MLP-Based)
 #### Functionality
 The top-level execution unit for a row. It is organized into two primary components:
 1. **row_bram**: A shared Activation Buffer for storing the "Left" matrix data.
-2. **comp_mlp_bram_col_wrapper**: The compute array consisting of multiple compute columns and their local weight buffers (`mlp_bram`).
+2. **comp_MLPStack**: The compute array consisting of multiple compute columns and their local weight buffers (`weight_bram`).
 
 #### Inputs and Control
 The Compute Engine receives two distinct types of inputs:
 - **Control Path**: Decoded arguments and parameters from the `MATMUL` (or `TILE`) command, provided by Master Control.
-- **Data Path**: Two **identical** data paths from Dispatcher Control. One path fills the `row_bram` with activations, and the other fills the distributed `mlp_bram` with weights.
+- **Data Path**: Two **identical** data paths from Dispatcher Control. One path fills the `row_bram` with activations, and the other fills the distributed `weight_bram` with weights.
 
 #### Implementation Details
-- **Memory Primitives**: Both `row_bram` and `mlp_bram` are essentially based on `ACX_BRAM72K` memory primitives.
-- **Direct Write**: The write operation to both `row_bram` and `mlp_bram` is driven directly by Dispatcher Control line-by-line during `DISPATCH` phases.
+- **Memory Primitives**: Both `row_bram` and `weight_bram` are essentially based on `ACX_BRAM72K` memory primitives.
+- **Direct Write**: The write operation to both `row_bram` and `weight_bram` is driven directly by Dispatcher Control line-by-line during `DISPATCH` phases.
 - **Activation Buffer (`row_bram`)**:
   - Serves **only** as the Activation Buffer for Left matrix data reused across columns.
   - Implemented using inferred memory logic, which is suitable for the shared activation access pattern.
 - **Command Handling**:
   - `FETCH` (Left): Fills `row_bram` via the Dispatcher.
-  - `FETCH` (Right) + `DISPATCH`: Operates as a streaming pipeline. The Dispatcher streams data from the Fetch FIFO directly into the `comp_mlp_bram_col_wrapper` (local buffer).
-  - `TILE`: Triggers computation using Activations from `row_bram` and Weights already resident in `mlp_bram`.
+  - `FETCH` (Right) + `DISPATCH`: Operates as a streaming pipeline. The Dispatcher streams data from the Fetch FIFO directly into the `comp_MLPStack` (local buffer).
+  - `MATMUL`: Triggers computation using Activations from `row_bram` and Weights already resident in `weight_bram`.
 
-### MLP BRAM Column Wrapper (`comp_mlp_bram_col_wrapper`)
+### comp_MLPStack
 #### Functionality
-The core computational kernel comprising 16 Compute Columns (derived from 8 MLPs, each handling two banks/columns). It handles the storage of weights in local buffer (`mlp_bram`) and executes the Dot Product computation.
+The core computational kernel comprising `NUM_COLS` Compute Columns (derived from `NUM_MLPS` MLPs, each handling two banks/columns). It handles the storage of weights in local buffer (`weight_bram`) and executes the Dot Product computation.
 
 #### Implementation Details
 - **4-Stack Architecture**: Each column contains 4 parallel "stacks". This increases throughput 4x compared to a single-stack design.
   - **Loading**: Accepts 4 chunks of data (128 elements total) in parallel during DISPATCH, completing an NV in 4 cycles.
-  - **Computing**: Streams 4 partial dot products in parallel during TILE.
+  - **Computing**: Streams 4 partial dot products in parallel during MATMUL.
 - **Result Production and the Adder Tree**:
-  - Each of the 16 columns produces exactly **one final result** for the entire dot product calculation (summing across all $V$ elements).
+  - Each column produces exactly **one final result** for the entire dot product calculation (summing across all $V$ elements).
   - The **Integer-Domain Adder Tree** (Pipeline) sits at the end of the stacks. It reduces the 4 partial products (one from each stack) into a single high-precision intermediate value for the column.
 - **Two-Stage Accumulation**:
   - **Stage 1 (Internal)**: Accumulation over the inner dimension ($V$) happens inside the MLP primitives using the `accumulate` signal.
@@ -536,12 +733,12 @@ The core computational kernel comprising 16 Compute Columns (derived from 8 MLPs
 - **Rounding and Output**:
   - The pipeline performs a single rounding operation at the very end (FP24 -> Int -> Sum -> FP16) to minimize precision loss.
   - Results are output as **FP16** values.
-- **MLP and mlp_bram Relation**: 
-  - Each `MLP` is tightly coupled with its own `mlp_bram` (local buffer). 
-  - The `mlp_bram` provides the "Right" matrix data (weights) directly to the MLP multipliers via dedicated internal buses.
-  - In a 2-bank configuration, one `mlp_bram` word (144 bits) serves two logical columns (72 bits each), enabling one MLP to process two columns simultaneously.
+- **MLP and weight_bram Relation**: 
+  - Each `MLP` is tightly coupled with its own `weight_bram` (local buffer). 
+  - The `weight_bram` provides the "Right" matrix data (weights) directly to the MLP multipliers via dedicated internal buses.
+  - In a 2-bank configuration, one `weight_bram` word (144 bits) serves two logical columns (72 bits each), enabling one MLP to process two columns simultaneously.
 
-> **IMPORTANT**: The files `comp_mlp_bram_col.sv`, `comp_mlp_bram.sv`, and all modules below them are verified low-level primitives and **SHOULD NEVER BE MODIFIED**. Any architectural changes should be implemented at the `comp_mlp_bram_col_wrapper.sv` level or above.
+> **IMPORTANT**: The files `comp_MLP.sv`, `comp_MLPRow.sv`, `weight_bram.sv`, and `comp_mlp_dot16_bfp8.sv` are verified low-level primitives and **SHOULD NEVER BE MODIFIED**. Any architectural changes should be implemented at the `comp_MLPStack.sv` level or above.
 
 
 ### Dispatcher Control and Compute Engine Overview
@@ -569,19 +766,19 @@ graph TD
             
             subgraph Col0 [Column 0]
                 direction TB
-                B0[mlp-bram 0] --> M0[MLP 0]
+                B0[weight_bram 0] --> M0[MLP 0]
             end
 
             subgraph Col1 [Column 1]
                 direction TB
-                B1[mlp-bram 1] --> M1[MLP 1]
+                B1[weight_bram 1] --> M1[MLP 1]
             end
 
             ColDots[...]
 
-            subgraph ColN [Column 15]
+            subgraph ColN [Column N]
                 direction TB
-                BN[mlp-bram 15] --> MN[MLP 15]
+                BN[weight_bram N] --> MN[MLP N]
             end
         end
     end
@@ -679,7 +876,7 @@ cmd[3] = {31'b0, fetch_right}
 
 **Purpose**: Consumes the FIFO produced by the Fetcher and routes data to the Compute Engine. Based on the target (Left vs. Right), it handles data storage differently:
 - **Left Data (Activations)**: Written to `row_bram`, which serves as a shared buffer accessible by all compute tiles (Broadcast).
-- **Right Data (Weights)**: Distributed round-robin directly to the compute buffers (`mlp_bram`) within the compute tiles (Distribute).
+- **Right Data (Weights)**: Distributed round-robin directly to the compute buffers (`weight_bram`) within the compute tiles (Distribute).
 
 #### Hardware Packing (4-Word Format)
 
@@ -696,7 +893,7 @@ cmd[3] = {16'b0, col_start[7:0], 5'b0, disp_right, broadcast, man_4b}
 - **UGD Length**: Number of Native Vectors per UGD vector. It is the same as the UGD Length in the FETCH command.
 - **Tile Address**: The starting address of the destination buffer.
   - For Left Data (Activations): Linear address in `row_bram`.
-  - For Right Data (Weights): Linear address in `mlp_bram`.
+  - For Right Data (Weights): Linear address in `weight_bram`.
 - **Column Start (col_start)**: The starting column index for round-robin distribution. 
   - Used for **Right Data** (Weights) to determine which tile receives the first chunk.
   - Ignored for **Left Data** (Activations) as they are written to the shared `row_bram`.
@@ -724,7 +921,7 @@ cmd[3] = {ugd_len[15:0], 13'b0, left_4b, right_4b, main_loop_left}
 
 - **Left/Right Address**: Starting line address in the respective buffers (0-511).
   - **Left**: Address in `row_bram` (Activations).
-  - **Right**: Address in `mlp_bram` (Weights).
+  - **Right**: Address in `weight_bram` (Weights).
 - **Left Length**: Number of UGD vectors on left (Batch dimension)
 - **Right Length**: Number of UGD vectors on right (Column dimension)
 - **UGD Length**: Number of Native Vectors per UGD vector (Inner dimension)
@@ -889,30 +1086,27 @@ module flex_fifo #(parameter WIDTH, DEPTH) (
 │                              Data Flow with FIFOs                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-Host CSR ──> [cmd_fifo] ──> Master Control
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-         [disp_cmd_fifo]                 [tile_cmd_fifo]
-              │                               │
-              ▼                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Per-Row Data Path                                                           │
-│                                                                             │
-│   GDDR6 ──> Fetcher ──> [streaming_fifo] ──> Dispatcher                    │
-│                                                  │                          │
-│                            ┌─────────────────────┴─────────────────────┐   │
-│                            ▼                                           ▼   │
-│                       row_bram                                    mlp_bram │
-│                      (Activations)                               (Weights) │
-│                            │                                           │   │
-│                            └─────────────┬─────────────────────────────┘   │
-│                                          ▼                                  │
-│                                    MLP Compute                              │
-│                                          │                                  │
-│                                   [result_fifo]                             │
-│                                          │                                  │
-└──────────────────────────────────────────┼──────────────────────────────────┘
+Host DMA ──> [dma_cmd_in_bram] ──> [cmd_bram_fifo_bridge] ──> [cmd_fifo] ──> Master Control
+                                                                               │
+                                                  (Direct command broadcast to all rows)
+                                                                               │
+┌──────────────────────────────────────────────────────────────────────────────┼────────────┐
+│ Per-Row Data Path                                                            │            │
+│                                                                              ▼            │
+│   GDDR6 ──> Fetcher ──> [streaming_fifo] ──> Dispatcher   <── DC/CE Commands             │
+│                                                  │                                        │
+│                            ┌─────────────────────┴─────────────────────┐                 │
+│                            ▼                                           ▼                 │
+│                       row_bram                                    weight_bram            │
+│                      (Activations)                               (Weights)               │
+│                            │                                           │                 │
+│                            └─────────────┬─────────────────────────────┘                 │
+│                                          ▼                                               │
+│                                    MLP Compute                                           │
+│                                          │                                               │
+│                                   [result_fifo]                                          │
+│                                          │                                               │
+└──────────────────────────────────────────┼───────────────────────────────────────────────┘
                                            ▼
                               Result Collection (RC)
                                            │
@@ -1028,7 +1222,7 @@ assign fifo_ready = target_ready;
 | Master Control → Dispatcher | Two-entry | Decouple control timing |
 | Fetcher → Dispatcher | Deep (configurable) | Rate match DDR to compute |
 | Dispatcher → row_bram | None (direct write) | Activations written directly |
-| Dispatcher → mlp_bram | None (direct write) | Weights streamed directly |
+| Dispatcher → weight_bram | None (direct write) | Weights streamed directly |
 | MLP → Result FIFO | Deep (per column) | Buffer compute results |
 | Result Collection → Host | Deep | Buffer for DMA read |
 
@@ -1086,14 +1280,14 @@ GDDR6 → Fetcher → Streaming FIFO → Dispatcher
                                       ↓
                     ┌─────────────────┴─────────────────┐
                     ▼                                   ▼
-              row_bram                             mlp_bram
+              row_bram                             weight_bram
          (Activations ONLY)                    (Weights ONLY)
            [Broadcast]                         [Distribute]
 ```
 
 **Key Difference:** ACX explicitly separates activation and weight data paths:
 - `row_bram`: Dedicated shared buffer for activations (broadcast to all columns)
-- `mlp_bram`: Per-column local buffer for weights (no intermediate buffering)
+- `weight_bram`: Per-column local buffer for weights (no intermediate buffering)
 - AMD uses unified tile BRAM for both, switching modes via control signal
 
 ### Compute Engine Structure
@@ -1110,9 +1304,9 @@ gemm_tile:
 ```
 compute_engine:
   ├── row_bram              ← shared across all columns
-  └── comp_mlp_bram_col_wrapper:
+  └── comp_MLPStack:
         └── column[0:15]:
-              ├── mlp_bram  ← local per-column
+              ├── weight_bram  ← local per-column
               └── MLP[0:3]  ← 4-stack ACX_MLP72
 ```
 
@@ -1182,6 +1376,6 @@ Both designs use identical command opcodes:
 
 1. **Streaming architecture**: No intermediate buffering for weights (lower latency)
 2. **MLP-based compute**: Native BFP8 support in ACX_MLP72 (vs custom logic)
-3. **Separate row_bram/mlp_bram**: Cleaner activation/weight separation
+3. **Separate row_bram/weight_bram**: Cleaner activation/weight separation
 4. **16 columns**: More parallelism than AMD's 13
 5. **Global Result Collection**: Centralized vs embedded column adders

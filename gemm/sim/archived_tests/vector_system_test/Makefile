@@ -54,6 +54,7 @@ RTL_SOURCES = \
 	$(GEMM_RTL)/weight_bram.sv \
 	$(GEMM_RTL)/comp_mlp_bram.sv \
 	$(GEMM_RTL)/comp_mlp_bram_col.sv \
+	$(GEMM_RTL)/comp_stack_fifo.sv \
 	$(GEMM_RTL)/comp_mlp_bram_col_wrapper.sv \
 	$(GEMM_RTL)/comp_bram_fill_ctrl.sv \
 	$(GEMM_RTL)/comp_mlp_dispatch.sv \

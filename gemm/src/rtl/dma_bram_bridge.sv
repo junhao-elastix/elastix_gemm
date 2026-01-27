@@ -44,16 +44,15 @@ module dma_bram_bridge
     // Inputs
     input wire i_clk,
     input wire i_reset_n,       // Negative synchronous reset
-    input wire i_bram_inc42_en, // Legacy processing enable (unused, kept for compatibility)
     
     // Internal Access Ports (for MS2.0 GEMM engine result writer)
     input  wire                              i_internal_rd_en,     // FSM read enable
-    input  wire [8:0]                        i_internal_rd_addr,   // FSM read address (0-127)
-    output logic [255:0]                     o_internal_rd_data,   // FSM read data (int16 at [15:0])
+    input  wire [8:0]                        i_internal_rd_addr,   // FSM read address
+    output logic [255:0]                     o_internal_rd_data,   // FSM read data
 
     input  wire                              i_internal_wr_en,     // FSM write enable
-    input  wire [8:0]                        i_internal_wr_addr,   // FSM write address (0-127)
-    input  wire [255:0]                      i_internal_wr_data,   // FSM write data (int16 at [15:0])
+    input  wire [8:0]                        i_internal_wr_addr,   // FSM write address
+    input  wire [255:0]                      i_internal_wr_data,   // FSM write data
     input  wire [31:0]                       i_internal_wr_strobe  // FSM write byte enables
     );
 

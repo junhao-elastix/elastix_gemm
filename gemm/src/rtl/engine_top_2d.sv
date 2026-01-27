@@ -3,7 +3,7 @@
 //
 // Purpose: Top-level wrapper for 2-D GEMM architecture with NUM_ROWS rows
 // Contains:
-//  - Command FIFO (4096x32-bit): Buffers incoming microcode commands
+//  - Command FIFO (512x128-bit): Buffers incoming microcode commands
 //  - Master Control (MC): Unified command processor with per-row V partitioning
 //  - Dispatcher Control (DC) x16: Per-row GDDR6 fetch and dispatch
 //  - Compute Engine (CE) x16: Per-row MLP compute array
@@ -43,13 +43,20 @@ import gemm_pkg::*;
     input  logic                         i_reset_n,
 
     // ====================================================================
-    // Host Command FIFO Interface (Direct Write)
+    // Command BRAM Read Interface (from external cmd BRAM)
     // ====================================================================
-    input  logic [31:0]                  i_cmd_fifo_wdata,
-    input  logic                         i_cmd_fifo_wen,
-    output logic                         o_cmd_fifo_full,
-    output logic                         o_cmd_fifo_afull,
-    output logic [12:0]                  o_cmd_fifo_count,
+    input  logic [255:0]                 i_cmd_bram_rd_data,
+    output logic                         o_cmd_bram_rd_en,
+    output logic [8:0]                   o_cmd_bram_rd_addr,
+
+    // ====================================================================
+    // Command Control Interface (from host registers)
+    // ====================================================================
+    input  logic [31:0]                  i_cmd_cnt,        // Number of commands in BRAM
+    input  logic                         i_cmd_valid,      // Host writes 1 to start transfer
+    output logic                         o_cmd_valid_clr,  // Pulse when transfer complete
+    output logic                         o_cmd_bridge_busy,// Bridge is actively transferring
+    output logic [12:0]                  o_cmd_fifo_count, // Internal FIFO count (debug)
 
     // ====================================================================
     // 16 AXI Interfaces for GDDR6 Access (one per row)
@@ -70,7 +77,17 @@ import gemm_pkg::*;
     // ====================================================================
     output logic                         o_engine_busy,
     output logic [3:0]                   o_mc_state,      // Master control state
-    output logic [3:0]                   o_rc_state       // Result collector state
+    output logic [3:0]                   o_rc_state,      // Result collector state
+
+    // ====================================================================
+    // Debug Outputs (for hardware debugging)
+    // ====================================================================
+    output logic [NUM_ROWS-1:0]          o_dbg_ce_ack_matmul,     // Per-row CE ACK (captured in MC)
+    output logic [NUM_ROWS-1:0]          o_dbg_dc_ack_fetch,      // Per-row DC ACK (captured in MC)
+    output logic                         o_dbg_cmd_valid,         // MC has valid command
+    output logic                         o_dbg_matmul_en_pulse,   // MATMUL enable pulse
+    output logic [3:0]                   o_dbg_ce_state_row0,     // CE state for row 0
+    output logic [3:0]                   o_dbg_dc_state_row0      // DC state for row 0
 );
 
     // ===================================================================
@@ -104,8 +121,14 @@ import gemm_pkg::*;
     // Internal Connection Signals
     // ===================================================================
 
-    // Command FIFO -> Master Control
-    logic [31:0]  cmd_fifo_rdata;
+    // Command BRAM Bridge -> Command FIFO (128-bit wide)
+    logic [127:0] cmd_fifo_wdata_int;
+    logic         cmd_fifo_wen_int;
+    logic         cmd_fifo_full;
+    logic         cmd_fifo_afull;
+
+    // Command FIFO -> Master Control (128-bit wide)
+    logic [127:0] cmd_fifo_rdata;
     logic         cmd_fifo_empty;
     logic [12:0]  cmd_fifo_count;
     logic         cmd_fifo_ren;
@@ -171,6 +194,11 @@ import gemm_pkg::*;
     // MC state
     logic [3:0]   mc_state;
 
+    // Debug signals from MC
+    logic [NUM_ROWS-1:0] dbg_ce_ack_matmul_reg;
+    logic [NUM_ROWS-1:0] dbg_dc_ack_fetch_reg;
+    logic                dbg_cmd_valid;
+
     // ===================================================================
     // MATMUL Enable Generation
     // ===================================================================
@@ -194,17 +222,41 @@ import gemm_pkg::*;
     // ===================================================================
 
     // ------------------------------------------------------------------
+    // Command BRAM-to-FIFO Bridge
+    // Reads batched commands from external BRAM and pushes to internal FIFO
+    // ------------------------------------------------------------------
+    cmd_bram_fifo_bridge u_cmd_bridge (
+        .i_clk              (i_clk),
+        .i_reset_n          (i_reset_n),
+        // Register interface (from external control)
+        .i_cmd_cnt          (i_cmd_cnt),
+        .i_cmd_valid        (i_cmd_valid),
+        .o_cmd_valid_clr    (o_cmd_valid_clr),
+        .o_rd_addr          (),  // Debug only, not connected
+        .o_bridge_busy      (o_cmd_bridge_busy),
+        // BRAM read interface (to external BRAM)
+        .o_bram_rd_en       (o_cmd_bram_rd_en),
+        .o_bram_rd_addr     (o_cmd_bram_rd_addr),
+        .i_bram_rd_data     (i_cmd_bram_rd_data),
+        // FIFO write interface (to internal cmd_fifo)
+        .o_fifo_wdata       (cmd_fifo_wdata_int),
+        .o_fifo_wen         (cmd_fifo_wen_int),
+        .i_fifo_full        (cmd_fifo_full),
+        .i_fifo_afull       (cmd_fifo_afull)
+    );
+
+    // ------------------------------------------------------------------
     // Command FIFO - Buffers incoming microcode commands
     // ------------------------------------------------------------------
     cmd_fifo u_cmd_fifo (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
 
-        // Write Interface (from Host/PCIe)
-        .i_wr_data          (i_cmd_fifo_wdata),
-        .i_wr_en            (i_cmd_fifo_wen),
-        .o_full             (o_cmd_fifo_full),
-        .o_afull            (o_cmd_fifo_afull),
+        // Write Interface (from BRAM bridge)
+        .i_wr_data          (cmd_fifo_wdata_int),
+        .i_wr_en            (cmd_fifo_wen_int),
+        .o_full             (cmd_fifo_full),
+        .o_afull            (cmd_fifo_afull),
 
         // Read Interface (to Master Control)
         .o_rd_data          (cmd_fifo_rdata),
@@ -259,7 +311,12 @@ import gemm_pkg::*;
         .i_rc_id            (rc_id),
 
         // Debug
-        .o_mc_state         (mc_state)
+        .o_mc_state         (mc_state),
+
+        // Extended Debug
+        .o_dbg_ce_ack_matmul_reg (dbg_ce_ack_matmul_reg),
+        .o_dbg_dc_ack_fetch_reg  (dbg_dc_ack_fetch_reg),
+        .o_dbg_cmd_valid         (dbg_cmd_valid)
     );
 
     // ------------------------------------------------------------------
@@ -333,17 +390,20 @@ import gemm_pkg::*;
             //
             // When any column is being written, we derive the MLP and bank
 
+            localparam int COL_IDX_WIDTH = $clog2(NUM_COLS);
+            localparam int MLP_SEL_WIDTH = $clog2(NUM_MLPS);
+
             logic        wt_wr_en_r;
-            logic [2:0]  wt_mlp_sel_r;
+            logic [MLP_SEL_WIDTH-1:0]  wt_mlp_sel_r;
             logic [9:0]  wt_nv_idx_r;
-            logic [3:0]  col_idx_r;
+            logic [COL_IDX_WIDTH-1:0]  col_idx_r;
 
             // One-hot to binary decoder for column index
             always_comb begin
-                col_idx_r = 4'd0;
+                col_idx_r = '0;
                 for (int c = 0; c < NUM_COLS; c++) begin
                     if (dc_right_wr_en[r][c])
-                        col_idx_r = c[3:0];
+                        col_idx_r = COL_IDX_WIDTH'(c);
                 end
             end
 
@@ -351,7 +411,7 @@ import gemm_pkg::*;
             assign wt_wr_en_r = |dc_right_wr_en[r];
 
             // MLP selection: column / 2
-            assign wt_mlp_sel_r = col_idx_r[3:1];
+            assign wt_mlp_sel_r = col_idx_r[COL_IDX_WIDTH-1:1];
 
             // NV index: addr * 2 + bank (where bank = col % 2)
             assign wt_nv_idx_r = {dc_right_wr_addr[r], 1'b0} + {9'b0, col_idx_r[0]};
@@ -375,7 +435,7 @@ import gemm_pkg::*;
                 .BRAM_DEPTH         (BRAM_DEPTH),
                 .ADDR_WIDTH         (ADDR_WIDTH),
                 .NUM_MLPS           (NUM_MLPS),
-                .NUM_COLUMNS        (NUM_COLS),
+                .NUM_COLS           (NUM_COLS),
                 .RESULT_FIFO_DEPTH  (64)
             ) u_compute_engine (
                 .i_clk              (i_clk),
@@ -495,5 +555,15 @@ import gemm_pkg::*;
     // ===================================================================
     assign o_mc_state = mc_state;
     assign o_rc_state = rc_state;
+
+    // ===================================================================
+    // Debug Output Assignments
+    // ===================================================================
+    assign o_dbg_ce_ack_matmul   = dbg_ce_ack_matmul_reg;
+    assign o_dbg_dc_ack_fetch    = dbg_dc_ack_fetch_reg;
+    assign o_dbg_cmd_valid       = dbg_cmd_valid;
+    assign o_dbg_matmul_en_pulse = matmul_en_pulse;
+    assign o_dbg_ce_state_row0   = ce_state[0];
+    assign o_dbg_dc_state_row0   = dc_state[0];
 
 endmodule : engine_top_2d

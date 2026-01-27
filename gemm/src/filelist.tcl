@@ -19,6 +19,7 @@ nap_responder_wrapper.sv
 # Elastix GEMM Engine - Command/Control
 cmd_fifo.sv
 csr_to_fifo_bridge.sv
+cmd_bram_fifo_bridge.sv
 # Elastix GEMM Engine - Memory/Result Path
 dma_bram_bridge.sv
 flex_fifo.sv

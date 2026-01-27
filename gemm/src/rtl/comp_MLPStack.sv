@@ -101,12 +101,17 @@ module comp_MLPStack #(
     input  logic        i_last_matmul,        // Truly last dot product of entire MATMUL (triggers final drain)
 
     // =========================================================================
-    // Result Interface (downstream) - 16 parallel FP16 outputs to external FIFOs
+    // Result Interface (downstream) - NUM_COLS parallel FP16 outputs to external FIFOs
     // =========================================================================
-    output logic [15:0] o_result_fp16 [15:0],  // 16 x FP16 results (NUM_MLPS * 2 columns)
-    output logic        o_result_push,         // Push enable for all 16 FIFOs
-    input  logic        i_result_fifo_full     // OR of all external FIFO full flags
+    output logic [15:0] o_result_fp16 [2*NUM_MLPS-1:0],  // NUM_COLS x FP16 results (NUM_MLPS * 2 columns)
+    output logic        o_result_push,                   // Push enable for all FIFOs
+    input  logic        i_result_fifo_full               // OR of all external FIFO full flags
 );
+
+    // =========================================================================
+    // Derived Parameters
+    // =========================================================================
+    localparam int NUM_COLS = 2 * NUM_MLPS;  // 2 columns per MLP (bank0=even, bank1=odd)
 
     // =========================================================================
     // Address Space Constants

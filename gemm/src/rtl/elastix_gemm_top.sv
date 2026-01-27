@@ -201,11 +201,11 @@ module elastix_gemm_top
 
     // MS2.0 GEMM Engine Registers (Channel 1)
     localparam      ENGINE_BYPASS_CTRL     = 14;                // Bypass control {30'h0, bypass_mode[1:0]} - 0x38
-    localparam      ENGINE_CMD_WORD0       = 15;                // Command word 0 (contains opcode) - 0x3C
-    localparam      ENGINE_CMD_WORD1       = 16;                // Command word 1 - 0x40
-    localparam      ENGINE_CMD_WORD2       = 17;                // Command word 2 - 0x44
-    localparam      ENGINE_CMD_WORD3       = 18;                // Command word 3 - 0x48
-    localparam      ENGINE_CMD_SUBMIT      = 19;                // Submit trigger (write 1 to execute) - 0x4C
+    localparam      DMA_CMD_CNT            = 15;                // DMA command count (number of commands in BRAM) - 0x3C
+    localparam      DMA_CMD_VALID          = 16;                // DMA command valid (host writes 1 to start) - 0x40
+    localparam      DMA_CMD_RD_ADDR        = 17;                // DMA command read address (debug, read-only) - 0x44
+    localparam      DMA_CMD_RESERVED       = 18;                // Reserved - 0x48
+    localparam      ENGINE_CMD_SUBMIT      = 19;                // Submit trigger (legacy, may be removed) - 0x4C
     localparam      ENGINE_STATUS          = 20;                // Engine status {CE[3:0], DC[3:0], MC[3:0], busy} - 0x50
     localparam      ENGINE_RESULT_COUNT    = 21;                // Result count (FP16 values written) - 0x54
     localparam      ENGINE_DEBUG           = 22;                // Debug signals {FIFO_empty, bridge_busy, FIFO_count[12:0]} - 0x58
@@ -435,34 +435,57 @@ module elastix_gemm_top
         end
     end
 
-    // This instance is used for DMA transactions
-    // Also accepts writes from MS2.0 Engine result writer via internal ports
-    // CLOCK DOMAIN FIX (Oct 10, 2025): Changed from i_reg_clk to i_nap_clk
-    // NAP PLACEMENT FIX (Oct 14, 2025): Result BRAM at NAP[3][5] per placement constraint
+    // DMA Data Out BRAM - Result buffer for host DMA read-back
     // CRITICAL: RTL parameters MUST match physical placement in ace_placements.pdc
-    // Physical placement: NOC[3][5] (ace_placements.pdc line 29)
+    // Physical placement: NOC[3][5]
     dma_bram_bridge
     #(
-        .TGT_DATA_WIDTH     (`ACX_NAP_AXI_DATA_WIDTH), // Target data width.
+        .TGT_DATA_WIDTH     (`ACX_NAP_AXI_DATA_WIDTH),
         .TGT_ADDR_WIDTH     (`ACX_NAP_AXI_INITIATOR_ADDR_WIDTH),
-        .NAP_COL            (3),  // Column 3 - same as engine
-        .NAP_ROW            (5),  // Row 5 - MATCHES PLACEMENT CONSTRAINT (NOC[3][5])
-        .PROBE_NAME         ("bram_rsp_dma")
-    ) i_axi_bram_rsp_dma (
-        // Inputs
+        .NAP_COL            (3),
+        .NAP_ROW            (5),
+        .PROBE_NAME         ("dma_data_out_bram")
+    ) i_dma_data_out_bram (
         .i_clk              (i_reg_clk),
         .i_reset_n          (reg_rstn),
-        .i_bram_inc42_en       (1'b0),       // +42 processing disabled
-        // Internal write ports from MS2.0 Engine result writer
+        // Internal write ports from engine result writer
         .i_internal_wr_en      (engine_bram_wr_en),
         .i_internal_wr_addr    (engine_bram_wr_addr),
         .i_internal_wr_data    (engine_bram_wr_data),
         .i_internal_wr_strobe  (engine_bram_wr_strobe),
-        // Tie off internal read ports (not used)
+        // Internal read ports (not used)
         .i_internal_rd_en      (1'b0),
-        .i_internal_rd_addr (9'b0),
-        .o_internal_rd_data ()  // unconnected
+        .i_internal_rd_addr    (9'b0),
+        .o_internal_rd_data    ()
     );
+
+    // DMA Command In BRAM - Command buffer for host DMA write, engine read
+    // CRITICAL: RTL parameters MUST match physical placement in ace_placements.pdc
+    // Physical placement: NOC[3][6]
+    dma_bram_bridge
+    #(
+        .TGT_DATA_WIDTH     (`ACX_NAP_AXI_DATA_WIDTH),
+        .TGT_ADDR_WIDTH     (`ACX_NAP_AXI_INITIATOR_ADDR_WIDTH),
+        .NAP_COL            (3),
+        .NAP_ROW            (6),
+        .PROBE_NAME         ("dma_cmd_in_bram")
+    ) i_dma_cmd_in_bram (
+        .i_clk              (i_reg_clk),
+        .i_reset_n          (reg_rstn),
+        // Internal write ports (not used - host writes via DMA)
+        .i_internal_wr_en      (1'b0),
+        .i_internal_wr_addr    (9'b0),
+        .i_internal_wr_data    (256'b0),
+        .i_internal_wr_strobe  (32'b0),
+        // Internal read ports - connected to cmd_bram_fifo_bridge
+        .i_internal_rd_en      (cmd_bram_rd_en),
+        .i_internal_rd_addr    (cmd_bram_rd_addr),
+        .o_internal_rd_data    (cmd_bram_rd_data)
+    );
+
+    // NOTE: cmd_bram_fifo_bridge has been moved inside engine_top_2d
+    // The engine now directly reads from the external BRAM and handles the
+    // BRAM-to-FIFO bridging internally, simplifying this top-level module.
 
     // This instance is used for DMA descriptor lists
     dma_bram_bridge
@@ -476,7 +499,14 @@ module elastix_gemm_top
         // Inputs
         .i_clk              (i_reg_clk),
         .i_reset_n          (reg_rstn), // active low synchronous reset
-        .i_bram_inc42_en    (1'b0)      // +42 processing disabled
+        // Internal ports (not used - tied off)
+        .i_internal_rd_en   (1'b0),
+        .i_internal_rd_addr (9'b0),
+        .o_internal_rd_data (),
+        .i_internal_wr_en   (1'b0),
+        .i_internal_wr_addr (9'b0),
+        .i_internal_wr_data (256'b0),
+        .i_internal_wr_strobe(32'b0)
     );
 
     // This instance is used for ATU demonstration (standard BRAM responder without processing)
@@ -570,34 +600,45 @@ module elastix_gemm_top
     logic        engine_busy;
     logic [3:0]  mc_state_2d, rc_state_2d;
 
+    // Debug signals from engine_top_2d
+    logic [15:0] dbg_ce_ack_matmul;      // Per-row CE ACK bits (captured in MC)
+    logic [15:0] dbg_dc_ack_fetch;       // Per-row DC ACK bits (captured in MC)
+    logic        dbg_cmd_valid;          // MC has valid command
+    logic        dbg_matmul_en_pulse;    // MATMUL enable pulse
+    logic [3:0]  dbg_ce_state_row0;      // CE state for row 0
+    logic [3:0]  dbg_dc_state_row0;      // DC state for row 0
+
     // Soft-reset for engine
     logic engine_soft_reset;
     logic engine_rstn;
     assign engine_soft_reset = user_regs_write[CONTROL_REG][1];
     assign engine_rstn = reg_rstn & ~engine_soft_reset;
 
-    // Command FIFO interface
-    logic [31:0] cmd_fifo_wdata;
-    logic        cmd_fifo_wen;
-    logic        cmd_fifo_full, cmd_fifo_afull;
-    logic [12:0] cmd_fifo_count;
-    logic        bridge_busy;
+    // Command BRAM-to-engine interface signals
+    // BRAM read interface (engine reads from dma_cmd_in_bram)
+    logic        cmd_bram_rd_en;
+    logic [8:0]  cmd_bram_rd_addr;
+    logic [255:0] cmd_bram_rd_data;
 
-    // CSR to FIFO bridge
-    csr_to_fifo_bridge i_csr_bridge (
-        .i_clk         (i_reg_clk),
-        .i_reset_n     (engine_rstn),
-        .i_cmd_word0   (user_regs_write[ENGINE_CMD_WORD0]),
-        .i_cmd_word1   (user_regs_write[ENGINE_CMD_WORD1]),
-        .i_cmd_word2   (user_regs_write[ENGINE_CMD_WORD2]),
-        .i_cmd_word3   (user_regs_write[ENGINE_CMD_WORD3]),
-        .i_cmd_submit  (write_strobes[ENGINE_CMD_SUBMIT]),
-        .o_bridge_busy (bridge_busy),
-        .o_fifo_wdata  (cmd_fifo_wdata),
-        .o_fifo_wen    (cmd_fifo_wen),
-        .i_fifo_full   (cmd_fifo_full),
-        .i_fifo_afull  (cmd_fifo_afull)
-    );
+    // Command control signals (from engine bridge)
+    logic        cmd_bram_bridge_busy;
+    logic        cmd_valid_clr;
+    logic [12:0] cmd_fifo_count;  // Internal FIFO count from engine (debug)
+
+    // DMA_CMD_VALID register with auto-clear support
+    logic        dma_cmd_valid_reg;
+    always_ff @(posedge i_reg_clk) begin
+        if (~reg_rstn) begin
+            dma_cmd_valid_reg <= 1'b0;
+        end else if (cmd_valid_clr) begin
+            // Bridge finished - auto-clear
+            dma_cmd_valid_reg <= 1'b0;
+        end else if (write_strobes[DMA_CMD_VALID]) begin
+            // Host write
+            dma_cmd_valid_reg <= user_regs_write[DMA_CMD_VALID][0];
+        end
+    end
+
 
     // BRAM write interface from engine (connected to dma_bram_bridge)
     logic         engine_2d_bram_wr_en;
@@ -607,11 +648,14 @@ module elastix_gemm_top
 
     // 2D GEMM Engine with 16 AXI interfaces
     // Note: Interface arrays require individual connections for each element
+    localparam int ENGINE_NUM_MLPS = 2;
+    localparam int ENGINE_NUM_COLS = ENGINE_NUM_MLPS * 2;  // 4 columns
+
     engine_top_2d #(
-        .NUM_MLPS     (8),
+        .NUM_MLPS     (ENGINE_NUM_MLPS),
         .STACK_DEPTH  (4),
         .NUM_ROWS     (NUM_ROWS_2D),
-        .NUM_COLS     (16),
+        .NUM_COLS     (ENGINE_NUM_COLS),
         .MAN_WIDTH    (256),
         .EXP_WIDTH    (8),
         .BRAM_DEPTH   (512)
@@ -619,11 +663,16 @@ module elastix_gemm_top
         .i_clk              (i_reg_clk),
         .i_reset_n          (engine_rstn),
 
-        // Command FIFO interface (from CSR bridge)
-        .i_cmd_fifo_wdata   (cmd_fifo_wdata),
-        .i_cmd_fifo_wen     (cmd_fifo_wen),
-        .o_cmd_fifo_full    (cmd_fifo_full),
-        .o_cmd_fifo_afull   (cmd_fifo_afull),
+        // Command BRAM Read Interface (direct to dma_cmd_in_bram)
+        .i_cmd_bram_rd_data (cmd_bram_rd_data),
+        .o_cmd_bram_rd_en   (cmd_bram_rd_en),
+        .o_cmd_bram_rd_addr (cmd_bram_rd_addr),
+
+        // Command Control Interface (from host registers)
+        .i_cmd_cnt          (user_regs_write[DMA_CMD_CNT]),
+        .i_cmd_valid        (dma_cmd_valid_reg),
+        .o_cmd_valid_clr    (cmd_valid_clr),
+        .o_cmd_bridge_busy  (cmd_bram_bridge_busy),
         .o_cmd_fifo_count   (cmd_fifo_count),
 
         // 16 AXI interfaces to NAPs
@@ -638,7 +687,15 @@ module elastix_gemm_top
         // Status outputs
         .o_engine_busy      (engine_busy),
         .o_mc_state         (mc_state_2d),
-        .o_rc_state         (rc_state_2d)
+        .o_rc_state         (rc_state_2d),
+
+        // Debug outputs
+        .o_dbg_ce_ack_matmul    (dbg_ce_ack_matmul),
+        .o_dbg_dc_ack_fetch     (dbg_dc_ack_fetch),
+        .o_dbg_cmd_valid        (dbg_cmd_valid),
+        .o_dbg_matmul_en_pulse  (dbg_matmul_en_pulse),
+        .o_dbg_ce_state_row0    (dbg_ce_state_row0),
+        .o_dbg_dc_state_row0    (dbg_dc_state_row0)
     );
 
     // Connect engine BRAM writer to module-level signals
@@ -652,16 +709,21 @@ module elastix_gemm_top
     // =====================================================================
     // Engine command registers (read-back)
     assign user_regs_read[ENGINE_BYPASS_CTRL] = {30'h0, user_regs_write[ENGINE_BYPASS_CTRL][1:0]};
-    assign user_regs_read[ENGINE_CMD_WORD0] = user_regs_write[ENGINE_CMD_WORD0];
-    assign user_regs_read[ENGINE_CMD_WORD1] = user_regs_write[ENGINE_CMD_WORD1];
-    assign user_regs_read[ENGINE_CMD_WORD2] = user_regs_write[ENGINE_CMD_WORD2];
-    assign user_regs_read[ENGINE_CMD_WORD3] = user_regs_write[ENGINE_CMD_WORD3];
-    assign user_regs_read[ENGINE_CMD_SUBMIT] = 32'h0;  // Write-only trigger register
+    // DMA Command registers
+    assign user_regs_read[DMA_CMD_CNT] = user_regs_write[DMA_CMD_CNT];  // Read-back count
+    assign user_regs_read[DMA_CMD_VALID] = {31'h0, dma_cmd_valid_reg};  // Current valid state
+    assign user_regs_read[DMA_CMD_RD_ADDR] = {23'h0, cmd_bram_rd_addr};  // Debug: current read address
+    assign user_regs_read[DMA_CMD_RESERVED] = 32'h0;  // Reserved
+    assign user_regs_read[ENGINE_CMD_SUBMIT] = 32'h0;  // Legacy, write-only
 
     // Engine status: {reserved[12], reserved[4], mc_state[4], rc_state[4], reserved[4], busy[1]}
     assign user_regs_read[ENGINE_STATUS] = {12'h0, 4'h0, mc_state_2d, rc_state_2d, 3'b0, engine_busy};
     assign user_regs_read[ENGINE_RESULT_COUNT] = 32'h0;  // TODO: Add result counter to engine_top_2d
-    assign user_regs_read[ENGINE_DEBUG] = {24'd0, rc_state_2d, mc_state_2d};
+    // ENGINE_DEBUG: {bridge_busy, reserved[2], FIFO_empty, rc_state[3:0], mc_state[3:0], FIFO_count[12:0], 3'b0}
+    assign user_regs_read[ENGINE_DEBUG] = {cmd_bram_bridge_busy, 2'b0,
+                                           cmd_fifo_count == 13'd0,  // empty
+                                           rc_state_2d, mc_state_2d, 
+                                           cmd_fifo_count, 3'b0};
 
     // Circular buffer interface registers (simplified for 2D engine)
     assign user_regs_read[ENGINE_WRITE_TOP] = {23'h0, engine_2d_bram_wr_addr};
@@ -675,11 +737,35 @@ module elastix_gemm_top
     assign user_regs_read[DC_BRAM_WR_COUNT] = 32'h0;  // TODO: Add debug counter
     assign user_regs_read[DC_DEBUG] = {28'h0, 4'h0};  // TODO: Add DC state
 
-    // Debug registers (simplified for 2D engine - tie off unused)
-    assign user_regs_read[CE_BRAM_ADDR_DEBUG] = 32'h0;
-    assign user_regs_read[CE_BRAM_DATA_LOW] = 32'h0;
+    // =========================================================================
+    // Debug Registers for Hardware Debugging
+    // =========================================================================
+    // CE_BRAM_ADDR_DEBUG (0x08): ACK status from MC
+    //   [31:16] = dbg_ce_ack_matmul[15:0] - Per-row CE MATMUL ACK (captured in MC)
+    //   [15:0]  = dbg_dc_ack_fetch[15:0]  - Per-row DC FETCH ACK (captured in MC)
+    assign user_regs_read[CE_BRAM_ADDR_DEBUG] = {dbg_ce_ack_matmul, dbg_dc_ack_fetch};
+
+    // CE_BRAM_DATA_LOW (0x0C): FSM states overview
+    //   [31:24] = reserved
+    //   [23]    = dbg_cmd_valid      - MC has valid command
+    //   [22]    = dbg_matmul_en_pulse - MATMUL enable pulse active
+    //   [21:20] = reserved
+    //   [19:16] = mc_state_2d        - Master Control state
+    //   [15:12] = rc_state_2d        - Result Collector state
+    //   [11:8]  = dbg_ce_state_row0  - Compute Engine state (row 0)
+    //   [7:4]   = dbg_dc_state_row0  - Dispatcher Control state (row 0)
+    //   [3:0]   = reserved
+    assign user_regs_read[CE_BRAM_DATA_LOW] = {8'h0, dbg_cmd_valid, dbg_matmul_en_pulse, 2'b0,
+                                                mc_state_2d, rc_state_2d,
+                                                dbg_ce_state_row0, dbg_dc_state_row0, 4'h0};
+
+    // CE_BRAM_DATA_MID (0x10): Reserved for future per-row CE states
     assign user_regs_read[CE_BRAM_DATA_MID] = 32'h0;
+
+    // CE_CONTROL_DEBUG (0x14): Reserved for future per-row DC states
     assign user_regs_read[CE_CONTROL_DEBUG] = 32'h0;
+
+    // Remaining debug registers - reserved for future use
     assign user_regs_read[DC_BRAM_WRITE_DEBUG] = 32'h0;
     assign user_regs_read[DC_CONTROL_DEBUG] = 32'h0;
     assign user_regs_read[BCV_DEBUG_STATE] = 32'h0;
@@ -945,7 +1031,7 @@ module elastix_gemm_top
     // Set snapshot to monitor the AXI interface into the DMA BRAM responder
     ACX_PROBE_CONNECT #(
         .width  (12),
-        .tag    ("bram_rsp_dma")
+        .tag    ("dma_data_out_bram")
     ) x_probe_snapshot (
         .dout({
             test_rlast,   test_rready,  test_rvalid,

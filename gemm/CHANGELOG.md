@@ -1,3 +1,197 @@
+## [2026-01-26] - Multi-Configuration Simulation Verification
+
+**Timestamp**: Mon Jan 26 13:03:11 PST 2026
+**Status**: ALL CONFIGURATIONS PASS
+
+### Summary
+
+Verified NUM_COLS parameter consistency across all three NUM_MLPS configurations. The testbench `write_weights()` task correctly handles column group wrapping for C > NUM_COLS.
+
+### Test Results
+
+| Configuration | NUM_COLS | Tests Passed |
+|--------------|----------|--------------|
+| NUM_MLPS=8 | 16 | 9/9 ✓ |
+| NUM_MLPS=4 | 8 | 9/9 ✓ |
+| NUM_MLPS=2 | 4 | 9/9 ✓ |
+
+### Key Implementation Details
+
+The testbench tracks `col_sel` (cycles 0 to NUM_COLS-1) and `wraddr_base` (advances by V*8 on wrap). This matches RTL read addressing: `rd_base_addr_eff = base + cg_cnt * V * 8`.
+
+---
+
+## [2026-01-26] - RTL Fix: 16-bit B, C, V Parameters per MULTI_ROW_REFERENCE.md
+
+**Timestamp**: Mon Jan 26 01:43:37 PST 2026
+**Status**: SIMULATION PASS - All 9 tests pass
+
+### Summary
+
+Fixed `compute_engine_2d.sv` to extract and use full 16-bit values for B, C, V parameters per MULTI_ROW_REFERENCE.md specification. The RTL was incorrectly extracting only 8-bit values, causing hardware tests with V_TOTAL > 255 to fail.
+
+### Root Cause
+
+The RTL extracted only the low 8 bits of B, C, V from command payload:
+```systemverilog
+// WRONG: Only extracted 8 bits
+B_reg <= i_cmd_payload_word2[23:16];  // Only B[7:0]
+C_reg <= i_cmd_payload_word2[7:0];    // Only C[7:0]
+V_reg <= i_cmd_payload_word3[23:16];  // Only V[7:0]
+```
+
+Per MULTI_ROW_REFERENCE.md MATMUL command encoding:
+- word2 = {B[15:0], C[15:0]} (left_len, right_len)
+- word3 = {V[15:0], flags[15:0]} (ugd_len)
+
+### Fixes Applied
+
+1. **Parameter declarations** (lines 117-119): Changed B_reg, C_reg, V_reg from 8-bit to 16-bit
+2. **Counter declarations** (lines 140, 142): Changed b_cnt, v_cnt from 8-bit to 16-bit
+3. **num_col_groups** (line 127): Changed from 8-bit to 12-bit (max 65535/16 = 4096)
+4. **Extraction** (lines 320-322): Use word2[31:16] for B, word2[15:0] for C, word3[31:16] for V
+5. **All counter operations**: Updated constants from 8'd to 16'd
+
+### Test Results
+
+- Simulation: All 9 tests pass with NUM_MLPS=8, 4
+- Hardware: Pending bitstream build
+
+---
+
+## [2026-01-26] - Result Collector Test Fix: Array Declaration Mismatch
+
+**Timestamp**: Mon Jan 26 01:21:35 PST 2026
+**Status**: SIMULATION PASS - All tests pass
+
+### Summary
+
+Fixed array declaration mismatch in `tb_result_collector_2d.sv` that prevented compilation.
+
+### Root Cause
+
+The testbench declared CE FIFO interface arrays as **packed** arrays:
+```systemverilog
+logic [NUM_ROWS-1:0][NUM_COLS-1:0][15:0] ce_result_data;  // WRONG
+```
+
+But `result_collector_2d.sv` ports use **unpacked** arrays (matching `engine_top_2d.sv`):
+```systemverilog
+input logic [15:0] i_ce_result_data [NUM_ROWS-1:0][NUM_COLS-1:0];  // CORRECT
+```
+
+This is why `gemm2d_test` passed (uses correct declarations in `engine_top_2d.sv`) but `result_collector_test` failed.
+
+### Fix Applied
+
+Changed `tb_result_collector_2d.sv` lines 54-56 and 73-75 from packed to unpacked arrays:
+```systemverilog
+logic [15:0] ce_result_data  [NUM_ROWS-1:0][NUM_COLS-1:0];
+logic        ce_result_empty [NUM_ROWS-1:0][NUM_COLS-1:0];
+logic        ce_result_rd_en [NUM_ROWS-1:0][NUM_COLS-1:0];
+```
+
+### Test Results
+
+All 5 result_collector tests pass: B=1/C=1, B=2/C=4, B=4/C=16, B=8/C=8, B=1/C=17
+
+---
+
+## [2026-01-26] - Testbench Fix: Multi-Configuration Support for C > NUM_COLS
+
+**Timestamp**: Mon Jan 26 00:56:28 PST 2026
+**Status**: SIMULATION PASS - All 9 tests pass for all configurations (NUM_MLPS=2, 4, 8)
+
+### Summary
+
+Fixed testbench `write_weights()` and result collection to properly handle cases where C > NUM_COLS. The RTL was already correct; only testbench fixes were needed.
+
+### Root Cause
+
+When C > NUM_COLS:
+1. **write_weights()**: Used `mlp_idx = c / 2` which exceeded NUM_MLPS bounds (e.g., c=8 → mlp_idx=4 for NUM_MLPS=4)
+2. **Result collection**: Tried to read FIFOs 0 to C-1, which accessed out-of-bounds indices and ignored column group structure
+
+### Fixes Applied
+
+1. **write_weights() task** (lines 383-451)
+   - Track `col_sel` cycling 0 to NUM_COLS-1 (wraps at NUM_COLS)
+   - Track `wraddr_base` advancing by V*8 on each wrap
+   - Use `col_sel` for MLP/bank mapping instead of raw column index
+   - Address = `wraddr_base + v*8 + chunk*2 + bank`
+
+2. **Result collection** (run_test task, lines 691-767)
+   - Calculate `num_col_groups = ceil(C / NUM_COLS)`
+   - For each (batch, column_group) combination:
+     - Pop ALL NUM_COLS FIFOs (RTL pushes to all simultaneously)
+     - Keep only first `active_cols` results (remainder for last group)
+   - Properly handles partial column groups (e.g., C=13 with NUM_COLS=8 → 8+5)
+
+### Test Results
+
+| Configuration | NUM_COLS | Tests Passed |
+|---------------|----------|--------------|
+| NUM_MLPS=8    | 16       | 9/9 ✓ |
+| NUM_MLPS=4    | 8        | 9/9 ✓ |
+| NUM_MLPS=2    | 4        | 9/9 ✓ |
+
+All tests including non-power-of-2 C values (C=13) now pass for all configurations.
+
+---
+
+## [2026-01-26] - NUM_COLS Parameter Standardization and Multi-Configuration Support
+
+**Timestamp**: Mon Jan 26 00:40:17 PST 2026
+**Status**: SUPERSEDED - See entry above for complete fix
+
+### Summary
+
+Standardized parameter naming across all 2-D GEMM modules (NUM_COLUMNS → NUM_COLS), fixed hardcoded values that should use the parameter, and added multi-configuration simulation support for NUM_MLPS = 2, 4, 8 (NUM_COLS = 4, 8, 16).
+
+### RTL Changes
+
+1. **comp_MLPStack.sv**
+   - Fixed hardcoded output array: `o_result_fp16 [15:0]` → `o_result_fp16 [2*NUM_MLPS-1:0]`
+   - Added `NUM_COLS` localparam for internal use
+
+2. **compute_engine_2d.sv**
+   - Renamed parameter `NUM_COLUMNS` → `NUM_COLS`
+   - Parameterized column group calculation:
+     - Added `NUM_COLS_SHIFT = $clog2(NUM_COLS)` for power-of-2 division
+     - Changed `>> 4` (hardcoded divide-by-16) to `>> NUM_COLS_SHIFT`
+     - Widened `num_col_groups` from 4-bit to 8-bit
+
+3. **comp_MLPStack_oFIFO.sv**
+   - Renamed parameter `NUM_COLUMNS` → `NUM_COLS`
+
+4. **dispatcher_control_2d.sv** / **dispatcher_2d.sv**
+   - Added `int` type annotations to all parameters
+
+5. **engine_top_2d.sv**
+   - Updated instantiation port: `.NUM_COLUMNS(NUM_COLS)` → `.NUM_COLS(NUM_COLS)`
+
+### Simulation Changes
+
+1. **tb_compute_engine_2d.sv**
+   - Added `+define+NUM_MLPS` support with default value 8
+   - Renamed internal `NUM_COLUMNS` → `NUM_COLS`
+
+2. **Makefiles** (compute_engine_2d_test, gemm2d_test)
+   - Added configurable `NUM_MLPS` and `NUM_COLS` variables
+   - Added `run_all_configs` target for testing 2, 4, 8 MLP configurations
+
+### Usage
+
+```bash
+# Run with specific NUM_MLPS configuration
+make run NUM_MLPS=4   # 4 MLPs, 8 columns
+
+# Run all configurations
+make run_all_configs
+```
+
+---
+
 ## [2026-01-24] - Remove Internal FIFOs from comp_MLPStack (Direct Streaming)
 
 **Timestamp**: Sat Jan 24 18:29:27 PST 2026

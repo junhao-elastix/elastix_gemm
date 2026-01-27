@@ -30,8 +30,15 @@ GEMM_RTL := ../../src/rtl
 GEMM_INC := ../../src/include
 GEMM_TB := .
 
+# Configurable parameters (default: 8 MLPs, 16 columns)
+# Override via: make run NUM_MLPS=2  (or NUM_MLPS=4, NUM_MLPS=8)
+NUM_MLPS ?= 8
+NUM_COLS ?= $(shell echo $$(($(NUM_MLPS) * 2)))
+
 # Compilation flags
 VLOG_OPTIONS := +define+SIMULATION +define+SPEEDSTER7T_SIMULATION +define+ACX_ENABLE_MLP_SIM +define+ACX_ENABLE_BRAM_SIM +define+ACX_ENABLE_PRIMITIVE_SIM +define+USE_BEHAVIORAL_BRAM
+VLOG_OPTIONS += +define+NUM_MLPS=$(NUM_MLPS)
+VLOG_OPTIONS += +define+NUM_COLS=$(NUM_COLS)
 VLOG_OPTIONS += -sv
 VLOG_OPTIONS += -timescale "1ps/1ps"
 
@@ -158,6 +165,31 @@ clean:
 	@rm -f *.tmp
 	@echo "Clean complete"
 
+# =========================================================================
+# Multi-Configuration Targets
+# =========================================================================
+# Run all NUM_MLPS configurations: 2, 4, 8 (NUM_COLS: 4, 8, 16)
+run_all_configs:
+	@echo "========================================================================"
+	@echo "  Running All NUM_MLPS Configurations"
+	@echo "========================================================================"
+	@echo ""
+	@echo "=== Configuration: NUM_MLPS=2 (NUM_COLS=4) ===" && \
+		$(MAKE) clean > /dev/null 2>&1 && \
+		$(MAKE) run NUM_MLPS=2 && \
+		echo ""
+	@echo "=== Configuration: NUM_MLPS=4 (NUM_COLS=8) ===" && \
+		$(MAKE) clean > /dev/null 2>&1 && \
+		$(MAKE) run NUM_MLPS=4 && \
+		echo ""
+	@echo "=== Configuration: NUM_MLPS=8 (NUM_COLS=16) ===" && \
+		$(MAKE) clean > /dev/null 2>&1 && \
+		$(MAKE) run NUM_MLPS=8 && \
+		echo ""
+	@echo "========================================================================"
+	@echo "  All Configurations Complete"
+	@echo "========================================================================"
+
 # Help
 help:
 	@echo "========================================================================"
@@ -169,16 +201,22 @@ help:
 	@echo "  - comp_MLPStack for computation"
 	@echo "  - comp_MLPStack_oFIFO for result buffering"
 	@echo ""
+	@echo "Current Configuration: NUM_MLPS=$(NUM_MLPS), NUM_COLS=$(NUM_COLS)"
+	@echo ""
 	@echo "Targets:"
-	@echo "  make             - Compile and run simulation (outputs to $(LOG_FILE))"
-	@echo "  make run         - Compile and run simulation (same as make)"
-	@echo "  make compile     - Compile only (no simulation)"
-	@echo "  make debug       - Run with GUI for debugging"
-	@echo "  make summary     - Show test results summary"
-	@echo "  make view-log    - View full simulation log"
-	@echo "  make clean       - Remove all generated files"
-	@echo "  make help        - Show this help message"
+	@echo "  make                  - Compile and run simulation (outputs to $(LOG_FILE))"
+	@echo "  make run              - Compile and run simulation (same as make)"
+	@echo "  make run NUM_MLPS=2   - Run with 2 MLPs (4 columns)"
+	@echo "  make run NUM_MLPS=4   - Run with 4 MLPs (8 columns)"
+	@echo "  make run NUM_MLPS=8   - Run with 8 MLPs (16 columns)"
+	@echo "  make run_all_configs  - Run all configurations (2, 4, 8 MLPs)"
+	@echo "  make compile          - Compile only (no simulation)"
+	@echo "  make debug            - Run with GUI for debugging"
+	@echo "  make summary          - Show test results summary"
+	@echo "  make view-log         - View full simulation log"
+	@echo "  make clean            - Remove all generated files"
+	@echo "  make help             - Show this help message"
 	@echo ""
 	@echo "========================================================================"
 
-.PHONY: all create_library compile run_vsim run debug view-log summary clean help
+.PHONY: all create_library compile run_vsim run run_all_configs debug view-log summary clean help

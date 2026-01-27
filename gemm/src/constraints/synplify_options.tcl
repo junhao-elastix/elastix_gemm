@@ -17,7 +17,7 @@ set_option -hdl_define -set ACX_USE_SNAPSHOT=1
 # -------------------------------------------------------------------------
 # Set the default frequency for undefined clocks
 # -------------------------------------------------------------------------
-set_option -frequency 500
+set_option -frequency 300
 
 # -------------------------------------------------------------------------
 # Example of how to set the maximum fanout
@@ -48,17 +48,17 @@ set_option -auto_fsm_extract 1
 set_option -fsm_explorer 1
 
 # Reduce retiming iterations to speed up synthesis
-set_option -retiming 1
+# set_option -retiming 1
 
 # Enable pipeline optimization for better timing closure
 set_option -pipeline 1
 
 # Set fanout limits to reduce optimization complexity
-set_option -maxfan 500
+set_option -maxfan 256
 
 # Enable arithmetic optimization for faster builds
 set_option -arithmetic_optimization 1
 
 # Optimize for speed rather than area (faster synthesis)
-# set_option -optimize_for_speed 1
+set_option -optimize_for_speed 1
 

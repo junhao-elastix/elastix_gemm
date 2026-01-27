@@ -13,8 +13,8 @@ package gemm_pkg;
     localparam int link_len_width_gp = 16;   // Number of lines
     
     // Command buffer parameters for cmd_fifo
-    localparam int cmd_buf_width_gp = 32;    // 32-bit command words
-    localparam int cmd_buf_els_gp = 64;      // 64 entries in command FIFO
+    localparam int cmd_buf_width_gp = 128;   // 128-bit command words (full command per entry)
+    localparam int cmd_buf_els_gp = 512;     // 512 entries in command FIFO
     
     // FP16 format
     parameter int FP16_WIDTH = 16;

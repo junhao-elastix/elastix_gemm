@@ -46,7 +46,7 @@ module tb_engine_top;
     localparam CLK_PERIOD = 10000;  // 10000ps = 10ns = 100MHz
     localparam TGT_DATA_WIDTH = 256;
     localparam AXI_ADDR_WIDTH = 42;  // 42-bit for GDDR6 NoC addressing
-    localparam GDDR6_PAGE_ID = 9'd0;  // Match ACX_GDDR6_SPACE for DMA compatibility
+    localparam GDDR6_PAGE_ID = 9'd1;  // Match ACX_GDDR6_SPACE for DMA compatibility
     localparam NUM_TILES = 8;
     localparam DEFAULT_TIMEOUT = 100000;  // Default watchdog cycles
 
@@ -281,6 +281,16 @@ module tb_engine_top;
 
     // Golden Reference Storage
     logic [15:0] golden_results [0:16383];
+
+    // ===================================================================
+    // NAP Address Computation
+    // ===================================================================
+    // Convert line address to full 42-bit NAP address with GDDR6_PAGE_ID
+    function automatic logic [AXI_ADDR_WIDTH-1:0] compute_nap_address(
+        input logic [25:0] line_addr
+    );
+        return {GDDR6_PAGE_ID[8:0], 2'b00, line_addr[25:0], 5'b00000};
+    endfunction
 
     // ===================================================================
     // Core Helper Tasks
@@ -769,15 +779,22 @@ module tb_engine_top;
         // LEFT: FETCH + DISPATCH (528 lines: 16 exp + 512 man)
         fetch_dispatch_left(cmd_id, B, V, 24'hFFFFFF, 0, 528, 0);
 
+        // Load LEFT matrix into memory model at NAP address
+        u_memory_model.load_hex_file($sformatf("%sleft_float.hex", HEX_PATH), 
+                                     compute_nap_address(26'd0), 528);
+
         // Load ALL 16 right matrices into memory model FIRST
         // NOTE: Hex files have 528 lines: 16 exponent lines + 512 mantissa lines
         $display("[TB] === Loading 16 right matrices into memory model ===");
         for (int disp_idx = 0; disp_idx < NUM_DISPATCHES; disp_idx++) begin
             string right_hex_file;
-            int fetch_addr;
-            fetch_addr = 528 + disp_idx * 528;
+            int fetch_addr_line;
+            logic [AXI_ADDR_WIDTH-1:0] fetch_addr_nap;
+            fetch_addr_line = 528 + disp_idx * 528;
+            fetch_addr_nap = compute_nap_address(fetch_addr_line[25:0]);
             right_hex_file = $sformatf("%sright_%0d.hex", HEX_PATH, disp_idx);
-            u_memory_model.load_hex_file(right_hex_file, fetch_addr, 528);  // Full hex file: 16 exp + 512 man
+            u_memory_model.load_hex_file(right_hex_file, fetch_addr_nap, 528);  // Full hex file: 16 exp + 512 man
+            $display("[TB] Loaded %s at NAP addr 0x%011x (line %0d)", right_hex_file, fetch_addr_nap, fetch_addr_line);
         end
         $display("[TB] All 16 right matrices loaded into memory model");
 

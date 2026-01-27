@@ -24,7 +24,7 @@
 `default_nettype none
 
 module comp_MLPStack_oFIFO #(
-    parameter int NUM_COLUMNS = 16,    // 16 logical columns (8 MLPs x 2 banks)
+    parameter int NUM_COLS = 16,    // 16 logical columns (8 MLPs x 2 banks)
     parameter int FIFO_DEPTH  = 64     // Entries per FIFO
 ) (
     input  logic        clk,
@@ -33,7 +33,7 @@ module comp_MLPStack_oFIFO #(
     // =========================================================================
     // Input from MLPStack (16 FP16 results in parallel)
     // =========================================================================
-    input  logic [15:0] i_result_fp16 [NUM_COLUMNS-1:0],  // 16 x FP16 results
+    input  logic [15:0] i_result_fp16 [NUM_COLS-1:0],  // 16 x FP16 results
     input  logic        i_result_push,                     // Push enable (all 16 FIFOs)
     output logic        o_result_fifo_full,                // Feedback: any FIFO full
 
@@ -41,23 +41,23 @@ module comp_MLPStack_oFIFO #(
     // Output FIFO Read Interface (16 columns)
     // Using unpacked arrays for compatibility with parent module wiring
     // =========================================================================
-    output logic [15:0] o_result_data [NUM_COLUMNS-1:0],   // FP16 per column
-    input  logic        i_result_rd_en [NUM_COLUMNS-1:0],  // Per-column read enable
-    output logic        o_result_empty [NUM_COLUMNS-1:0],  // Per-column empty flag
+    output logic [15:0] o_result_data [NUM_COLS-1:0],   // FP16 per column
+    input  logic        i_result_rd_en [NUM_COLS-1:0],  // Per-column read enable
+    output logic        o_result_empty [NUM_COLS-1:0],  // Per-column empty flag
     output logic        o_result_afull                     // OR of all FIFO afull flags
 );
 
     // =========================================================================
     // Internal Signals
     // =========================================================================
-    logic [NUM_COLUMNS-1:0] fifo_full;
-    logic [NUM_COLUMNS-1:0] fifo_afull;
+    logic [NUM_COLS-1:0] fifo_full;
+    logic [NUM_COLS-1:0] fifo_afull;
 
     // =========================================================================
     // Generate 16 flex_fifos
     // =========================================================================
     generate
-        for (genvar c = 0; c < NUM_COLUMNS; c++) begin : gen_result_fifo
+        for (genvar c = 0; c < NUM_COLS; c++) begin : gen_result_fifo
             flex_fifo #(
                 .DATA_WIDTH(16),
                 .DEPTH(FIFO_DEPTH)

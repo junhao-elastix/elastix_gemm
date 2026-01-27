@@ -23,10 +23,13 @@ if { [find *gb_dma_accel*i_axi_responder* -insts] != "" } {
 # BRAM responder - For ATU Demonstration
 set_placement -fixed {i:i_axi_bram_rsp_atu.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[7][7].logic.noc.nap_m}
 
-# BRAM responder - DMA (Result Data) - CO-LOCATED with MS2.0 engine (Oct 10, 2025 NAP fix)
-# CRITICAL: Must be near engine at NOC[3][4] for internal write ports to work
+# DMA Data Out BRAM - Result buffer for DMA read-back
+# CRITICAL: Must be near engine for internal write ports to work
 # Internal BRAM write signals cannot cross NoC fabric - requires physical proximity
-set_placement -fixed {i:i_axi_bram_rsp_dma.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][5].logic.noc.nap_m}
+set_placement -fixed {i:i_dma_data_out_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][5].logic.noc.nap_m}
+
+# DMA Command In BRAM - Command buffer for host DMA write, engine read
+set_placement -fixed {i:i_dma_cmd_in_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][6].logic.noc.nap_m}
 
 # BRAM responder - Descriptor lists
 set_placement -fixed {i:i_axi_bram_rsp_dl.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[9][7].logic.noc.nap_m}
@@ -39,84 +42,112 @@ set_placement -fixed {i:i_flr_responder.i_axi_responder_nap.i_axi_responder} {s:
 
 # -------------------------------------------------------------------------
 # GDDR6 NAP Placements - 2D Multi-Row GEMM Engine (16 NAPs)
+# -------------------------------------------------------------------------
 # 16 NAP responders, one per GDDR6 channel (16 rows -> 16 channels)
+#
+# OPTIMIZATION RATIONALE:
+#   NAPs placed at columns CLOSEST to their target GDDR controllers for
+#   minimum latency. NoC transactions travel east/west along rows - shorter
+#   distance = lower latency.
+#
+#   - West side (Rows 0-7):  NOC column 1 -> closest to west-edge GDDR0-3
+#   - East side (Rows 8-15): NOC column 10 -> closest to east-edge GDDR4-7
+#
+# REFERENCES:
+#   1. Speedster7t GDDR6 Reference Design Guide (RD017), "NAP Locations":
+#      "The NAP locations should be chosen to be adjacent to the target
+#       GDDR6 subsystem on the east or west side of the FPGA depending on
+#       which side is closest to the target GDDR6 subsystem."
+#
+#   2. GDDR6_NAP_GUIDE.md, Section "Physical Layout":
+#      "Columns 1-5: West side of device (closer to GDDR0-3)"
+#      "Columns 6-10: East side of device (closer to GDDR4-7)"
+#
+#   3. acx_gemm_ref_design (ace_placements.pdc.4q):
+#      Uses columns 1,2,4,5 for west quadrants, columns 6,7,9,10 for east
+#
+# CONSTRAINT: NoC rows 9-10 do NOT exist on AC7t1500 - valid range is 1-8
+#
+# MUST MATCH: elastix_gemm_top.sv NAP_COL/NAP_ROW arrays (lines 509-523)
 # -------------------------------------------------------------------------
-# Placement Mapping:
-#   West side (Rows 0-7):  NOC column 3, rows 3-10
-#   East side (Rows 8-15): NOC column 8, rows 3-10
-# -------------------------------------------------------------------------
 
-# West side NAPs (rows 0-7) on NOC column 3
-# Row 0: Controller 0 Ch0 (PAGE_ID 0xC) - NOC[3][3]
-set_placement -fixed [find -insts "gen_gddr_nap_0\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][3].logic.noc.nap_s"
+# West side NAPs (rows 0-7) on NOC column 1 (closest to GDDR0-3)
+# Row 0: GDDR0 Ch0 (Control ID 0xC) - NOC[1][1]
+set_placement -fixed [find -insts "gen_gddr_nap_0__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][1].logic.noc.nap_s"
 
-# Row 1: Controller 0 Ch1 (PAGE_ID 0xD) - NOC[3][4]
-set_placement -fixed [find -insts "gen_gddr_nap_1\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][4].logic.noc.nap_s"
+# Row 1: GDDR0 Ch1 (Control ID 0xD) - NOC[1][2]
+set_placement -fixed [find -insts "gen_gddr_nap_1__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][2].logic.noc.nap_s"
 
-# Row 2: Controller 1 Ch0 (PAGE_ID 0x4) - NOC[3][5]
-set_placement -fixed [find -insts "gen_gddr_nap_2\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][5].logic.noc.nap_s"
+# Row 2: GDDR1 Ch0 (Control ID 0x4) - NOC[1][3]
+set_placement -fixed [find -insts "gen_gddr_nap_2__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][3].logic.noc.nap_s"
 
-# Row 3: Controller 1 Ch1 (PAGE_ID 0x5) - NOC[3][6]
-set_placement -fixed [find -insts "gen_gddr_nap_3\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][6].logic.noc.nap_s"
+# Row 3: GDDR1 Ch1 (Control ID 0x5) - NOC[1][4]
+set_placement -fixed [find -insts "gen_gddr_nap_3__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][4].logic.noc.nap_s"
 
-# Row 4: Controller 2 Ch0 (PAGE_ID 0x0) - NOC[3][7]
-set_placement -fixed [find -insts "gen_gddr_nap_4\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][7].logic.noc.nap_s"
+# Row 4: GDDR2 Ch0 (Control ID 0x0) - NOC[1][5]
+set_placement -fixed [find -insts "gen_gddr_nap_4__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][5].logic.noc.nap_s"
 
-# Row 5: Controller 2 Ch1 (PAGE_ID 0x1) - NOC[3][8]
-set_placement -fixed [find -insts "gen_gddr_nap_5\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][8].logic.noc.nap_s"
+# Row 5: GDDR2 Ch1 (Control ID 0x1) - NOC[1][6]
+set_placement -fixed [find -insts "gen_gddr_nap_5__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][6].logic.noc.nap_s"
 
-# Row 6: Controller 3 Ch0 (PAGE_ID 0x8) - NOC[3][9]
-set_placement -fixed [find -insts "gen_gddr_nap_6\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][9].logic.noc.nap_s"
+# Row 6: GDDR3 Ch0 (Control ID 0x8) - NOC[1][7]
+set_placement -fixed [find -insts "gen_gddr_nap_6__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][7].logic.noc.nap_s"
 
-# Row 7: Controller 3 Ch1 (PAGE_ID 0x9) - NOC[3][10]
-set_placement -fixed [find -insts "gen_gddr_nap_7\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[3][10].logic.noc.nap_s"
+# Row 7: GDDR3 Ch1 (Control ID 0x9) - NOC[1][8]
+set_placement -fixed [find -insts "gen_gddr_nap_7__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[1][8].logic.noc.nap_s"
 
-# East side NAPs (rows 8-15) on NOC column 8
-# Row 8: Controller 4 Ch0 (PAGE_ID 0xF) - NOC[8][3]
-set_placement -fixed [find -insts "gen_gddr_nap_8\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][3].logic.noc.nap_s"
+# East side NAPs (rows 8-15) on NOC column 10 (closest to GDDR4-7)
+# Row 8: GDDR4 Ch0 (Control ID 0xF) - NOC[10][1]
+set_placement -fixed [find -insts "gen_gddr_nap_8__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][1].logic.noc.nap_s"
 
-# Row 9: Controller 4 Ch1 (PAGE_ID 0xE) - NOC[8][4]
-set_placement -fixed [find -insts "gen_gddr_nap_9\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][4].logic.noc.nap_s"
+# Row 9: GDDR4 Ch1 (Control ID 0xE) - NOC[10][2]
+set_placement -fixed [find -insts "gen_gddr_nap_9__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][2].logic.noc.nap_s"
 
-# Row 10: Controller 5 Ch0 (PAGE_ID 0x7) - NOC[8][5]
-set_placement -fixed [find -insts "gen_gddr_nap_10\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][5].logic.noc.nap_s"
+# Row 10: GDDR5 Ch0 (Control ID 0x7) - NOC[10][3]
+set_placement -fixed [find -insts "gen_gddr_nap_10__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][3].logic.noc.nap_s"
 
-# Row 11: Controller 5 Ch1 (PAGE_ID 0x6) - NOC[8][6]
-set_placement -fixed [find -insts "gen_gddr_nap_11\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][6].logic.noc.nap_s"
+# Row 11: GDDR5 Ch1 (Control ID 0x6) - NOC[10][4]
+set_placement -fixed [find -insts "gen_gddr_nap_11__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][4].logic.noc.nap_s"
 
-# Row 12: Controller 6 Ch0 (PAGE_ID 0x3) - NOC[8][7]
-set_placement -fixed [find -insts "gen_gddr_nap_12\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][7].logic.noc.nap_s"
+# Row 12: GDDR6 Ch0 (Control ID 0x3) - NOC[10][5]
+set_placement -fixed [find -insts "gen_gddr_nap_12__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][5].logic.noc.nap_s"
 
-# Row 13: Controller 6 Ch1 (PAGE_ID 0x2) - NOC[8][8]
-set_placement -fixed [find -insts "gen_gddr_nap_13\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][8].logic.noc.nap_s"
+# Row 13: GDDR6 Ch1 (Control ID 0x2) - NOC[10][6]
+set_placement -fixed [find -insts "gen_gddr_nap_13__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][6].logic.noc.nap_s"
 
-# Row 14: Controller 7 Ch0 (PAGE_ID 0xB) - NOC[8][9]
-set_placement -fixed [find -insts "gen_gddr_nap_14\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][9].logic.noc.nap_s"
+# Row 14: GDDR7 Ch0 (Control ID 0xB) - NOC[10][7]
+set_placement -fixed [find -insts "gen_gddr_nap_14__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][7].logic.noc.nap_s"
 
-# Row 15: Controller 7 Ch1 (PAGE_ID 0xA) - NOC[8][10]
-set_placement -fixed [find -insts "gen_gddr_nap_15\*i_nap_responder.i_axi_responder"] \
-    "s:x_core.NOC[8][10].logic.noc.nap_s"
+# Row 15: GDDR7 Ch1 (Control ID 0xA) - NOC[10][8]
+set_placement -fixed [find -insts "gen_gddr_nap_15__*i_nap_responder.i_axi_responder"] \
+    "s:x_core.NOC[10][8].logic.noc.nap_s"
 
 # -------------------------------------------------------------------------
-# 2D GEMM Engine Placement Regions
+# 2D GEMM Engine Soft Placement Regions
 # -------------------------------------------------------------------------
-# West side region for rows 0-7
-create_region "region_gemm_engine_west" "55 160 81 260" -snap fabric_clusters -type soft
+# These soft regions guide placement of non-MLP/BRAM logic (FSMs, FIFOs, etc.)
+# near their associated compute rows. Coordinates are fabric cluster units.
+#
+# NOTE: MLP/BRAM have fixed placements below that override these soft regions.
+# -------------------------------------------------------------------------
+
+# West side region for rows 0-7 (near NAPs at column 1)
+create_region "region_gemm_engine_west" "20 160 60 260" -snap fabric_clusters -type soft
 add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_0*"
 add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_1*"
 add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_2*"
@@ -126,8 +157,8 @@ add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.ge
 add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_6*"
 add_region_find_insts "region_gemm_engine_west" "find -insts *i_engine_top_2d.gen_row_7*"
 
-# East side region for rows 8-15
-create_region "region_gemm_engine_east" "300 160 330 260" -snap fabric_clusters -type soft
+# East side region for rows 8-15 (near NAPs at column 10)
+create_region "region_gemm_engine_east" "320 160 360 260" -snap fabric_clusters -type soft
 add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_8*"
 add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_9*"
 add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_10*"
@@ -138,10 +169,92 @@ add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.ge
 add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_15*"
 
 # -------------------------------------------------------------------------
-# Example of how to fix the location of an MLP and a BRAM
+# MLP and BRAM Placement for 2D GEMM Engine (16 rows x 4 stacks x 8 MLPs)
 # -------------------------------------------------------------------------
-# set_placement -fixed {i:<my_hierarchical_path>.i_bram} {s:x_core.BMLP[29][5].logic.bmlp.bram[0]}
-# set_placement -fixed {i:<my_hierarchical_path>.i_mlp}    {s:x_core.BMLP[29][5].logic.bmlp.mlp[0]}
+# TOTAL: 16 rows x 4 stacks x 8 MLPs = 512 MLPs (64 explicitly placed below)
+#        16 rows x 4 stacks x 8 BRAMs = 512 BRAMs (64 explicitly placed below)
+#
+# STRATEGY:
+#   - Place ONLY the first MLP (mlp_col_base) and its BRAM for each stack
+#   - Remaining 7 MLPs/BRAMs cascade automatically from first placement
+#
+# INSTANCE HIERARCHY (verified from RTL comp_MLPRow.sv, comp_MLP.sv):
+#   i_engine_top_2d.gen_row_R.u_compute_engine.u_mlp_stack.gen_mlp_stack_S.u_mlp_row.
+#     mlp_col_base.u_mlp_dot16_bfp8.i_MLP          (ACX_MLP72 - first MLP)
+#     mlp_col_base.u_weight_bram.u_acx_bram72k     (ACX_BRAM72K - first BRAM)
+#     mlp_gen[1..7].mlp_col_stack.u_mlp_dot16_bfp8.i_MLP   (cascaded MLPs - auto-placed)
+#     mlp_gen[1..7].mlp_col_stack.u_weight_bram.u_acx_bram72k (cascaded BRAMs - auto-placed)
+#
+# BMLP COORDINATE MAPPING (aligned with NAP locations for minimum latency):
+# -------------------------------------------------------------------------
+#   West rows (0-7):  NAPs at NOC[1][1-8]  -> BMLP x = 0-3,  y = row * 4
+#   East rows (8-15): NAPs at NOC[10][1-8] -> BMLP x = 35-38, y = (row-8) * 4
+#
+#   Row-to-BMLP-Y Mapping (same for both sides):
+#     Row 0/8:  y = 0    (NAP row 1)
+#     Row 1/9:  y = 4    (NAP row 2)
+#     Row 2/10: y = 8    (NAP row 3)
+#     Row 3/11: y = 12   (NAP row 4)
+#     Row 4/12: y = 16   (NAP row 5)
+#     Row 5/13: y = 20   (NAP row 6)
+#     Row 6/14: y = 24   (NAP row 7)
+#     Row 7/15: y = 28   (NAP row 8)
+#
+# REFERENCES:
+#   1. MLP_PLACE_GUIDE.md: "West-side MLPs (BMLP x = 0-18) for west NAPs"
+#   2. acx_gemm_ref_design (ace_placements.pdc.4q): Stack placement pattern
+#   3. Speedster7t Component Library UG086-1: ACX_MLP72/ACX_BRAM72K co-location
+#
+# CO-LOCATION PRINCIPLE (from MLP_PLACE_GUIDE.md):
+#   "MLPs and their associated weight BRAMs are placed at the same BMLP block
+#    for optimal data path"
+# -------------------------------------------------------------------------
+
+# West side rows (0-7): NAPs at NOC column 1
+# Each row's 4 stacks placed at BMLP x=0,1,2,3 (west edge, near column 1 NAPs)
+for {set row 0} {$row < 8} {incr row} {
+    set bmlp_y [expr {$row * 4}]
+    for {set stack 0} {$stack < 4} {incr stack} {
+        set bmlp_x $stack
+        
+        # Find and place the first MLP (mlp_col_base) of this stack
+        set mlp_pattern "i_engine_top_2d.gen_row_${row}__*u_compute_engine.u_mlp_stack.gen_mlp_stack_${stack}__*u_mlp_row.mlp_col_base.u_mlp_dot16_bfp8.i_MLP"
+        set mlp_inst [find -insts $mlp_pattern]
+        if { $mlp_inst != "" } {
+            set_placement -fixed $mlp_inst "s:x_core.BMLP\[${bmlp_x}\]\[${bmlp_y}\].logic.bmlp.mlp\[0\]"
+        }
+        
+        # Find and place the BRAM co-located with MLP (same BMLP block)
+        set bram_pattern "i_engine_top_2d.gen_row_${row}__*u_compute_engine.u_mlp_stack.gen_mlp_stack_${stack}__*u_mlp_row.mlp_col_base.u_weight_bram.u_acx_bram72k"
+        set bram_inst [find -insts $bram_pattern]
+        if { $bram_inst != "" } {
+            set_placement -fixed $bram_inst "s:x_core.BMLP\[${bmlp_x}\]\[${bmlp_y}\].logic.bmlp.bram\[0\]"
+        }
+    }
+}
+
+# East side rows (8-15): NAPs at NOC column 10
+# Each row's 4 stacks placed at BMLP x=35,36,37,38 (east edge, near column 10 NAPs)
+for {set row 8} {$row < 16} {incr row} {
+    set bmlp_y [expr {($row - 8) * 4}]
+    for {set stack 0} {$stack < 4} {incr stack} {
+        set bmlp_x [expr {35 + $stack}]
+        
+        # Find and place the first MLP (mlp_col_base) of this stack
+        set mlp_pattern "i_engine_top_2d.gen_row_${row}__*u_compute_engine.u_mlp_stack.gen_mlp_stack_${stack}__*u_mlp_row.mlp_col_base.u_mlp_dot16_bfp8.i_MLP"
+        set mlp_inst [find -insts $mlp_pattern]
+        if { $mlp_inst != "" } {
+            set_placement -fixed $mlp_inst "s:x_core.BMLP\[${bmlp_x}\]\[${bmlp_y}\].logic.bmlp.mlp\[0\]"
+        }
+        
+        # Find and place the BRAM co-located with MLP (same BMLP block)
+        set bram_pattern "i_engine_top_2d.gen_row_${row}__*u_compute_engine.u_mlp_stack.gen_mlp_stack_${stack}__*u_mlp_row.mlp_col_base.u_weight_bram.u_acx_bram72k"
+        set bram_inst [find -insts $bram_pattern]
+        if { $bram_inst != "" } {
+            set_placement -fixed $bram_inst "s:x_core.BMLP\[${bmlp_x}\]\[${bmlp_y}\].logic.bmlp.bram\[0\]"
+        }
+    }
+}
 
 
 

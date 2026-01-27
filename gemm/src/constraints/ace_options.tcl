@@ -29,7 +29,7 @@ set_impl_option pnr_placement_effort high
 # set_impl_option pnr_timing_optimization_iterations 2
 
 # # Enable parallel processing for faster builds
-set_impl_option pnr_parallel_jobs 4
+set_impl_option pnr_parallel_jobs 16
 
 # # Reduce post-route optimization for faster bitstream generation
 # set_impl_option pnr_post_route_opt_effort medium

@@ -50,10 +50,10 @@ module tb_result_collector_2d;
     logic [31:0] cmd_payload_word3;
     logic        rc_ack_readout;
 
-    // CE FIFO Interface
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0][15:0] ce_result_data;
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0]       ce_result_empty;
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0]       ce_result_rd_en;
+    // CE FIFO Interface (unpacked arrays to match result_collector_2d ports)
+    logic [15:0] ce_result_data  [NUM_ROWS-1:0][NUM_COLS-1:0];
+    logic        ce_result_empty [NUM_ROWS-1:0][NUM_COLS-1:0];
+    logic        ce_result_rd_en [NUM_ROWS-1:0][NUM_COLS-1:0];
 
     // Output Interface
     logic        output_ready;
@@ -70,9 +70,9 @@ module tb_result_collector_2d;
     // ===================================================================
     // Mock CE FIFOs - Using flex_fifo instances for realistic behavior
     // ===================================================================
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0][15:0] fifo_wr_data;
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0]       fifo_wr_en;
-    logic [NUM_ROWS-1:0][NUM_COLS-1:0]       fifo_full;
+    logic [15:0] fifo_wr_data [NUM_ROWS-1:0][NUM_COLS-1:0];
+    logic        fifo_wr_en   [NUM_ROWS-1:0][NUM_COLS-1:0];
+    logic        fifo_full    [NUM_ROWS-1:0][NUM_COLS-1:0];
 
     generate
         for (genvar r = 0; r < NUM_ROWS; r++) begin : gen_row_fifos

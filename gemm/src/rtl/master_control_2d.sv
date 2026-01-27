@@ -54,27 +54,32 @@ import gemm_pkg::*;
     input  logic [7:0]                  i_rc_id,             // Current READOUT cmd_id RC is serving
 
     // Debug Interface
-    output logic [3:0]                  o_mc_state
+    output logic [3:0]                  o_mc_state,
+
+    // Extended Debug Interface (for hardware debugging)
+    output logic [NUM_ROWS-1:0]         o_dbg_ce_ack_matmul_reg,  // Captured CE ACK bits
+    output logic [NUM_ROWS-1:0]         o_dbg_dc_ack_fetch_reg,   // Captured DC ACK bits
+    output logic                        o_dbg_cmd_valid           // Current command is valid
 );
 
     // ===================================================================
     // State Machine Definition
     // ===================================================================
+    // Simplified FSM: 128-bit wide FIFO allows single-cycle command read
+    // ST_IDLE: Wait for FIFO data, assert rd_en
+    // ST_WAIT_DATA: Wait 1 cycle for FIFO read latency
+    // ST_DECODE: Extract 128-bit command, route to EXEC state
     typedef enum logic [3:0] {
         ST_IDLE             = 4'd0,
-        ST_WAIT_FIFO        = 4'd1,  // Wait 1 cycle for FIFO read latency
-        ST_READ_HDR         = 4'd2,
-        ST_READ_PAYLOAD1    = 4'd3,
-        ST_READ_PAYLOAD2    = 4'd4,
-        ST_READ_PAYLOAD3    = 4'd5,
-        ST_DECODE           = 4'd6,
-        ST_EXEC_FETCH       = 4'd7,  // FETCH command (0xF0)
-        ST_EXEC_DISP        = 4'd8,  // DISP command (0xF1)
-        ST_EXEC_MATMUL      = 4'd9,  // MATMUL command (0xF2)
-        ST_WAIT_DISP        = 4'd10, // WAIT_DISP command (0xF3)
-        ST_WAIT_MATMUL      = 4'd11, // WAIT_MATMUL command (0xF4)
-        ST_EXEC_READOUT     = 4'd12, // READOUT command (0xF5)
-        ST_CMD_COMPLETE     = 4'd13, // Command complete, return to IDLE
+        ST_WAIT_DATA        = 4'd1,  // Wait 1 cycle for FIFO read latency
+        ST_DECODE           = 4'd2,  // Decode 128-bit command in single cycle
+        ST_EXEC_FETCH       = 4'd3,  // FETCH command (0xF0)
+        ST_EXEC_DISP        = 4'd4,  // DISP command (0xF1)
+        ST_EXEC_MATMUL      = 4'd5,  // MATMUL command (0xF2)
+        ST_WAIT_DISP        = 4'd6,  // WAIT_DISP command (0xF3)
+        ST_WAIT_MATMUL      = 4'd7,  // WAIT_MATMUL command (0xF4)
+        ST_EXEC_READOUT     = 4'd8,  // READOUT command (0xF5)
+        ST_CMD_COMPLETE     = 4'd9,  // Command complete, return to IDLE
         ST_ERROR            = 4'd15
     } state_t;
 
@@ -210,56 +215,20 @@ import gemm_pkg::*;
                 // 1. Command FIFO has data
                 // 2. No row's result FIFO is almost-full (backpressure)
                 if (!i_cmd_fifo_empty && !any_ce_result_fifo_afull) begin
-                    state_next = ST_WAIT_FIFO;  // Wait for FIFO read latency
+                    state_next = ST_WAIT_DATA;  // Wait for FIFO read latency
                 end
             end
 
-            ST_WAIT_FIFO: begin
+            ST_WAIT_DATA: begin
                 // Wait 1 cycle for FIFO read latency (registered output)
-                // Data will be valid on the NEXT clock edge
-                state_next = ST_READ_HDR;
-            end
-
-            ST_READ_HDR: begin
-                // FIFO data is now valid (after 1-cycle wait)
-                // Wait for FIFO to have next data before advancing
-                if (!i_cmd_fifo_empty) begin
-                    state_next = ST_READ_PAYLOAD1;
-                end else begin
-                    state_next = ST_READ_HDR;  // Stay here until data available
-                end
-            end
-
-            ST_READ_PAYLOAD1: begin
-                // Wait for FIFO to have data before advancing
-                if (!i_cmd_fifo_empty) begin
-                    state_next = ST_READ_PAYLOAD2;
-                end else begin
-                    state_next = ST_READ_PAYLOAD1;  // Stay here until data available
-                end
-            end
-
-            ST_READ_PAYLOAD2: begin
-                // Wait for FIFO to have data before advancing
-                if (!i_cmd_fifo_empty) begin
-                    state_next = ST_READ_PAYLOAD3;
-                end else begin
-                    state_next = ST_READ_PAYLOAD2;  // Stay here until data available
-                end
-            end
-
-            ST_READ_PAYLOAD3: begin
-                // Wait for FIFO to have data before advancing
-                if (!i_cmd_fifo_empty) begin
-                    state_next = ST_DECODE;
-                end else begin
-                    state_next = ST_READ_PAYLOAD3;  // Stay here until data available
-                end
+                // 128-bit data will be valid on the NEXT clock edge
+                state_next = ST_DECODE;
             end
 
             ST_DECODE: begin
                 // Route to appropriate execution state based on opcode
-                case (cmd_op_reg)
+                // Use i_cmd_fifo_rdata directly (128-bit, opcode at [103:96])
+                case (i_cmd_fifo_rdata[103:96])
                     CMD_FETCH:          state_next = ST_EXEC_FETCH;
                     CMD_DISP:           state_next = ST_EXEC_DISP;
                     CMD_MATMUL:         state_next = ST_EXEC_MATMUL;
@@ -377,39 +346,32 @@ import gemm_pkg::*;
                 end
             end
 
-            ST_WAIT_FIFO: begin
-                // Keep rd_en asserted, wait for FIFO read latency
-                // Data will be valid next cycle (in ST_READ_HDR)
-                cmd_fifo_ren_reg <= 1'b1;
-            end
-
-            ST_READ_HDR: begin
-                // FIFO data is now valid after 1-cycle wait
-                cmd_fifo_ren_reg <= 1'b1;
-                cmd_op_reg <= i_cmd_fifo_rdata[7:0];
-                cmd_id_reg <= i_cmd_fifo_rdata[15:8];
-                cmd_reg[0] <= i_cmd_fifo_rdata;
-            end
-
-            ST_READ_PAYLOAD1: begin
-                cmd_fifo_ren_reg <= 1'b1;
-                cmd_reg[1] <= i_cmd_fifo_rdata;
-            end
-
-            ST_READ_PAYLOAD2: begin
-                // Read payload3 request was made in ST_READ_PAYLOAD1
-                // DON'T request beyond payload3 - next command's header is separate
-                // cmd_fifo_ren_reg remains 0 (from default)
-                cmd_reg[2] <= i_cmd_fifo_rdata;
-            end
-
-            ST_READ_PAYLOAD3: begin
-                cmd_reg[3] <= i_cmd_fifo_rdata;
+            ST_WAIT_DATA: begin
+                // Wait for FIFO read latency - data will be valid next cycle
+                // Do NOT assert rd_en here to avoid reading next entry
             end
 
             ST_DECODE: begin
+                // 128-bit FIFO data is now valid after 1-cycle wait
+                // Extract all 4 words from single 128-bit read:
+                // Layout: [127:96]=word0 (header), [95:64]=word1, [63:32]=word2, [31:0]=word3
+                //
+                // Local aliases for readability (combinational, used within this cycle):
+                // word0 = i_cmd_fifo_rdata[127:96]  -> Header: {reserved, cmd_id, cmd_op}
+                // word1 = i_cmd_fifo_rdata[95:64]   -> Payload word 1
+                // word2 = i_cmd_fifo_rdata[63:32]   -> Payload word 2
+                // word3 = i_cmd_fifo_rdata[31:0]    -> Payload word 3
+                // opcode = i_cmd_fifo_rdata[103:96] -> cmd_op from word0[7:0]
+
+                // Register the raw command words for debug visibility
+                cmd_reg[0] <= i_cmd_fifo_rdata[127:96];
+                cmd_reg[1] <= i_cmd_fifo_rdata[95:64];
+                cmd_reg[2] <= i_cmd_fifo_rdata[63:32];
+                cmd_reg[3] <= i_cmd_fifo_rdata[31:0];
+                cmd_op_reg <= i_cmd_fifo_rdata[103:96];
+                cmd_id_reg <= i_cmd_fifo_rdata[111:104];
+
                 // Clear ACK registers before transitioning to EXEC state
-                // This ensures sticky ACK capture starts fresh
                 for (int r = 0; r < NUM_ROWS; r++) begin
                     dc_ack_fetch_reg[r]  <= 1'b0;
                     dc_ack_disp_reg[r]   <= 1'b0;
@@ -417,12 +379,8 @@ import gemm_pkg::*;
                 end
                 rc_ack_readout_reg <= 1'b0;
 
-                // The CMDs are decoded into per-row commands and constructed.
-                // By the beginning of the respective execution state, the per-row commands
-                // are ready to be executed. The execution state will wait for the command ACK
-                // from the respective unit (DC, CE, RC) to complete the command.
                 // ============================================================
-                // Per-Row Command Decomposition
+                // Per-Row Command Decomposition (uses i_cmd_fifo_rdata directly)
                 // ============================================================
                 // V (ugd_len) is partitioned across rows using the formula:
                 //   v_base = V / num_rows  (since num_rows=16, use V >> 4)
@@ -432,111 +390,103 @@ import gemm_pkg::*;
                 // This matches get_v_partition() in multi-row_gemm.py
                 // ============================================================
                 
-                case (cmd_op_reg)
+                case (i_cmd_fifo_rdata[103:96])  // Use opcode directly from FIFO data
                     CMD_FETCH: begin
                         // FETCH Word Layout (per MULTI_ROW_REFERENCE.md):
-                        // cmd_reg[1] = start_addr[31:0]
-                        // cmd_reg[2] = {ugd_len[15:0], len[15:0]}
-                        // cmd_reg[3] = {31'b0, fetch_right}
-                        // V is in cmd_reg[2][31:16]
-                        automatic logic [15:0] v_total = cmd_reg[2][31:16];
+                        // word1 = start_addr[31:0]
+                        // word2 = {ugd_len[15:0], len[15:0]}
+                        // word3 = {31'b0, fetch_right}
+                        // V is in word2[31:16] = i_cmd_fifo_rdata[63:48]
+                        automatic logic [15:0] v_total = i_cmd_fifo_rdata[63:48];
                         automatic logic [15:0] v_base  = v_total >> 4;
                         automatic logic [15:0] v_rem   = v_total - (v_base << 4);
                         for (int r = 0; r < NUM_ROWS; r++) begin
                             automatic logic [15:0] v_count = (r < v_rem) ? (v_base + 16'd1) : v_base;
-                            // Reconstruct per-row command with partitioned ugd_len
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];  // start_addr unchanged
-                            cmd_payload_word2_reg[r] <= {v_count, cmd_reg[2][15:0]};  // {v_count, len}
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];  // fetch_right unchanged
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];  // start_addr unchanged
+                            cmd_payload_word2_reg[r] <= {v_count, i_cmd_fifo_rdata[47:32]};  // {v_count, len}
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];   // fetch_right unchanged
                         end
                     end
 
                     CMD_DISP: begin
                         // DISPATCH Word Layout (per MULTI_ROW_REFERENCE.md):
-                        // cmd_reg[1] = {nv_cnt[15:0], ugd_len[15:0]}
-                        // cmd_reg[2] = {16'b0, tile_addr[15:0]}
-                        // cmd_reg[3] = {16'b0, col_start[7:0], 5'b0, disp_right, broadcast, man_4b}
-                        // V is in cmd_reg[1][15:0]
-                        automatic logic [15:0] v_total = cmd_reg[1][15:0];
+                        // word1 = {nv_cnt[15:0], ugd_len[15:0]}
+                        // word2 = {16'b0, tile_addr[15:0]}
+                        // word3 = {16'b0, col_start[7:0], 5'b0, disp_right, broadcast, man_4b}
+                        // V is in word1[15:0] = i_cmd_fifo_rdata[79:64]
+                        automatic logic [15:0] v_total = i_cmd_fifo_rdata[79:64];
                         automatic logic [15:0] v_base  = v_total >> 4;
                         automatic logic [15:0] v_rem   = v_total - (v_base << 4);
                         for (int r = 0; r < NUM_ROWS; r++) begin
                             automatic logic [15:0] v_count = (r < v_rem) ? (v_base + 16'd1) : v_base;
-                            // Reconstruct per-row command with partitioned ugd_len
-                            cmd_payload_word1_reg[r] <= {cmd_reg[1][31:16], v_count};  // {nv_cnt, v_count}
-                            cmd_payload_word2_reg[r] <= cmd_reg[2];  // tile_addr unchanged
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];  // flags unchanged
+                            cmd_payload_word1_reg[r] <= {i_cmd_fifo_rdata[95:80], v_count};  // {nv_cnt, v_count}
+                            cmd_payload_word2_reg[r] <= i_cmd_fifo_rdata[63:32];  // tile_addr unchanged
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];   // flags unchanged
                         end
                     end
 
                     CMD_MATMUL: begin
                         // MATMUL Word Layout (per MULTI_ROW_REFERENCE.md):
-                        // cmd_reg[1] = {left_addr[15:0], right_addr[15:0]}
-                        // cmd_reg[2] = {left_len[15:0], right_len[15:0]}
-                        // cmd_reg[3] = {ugd_len[15:0], 13'b0, left_4b, right_4b, main_loop_left}
-                        // V is in cmd_reg[3][31:16]
-                        automatic logic [15:0] v_total = cmd_reg[3][31:16];
+                        // word1 = {left_addr[15:0], right_addr[15:0]}
+                        // word2 = {left_len[15:0], right_len[15:0]}
+                        // word3 = {ugd_len[15:0], 13'b0, left_4b, right_4b, main_loop_left}
+                        // V is in word3[31:16] = i_cmd_fifo_rdata[31:16]
+                        automatic logic [15:0] v_total = i_cmd_fifo_rdata[31:16];
                         automatic logic [15:0] v_base  = v_total >> 4;
                         automatic logic [15:0] v_rem   = v_total - (v_base << 4);
                         for (int r = 0; r < NUM_ROWS; r++) begin
                             automatic logic [15:0] v_count = (r < v_rem) ? (v_base + 16'd1) : v_base;
-                            // Reconstruct per-row command with partitioned ugd_len
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];  // addresses unchanged
-                            cmd_payload_word2_reg[r] <= cmd_reg[2];  // B, C unchanged
-                            cmd_payload_word3_reg[r] <= {v_count, cmd_reg[3][15:0]};  // {v_count, flags}
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];  // addresses unchanged
+                            cmd_payload_word2_reg[r] <= i_cmd_fifo_rdata[63:32];  // B, C unchanged
+                            cmd_payload_word3_reg[r] <= {v_count, i_cmd_fifo_rdata[15:0]};  // {v_count, flags}
                         end
                     end
 
                     CMD_READOUT: begin
                         // READOUT Word Layout (per MULTI_ROW_REFERENCE.md):
-                        // cmd_reg[1] = {left_len[15:0], right_len[15:0]}
-                        // cmd_reg[2] = {16'b0, ugd_len[15:0]}
-                        // cmd_reg[3] = 0
-                        // V is in cmd_reg[2][15:0]
-                        // READOUT needs partitioned V to know which rows are active
-                        // (rows with v_count=0 should not contribute to reduction)
-                        automatic logic [15:0] v_total = cmd_reg[2][15:0];
+                        // word1 = {left_len[15:0], right_len[15:0]}
+                        // word2 = {16'b0, ugd_len[15:0]}
+                        // word3 = 0
+                        // V is in word2[15:0] = i_cmd_fifo_rdata[47:32]
+                        automatic logic [15:0] v_total = i_cmd_fifo_rdata[47:32];
                         automatic logic [15:0] v_base  = v_total >> 4;
                         automatic logic [15:0] v_rem   = v_total - (v_base << 4);
                         for (int r = 0; r < NUM_ROWS; r++) begin
                             automatic logic [15:0] v_count = (r < v_rem) ? (v_base + 16'd1) : v_base;
-                            // Reconstruct per-row command with partitioned ugd_len
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];  // B, C unchanged
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];  // B, C unchanged
                             cmd_payload_word2_reg[r] <= {16'b0, v_count};  // {reserved, v_count}
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];  // reserved (0)
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];   // reserved (0)
                         end
                     end
 
                     CMD_WAIT_DISP: begin
                         // WAIT commands don't need V partitioning - pass through unchanged
-                        // CRITICAL: Capture wait_id HERE in DECODE so it's available when
-                        // state transitions to ST_WAIT_DISP (combinational check needs it)
-                        wait_disp_id_reg <= cmd_reg[1][7:0];
+                        // word1[7:0] = i_cmd_fifo_rdata[71:64]
+                        wait_disp_id_reg <= i_cmd_fifo_rdata[71:64];
                         for (int r = 0; r < NUM_ROWS; r++) begin
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];
-                            cmd_payload_word2_reg[r] <= cmd_reg[2];
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];
+                            cmd_payload_word2_reg[r] <= i_cmd_fifo_rdata[63:32];
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];
                         end
                     end
 
                     CMD_WAIT_MATMUL: begin
                         // WAIT commands don't need V partitioning - pass through unchanged
-                        // CRITICAL: Capture wait_id HERE in DECODE so it's available when
-                        // state transitions to ST_WAIT_MATMUL (combinational check needs it)
-                        wait_matmul_id_reg <= cmd_reg[1][7:0];
+                        // word1[7:0] = i_cmd_fifo_rdata[71:64]
+                        wait_matmul_id_reg <= i_cmd_fifo_rdata[71:64];
                         for (int r = 0; r < NUM_ROWS; r++) begin
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];
-                            cmd_payload_word2_reg[r] <= cmd_reg[2];
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];
+                            cmd_payload_word2_reg[r] <= i_cmd_fifo_rdata[63:32];
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];
                         end
                     end
 
                     default: begin
                         // Unknown opcode - pass through unchanged
                         for (int r = 0; r < NUM_ROWS; r++) begin
-                            cmd_payload_word1_reg[r] <= cmd_reg[1];
-                            cmd_payload_word2_reg[r] <= cmd_reg[2];
-                            cmd_payload_word3_reg[r] <= cmd_reg[3];
+                            cmd_payload_word1_reg[r] <= i_cmd_fifo_rdata[95:64];
+                            cmd_payload_word2_reg[r] <= i_cmd_fifo_rdata[63:32];
+                            cmd_payload_word3_reg[r] <= i_cmd_fifo_rdata[31:0];
                         end
                     end
                 endcase
@@ -598,5 +548,17 @@ import gemm_pkg::*;
     // Output Assignment
     // ===================================================================
     assign o_mc_state = state_reg;
+
+    // ===================================================================
+    // Debug Output Assignment
+    // ===================================================================
+    // Pack the per-row ACK registers into vectors for debug visibility
+    generate
+        for (genvar r = 0; r < NUM_ROWS; r++) begin : gen_dbg_ack
+            assign o_dbg_ce_ack_matmul_reg[r] = ce_ack_matmul_reg[r];
+            assign o_dbg_dc_ack_fetch_reg[r]  = dc_ack_fetch_reg[r];
+        end
+    endgenerate
+    assign o_dbg_cmd_valid = cmd_valid;
 
 endmodule : master_control_2d

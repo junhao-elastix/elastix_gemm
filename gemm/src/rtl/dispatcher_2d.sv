@@ -6,7 +6,7 @@
 //  - Stage-1: Buffer 16 exponent lines to local exp_bram
 //  - Stage-2: Route mantissa lines with attached exponents
 //  - Left path (disp_right=0): Write to row_bram (activations) - sequential
-//  - Right path (disp_right=1): Write to 16 col_brams (weights) - round-robin
+//  - Right path (disp_right=1): Write to NUM_COLS col_brams (weights) - round-robin
 //
 // FIFO Interface Note:
 //  - flex_fifo has 1-cycle read latency
@@ -27,10 +27,10 @@
 //  - Address: tile_addr + line_idx (0, 1, 2, ...)
 //
 // RIGHT Path (Weights):
-//  - Round-robin distribution to 16 column BRAMs
+//  - Round-robin distribution to NUM_COLS column BRAMs
 //  - col_sel cycles 0 -> (nv_cnt-1), wraps and increments wraddr_start
 //  - Address: wraddr_start + v*4 + l
-//  - 16 separate write enables (one-hot)
+//  - NUM_COLS separate write enables (one-hot)
 //
 // Author: Junhao Pan
 // Date: Jan 2026
@@ -41,11 +41,11 @@
 
 module dispatcher_2d
 #(
-    parameter MAN_WIDTH  = 256,
-    parameter EXP_WIDTH  = 8,
-    parameter BRAM_DEPTH = 512,
-    parameter NUM_COLS   = 16,           // Number of columns for RIGHT path round-robin wrap
-    parameter ADDR_WIDTH = $clog2(BRAM_DEPTH)
+    parameter int MAN_WIDTH  = 256,
+    parameter int EXP_WIDTH  = 8,
+    parameter int BRAM_DEPTH = 512,
+    parameter int NUM_COLS   = 16,           // Number of columns for RIGHT path round-robin wrap
+    parameter int ADDR_WIDTH = $clog2(BRAM_DEPTH)
 )(
     // Clock and Reset
     input  logic                     i_clk,
@@ -57,7 +57,7 @@ module dispatcher_2d
     input  logic                     i_disp_start,      // Trigger dispatch
     input  logic [15:0]              i_nv_cnt,          // B (left) or C (right) count
     input  logic [15:0]              i_ugd_len,         // V count (NVs per UGD)
-    input  logic [3:0]               i_col_start,       // Starting column for round-robin (0-15)
+    input  logic [$clog2(NUM_COLS)-1:0] i_col_start,       // Starting column for round-robin (0..NUM_COLS-1)
     input  logic                     i_disp_right,      // 0=Left, 1=Right
     input  logic [ADDR_WIDTH-1:0]    i_tile_addr,       // Base write address
     output logic                     o_disp_done,       // Dispatch complete
@@ -80,7 +80,7 @@ module dispatcher_2d
     output logic [EXP_WIDTH-1:0]     o_left_exp_wr_data,
 
     // =========================================================================
-    // Right Path: 16 Column BRAMs Write Interface (weights - direct write)
+    // Right Path: NUM_COLS Column BRAMs Write Interface (weights - direct write)
     // =========================================================================
     output logic [ADDR_WIDTH-1:0]    o_right_wr_addr,       // Shared address bus
     output logic [NUM_COLS-1:0]      o_right_wr_en,         // 16 separate write enables (one-hot)
@@ -112,6 +112,7 @@ module dispatcher_2d
     // ===================================================================
     localparam EXP_LINES = 16;           // 16 exponent lines per block
     localparam LINES_PER_NV = 4;         // 4 mantissa lines per NV
+    localparam int COL_SEL_WIDTH = $clog2(NUM_COLS);
 
     // ===================================================================
     // Local Exponent BRAM
@@ -133,7 +134,7 @@ module dispatcher_2d
     // ===================================================================
     logic [15:0]             nv_cnt_reg;         // B or C count
     logic [15:0]             ugd_len_reg;        // V count
-    logic [3:0]              col_start_reg;      // Starting column
+    logic [COL_SEL_WIDTH-1:0] col_start_reg;      // Starting column
     logic                    disp_right_reg;     // 0=Left, 1=Right
     logic [ADDR_WIDTH-1:0]   tile_addr_reg;      // Base write address
 
@@ -151,7 +152,7 @@ module dispatcher_2d
     logic [1:0]              l_cnt;              // L counter (inner loop, 0-3)
     
     // RIGHT path specific
-    logic [3:0]              col_sel;            // Current column (0-15)
+    logic [COL_SEL_WIDTH-1:0] col_sel;            // Current column (0..NUM_COLS-1)
     logic [ADDR_WIDTH-1:0]   wraddr_start;       // Base address (increments on wrap)
 
     // ===================================================================
@@ -480,7 +481,7 @@ module dispatcher_2d
 
                                 // RIGHT path: advance col_sel after completing each UGD
                                 // Data is organized by UGD: all col0 data, then all col1 data, etc.
-                                // col_sel wraps at NUM_COLS (16), not nv_cnt
+                                // col_sel wraps at NUM_COLS, not nv_cnt
                                 // When C > NUM_COLS, wraddr_start advances on wrap
                                 if (disp_right_reg) begin
                                     if (col_sel == NUM_COLS - 1) begin
@@ -598,7 +599,7 @@ module dispatcher_2d
     assign o_left_exp_wr_data = left_exp_wr_data_reg;
 
     // ===================================================================
-    // Right Path Output (16 Column BRAMs - Direct Write with One-Hot Enable)
+    // Right Path Output (NUM_COLS Column BRAMs - Direct Write with One-Hot Enable)
     // ===================================================================
     logic [ADDR_WIDTH-1:0]    right_wr_addr_reg;
     logic [NUM_COLS-1:0]      right_wr_en_reg;
@@ -621,15 +622,15 @@ module dispatcher_2d
                 (state_reg == ST_EXP_BUFFER || state_reg == ST_MAN_ROUTE)) begin
                 // RIGHT path: Write to selected column BRAM
                 right_wr_addr_reg     <= right_addr;
-                right_wr_en_reg       <= (16'b1 << col_sel);  // One-hot enable
+                right_wr_en_reg       <= (NUM_COLS'(1) << col_sel);  // One-hot enable
                 right_man_wr_data_reg <= i_fifo_rd_data;
                 right_exp_wr_data_reg <= current_exp;
 
                 // synthesis translate_off
                 `ifdef DEBUG_DISPATCHER
                 if (lines_processed < 20)
-                    $display("[DISPATCHER] @%0t RIGHT_WR: col=%0d, addr=%0d, exp=0x%02x, man[31:0]=0x%08x, wr_en=0x%04x",
-                             $time, col_sel, right_addr, current_exp, i_fifo_rd_data[31:0], (16'b1 << col_sel));
+                    $display("[DISPATCHER] @%0t RIGHT_WR: col=%0d, addr=%0d, exp=0x%02x, man[31:0]=0x%08x, wr_en=0x%0x",
+                             $time, col_sel, right_addr, current_exp, i_fifo_rd_data[31:0], (NUM_COLS'(1) << col_sel));
                 `endif
                 // synthesis translate_on
             end

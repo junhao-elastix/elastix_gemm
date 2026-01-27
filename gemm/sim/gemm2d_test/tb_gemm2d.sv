@@ -26,8 +26,8 @@ module tb_gemm2d;
     // Test Configuration
     // ====================================================================
     localparam int NUM_ROWS = 16;
-    localparam int NUM_COLS = 16;
     localparam int NUM_MLPS = 8;
+    localparam int NUM_COLS = NUM_MLPS*2;
     
     // BCV configuration from hex files
     // Testing B4_C13_V9 - non-power-of-2 C and V values
@@ -81,13 +81,33 @@ module tb_gemm2d;
     integer tests_passed;
 
     // ====================================================================
-    // Command FIFO Interface
+    // Command BRAM Interface (TB writes commands here)
     // ====================================================================
-    logic [31:0] cmd_fifo_wdata;
-    logic        cmd_fifo_wen;
-    logic        cmd_fifo_full;
-    logic        cmd_fifo_afull;
-    logic [12:0] cmd_fifo_count;
+    logic [255:0] cmd_bram [0:511];        // 512 x 256-bit command BRAM model
+    logic         cmd_bram_rd_en;          // Engine read enable
+    logic [8:0]   cmd_bram_rd_addr;        // Engine read address
+    logic [255:0] cmd_bram_rd_data;        // Data to engine (registered)
+
+    // Command control signals
+    logic [31:0]  cmd_cnt;                 // Number of commands in BRAM
+    logic         cmd_valid;               // Start signal for bridge
+    logic         cmd_valid_clr;           // Bridge signals transfer complete
+    logic         cmd_bridge_busy;         // Bridge is transferring
+    logic [12:0]  cmd_fifo_count;          // Internal FIFO count (debug)
+
+    // BRAM read model (1-cycle latency)
+    always_ff @(posedge clk) begin
+        if (cmd_bram_rd_en)
+            cmd_bram_rd_data <= cmd_bram[cmd_bram_rd_addr];
+    end
+
+    // Auto-clear CMD_VALID when bridge signals done
+    always_ff @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            cmd_valid <= 1'b0;
+        else if (cmd_valid_clr)
+            cmd_valid <= 1'b0;
+    end
 
     // ====================================================================
     // Result BRAM Interface
@@ -145,11 +165,16 @@ module tb_gemm2d;
         .i_clk              (clk),
         .i_reset_n          (reset_n),
         
-        // Command FIFO Interface
-        .i_cmd_fifo_wdata   (cmd_fifo_wdata),
-        .i_cmd_fifo_wen     (cmd_fifo_wen),
-        .o_cmd_fifo_full    (cmd_fifo_full),
-        .o_cmd_fifo_afull   (cmd_fifo_afull),
+        // Command BRAM Read Interface
+        .i_cmd_bram_rd_data (cmd_bram_rd_data),
+        .o_cmd_bram_rd_en   (cmd_bram_rd_en),
+        .o_cmd_bram_rd_addr (cmd_bram_rd_addr),
+        
+        // Command Control Interface
+        .i_cmd_cnt          (cmd_cnt),
+        .i_cmd_valid        (cmd_valid),
+        .o_cmd_valid_clr    (cmd_valid_clr),
+        .o_cmd_bridge_busy  (cmd_bridge_busy),
         .o_cmd_fifo_count   (cmd_fifo_count),
         
         // AXI Interfaces (16 channels)
@@ -363,21 +388,65 @@ module tb_gemm2d;
     endfunction
 
     // ====================================================================
-    // Command Writing Task
+    // Command BRAM Writing Infrastructure
     // ====================================================================
-    task automatic write_cmd(input logic [31:0] word);
-        while (cmd_fifo_full) @(posedge clk);
-        cmd_fifo_wdata = word;
-        cmd_fifo_wen = 1'b1;
+    integer cmd_bram_idx;  // Current write index into command BRAM
+
+    // Write a 128-bit command to BRAM at specified address
+    // BRAM line is 256-bit; command goes in lower 128 bits
+    // Format: [127:96]=word0, [95:64]=word1, [63:32]=word2, [31:0]=word3
+    task automatic write_cmd_to_bram(
+        input logic [31:0] w0,  // Header
+        input logic [31:0] w1,  // Payload word 1
+        input logic [31:0] w2,  // Payload word 2
+        input logic [31:0] w3   // Payload word 3
+    );
+        logic [127:0] cmd_128;
+        cmd_128 = {w0, w1, w2, w3};  // Pack as 128-bit
+        cmd_bram[cmd_bram_idx] = {128'b0, cmd_128};  // Lower 128 bits of 256-bit line
+        cmd_bram_idx = cmd_bram_idx + 1;
+    endtask
+
+    // Start a new command batch (reset write index)
+    task automatic begin_command_batch();
+        cmd_bram_idx = 0;
+        $display("[TB] Starting new command batch...");
+    endtask
+
+    // Trigger command transfer from BRAM to engine
+    // Waits for transfer to complete before returning
+    task automatic submit_command_batch();
+        integer timeout;
+        $display("[TB] Submitting command batch: %0d commands", cmd_bram_idx);
+        
+        // Set command count and trigger transfer
+        cmd_cnt = cmd_bram_idx;
         @(posedge clk);
-        cmd_fifo_wen = 1'b0;
+        cmd_valid = 1'b1;
+        @(posedge clk);
+        
+        // Wait for transfer complete (cmd_valid_clr pulse)
+        timeout = 0;
+        while (cmd_valid && timeout < 10000) begin
+            @(posedge clk);
+            timeout++;
+        end
+        
+        if (timeout >= 10000) begin
+            $error("[TB] Timeout waiting for command transfer complete!");
+        end else begin
+            $display("[TB] Command batch transfer complete in %0d cycles", timeout);
+        end
+        
+        // Reset for next batch
+        cmd_bram_idx = 0;
     endtask
 
     // ====================================================================
-    // Issue Command Sequence Tasks
+    // Issue Command Sequence Tasks (write to BRAM)
     // ====================================================================
     // =========================================================================
-    // FETCH Command (0xF0) - Per MULTI_ROW_REFERENCE.md lines 644-649:
+    // FETCH Command (0xF0) - Per MULTI_ROW_REFERENCE.md:
     //   cmd[0] = {16'd16, cmd_id[7:0], OPC_FETCH}
     //   cmd[1] = {start_addr[31:0]}
     //   cmd[2] = {ugd_len[15:0], len[15:0]}
@@ -385,82 +454,53 @@ module tb_gemm2d;
     // =========================================================================
     task automatic issue_fetch_command(
         input logic [7:0] cmd_id,
-        input logic [31:0] start_addr,    // Byte address (hardware converts to 32-byte lines)
-        input logic [15:0] ugd_len,       // V - total NVs per UGD (for row partitioning)
-        input logic [15:0] len,           // Number of lines to fetch (default 528)
+        input logic [31:0] start_addr,
+        input logic [15:0] ugd_len,
+        input logic [15:0] len,
         input logic fetch_right
     );
         logic [31:0] header, word1, word2, word3;
 
-        // Header: {16'd16, cmd_id[7:0], opcode[7:0]}
         header = {16'h0010, cmd_id, OPC_FETCH};
-
-        // Word1: start_addr[31:0]
         word1 = start_addr;
-
-        // Word2: {ugd_len[15:0], len[15:0]}
         word2 = {ugd_len, len};
-
-        // Word3: {31'b0, fetch_right}
         word3 = {31'b0, fetch_right};
 
         $display("[TB] FETCH CMD: id=%0d, addr=0x%08x, ugd_len=%0d, len=%0d, right=%0d",
                  cmd_id, start_addr, ugd_len, len, fetch_right);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // =========================================================================
-    // DISPATCH Command (0xF1) - Per MULTI_ROW_REFERENCE.md lines 687-691:
-    //   cmd[0] = {16'd16, cmd_id[7:0], OPC_DISPATCH}
-    //   cmd[1] = {nv_cnt[15:0], ugd_len[15:0]}
-    //   cmd[2] = {16'b0, tile_addr[15:0]}
-    //   cmd[3] = {16'b0, col_start[7:0], 5'b0, disp_right, broadcast, man_4b}
+    // DISPATCH Command (0xF1)
     // =========================================================================
     task automatic issue_dispatch_command(
         input logic [7:0] cmd_id,
-        input logic [15:0] nv_cnt,        // Total NVs to dispatch
-        input logic [15:0] ugd_len,       // NVs per UGD vector
-        input logic [15:0] tile_addr,     // Destination BRAM address
-        input logic [7:0] col_start,      // Starting column for round-robin (8-bit)
-        input logic disp_right            // 1=weights to mlp_bram, 0=activations to row_bram
+        input logic [15:0] nv_cnt,
+        input logic [15:0] ugd_len,
+        input logic [15:0] tile_addr,
+        input logic [7:0] col_start,
+        input logic disp_right
     );
         logic [31:0] header, word1, word2, word3;
         logic broadcast;
 
-        // broadcast = ~disp_right (left=broadcast, right=distribute)
         broadcast = ~disp_right;
 
-        // Header: {16'd16, cmd_id[7:0], opcode[7:0]}
         header = {16'h0010, cmd_id, OPC_DISP};
-
-        // Word1: {nv_cnt[15:0], ugd_len[15:0]}
         word1 = {nv_cnt, ugd_len};
-
-        // Word2: {16'b0, tile_addr[15:0]}
         word2 = {16'b0, tile_addr};
-
-        // Word3: {16'b0, col_start[7:0], 5'b0, disp_right, broadcast, man_4b}
         word3 = {16'b0, col_start, 5'b0, disp_right, broadcast, 1'b0};
 
         $display("[TB] DISPATCH CMD: id=%0d, nv=%0d, ugd=%0d, tile=0x%04x, col=%0d, right=%0d, bc=%0d",
                  cmd_id, nv_cnt, ugd_len, tile_addr, col_start, disp_right, broadcast);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // =========================================================================
-    // WAIT_DISP Command (0xF3) - Per MULTI_ROW_REFERENCE.md lines 744-748:
-    //   cmd[0] = {16'd16, cmd_id[7:0], OPC_WAIT_DISPATCH}
-    //   cmd[1] = {24'd0, wait_id[7:0]}
-    //   cmd[2] = 0
-    //   cmd[3] = 0
+    // WAIT_DISP Command (0xF3)
     // =========================================================================
     task automatic issue_wait_disp_command(
         input logic [7:0] cmd_id,
@@ -469,63 +509,41 @@ module tb_gemm2d;
         logic [31:0] header, word1, word2, word3;
 
         header = {16'h0010, cmd_id, OPC_WAIT_DISP};
-        word1 = {24'd0, wait_id};  // wait_id in word1 (master_control reads from cmd_reg[1][7:0])
+        word1 = {24'd0, wait_id};
         word2 = 32'd0;
         word3 = 32'd0;
 
         $display("[TB] WAIT_DISP CMD: id=%0d, wait_id=%0d", cmd_id, wait_id);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // =========================================================================
-    // MATMUL Command (0xF2) - Per MULTI_ROW_REFERENCE.md lines 717-721:
-    //   cmd[0] = {16'd16, cmd_id[7:0], OPC_MATMUL}
-    //   cmd[1] = {left_addr[15:0], right_addr[15:0]}
-    //   cmd[2] = {left_len[15:0], right_len[15:0]}   -- B and C as 16-bit
-    //   cmd[3] = {ugd_len[15:0], 13'b0, left_4b, right_4b, main_loop_left}
+    // MATMUL Command (0xF2)
     // =========================================================================
     task automatic issue_matmul_command(
         input logic [7:0] cmd_id,
-        input logic [15:0] left_addr,     // Starting line in row_bram (activations)
-        input logic [15:0] right_addr,    // Starting line in mlp_bram (weights)
-        input logic [15:0] left_len,      // B - batch dimension (16-bit)
-        input logic [15:0] right_len,     // C - column dimension (16-bit)
-        input logic [15:0] ugd_len        // V - inner dimension / NVs per UGD (16-bit)
+        input logic [15:0] left_addr,
+        input logic [15:0] right_addr,
+        input logic [15:0] left_len,
+        input logic [15:0] right_len,
+        input logic [15:0] ugd_len
     );
         logic [31:0] header, word1, word2, word3;
 
-        // Header: {16'd16, cmd_id[7:0], opcode[7:0]}
         header = {16'h0010, cmd_id, OPC_MATMUL};
-
-        // Word1: {left_addr[15:0], right_addr[15:0]}
         word1 = {left_addr, right_addr};
-
-        // Word2: {left_len[15:0], right_len[15:0]}
         word2 = {left_len, right_len};
-
-        // Word3: {ugd_len[15:0], 13'b0, left_4b, right_4b, main_loop_left}
-        // Flags all 0 for 8-bit mode, loop over left first
         word3 = {ugd_len, 13'b0, 1'b0, 1'b0, 1'b0};
 
         $display("[TB] MATMUL CMD: id=%0d, left_addr=%0d, right_addr=%0d, B=%0d, C=%0d, V=%0d",
                  cmd_id, left_addr, right_addr, left_len, right_len, ugd_len);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // =========================================================================
-    // WAIT_MATMUL Command (0xF4) - Per MULTI_ROW_REFERENCE.md lines 760-764:
-    //   cmd[0] = {16'd16, cmd_id[7:0], OPC_WAIT_MATMUL}
-    //   cmd[1] = {24'd0, wait_id[7:0]}
-    //   cmd[2] = 0
-    //   cmd[3] = 0
+    // WAIT_MATMUL Command (0xF4)
     // =========================================================================
     task automatic issue_wait_tile_command(
         input logic [7:0] cmd_id,
@@ -534,51 +552,34 @@ module tb_gemm2d;
         logic [31:0] header, word1, word2, word3;
 
         header = {16'h0010, cmd_id, OPC_WAIT_MATMUL};
-        word1 = {24'd0, wait_id};  // wait_id in word1 (master_control reads from cmd_reg[1][7:0])
+        word1 = {24'd0, wait_id};
         word2 = 32'd0;
         word3 = 32'd0;
 
-        $display("[TB] wait_matmul CMD: id=%0d, wait_id=%0d", cmd_id, wait_id);
+        $display("[TB] WAIT_MATMUL CMD: id=%0d, wait_id=%0d", cmd_id, wait_id);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // =========================================================================
-    // READOUT Command (0xF5) - Per MULTI_ROW_REFERENCE.md lines 778-782:
-    //   cmd[0] = {16'd16, cmd_id[7:0], OPC_READOUT}
-    //   cmd[1] = {left_len[15:0], right_len[15:0]}
-    //   cmd[2] = {16'b0, ugd_len[15:0]}
-    //   cmd[3] = 0
+    // READOUT Command (0xF5)
     // =========================================================================
     task automatic issue_readout_command(
         input logic [7:0] cmd_id,
-        input logic [15:0] left_len,      // B - batch dimension
-        input logic [15:0] right_len,     // C - column dimension
-        input logic [15:0] ugd_len        // V - inner dimension
+        input logic [15:0] left_len,
+        input logic [15:0] right_len,
+        input logic [15:0] ugd_len
     );
         logic [31:0] header, word1, word2, word3;
 
-        // Header: {16'd16, cmd_id[7:0], opcode[7:0]}
         header = {16'h0010, cmd_id, OPC_READOUT};
-
-        // Word1: {left_len[15:0], right_len[15:0]}
         word1 = {left_len, right_len};
-
-        // Word2: {16'b0, ugd_len[15:0]}
         word2 = {16'b0, ugd_len};
-
-        // Word3: reserved
         word3 = 32'd0;
 
         $display("[TB] READOUT CMD: id=%0d, B=%0d, C=%0d, V=%0d", cmd_id, left_len, right_len, ugd_len);
 
-        write_cmd(header);
-        write_cmd(word1);
-        write_cmd(word2);
-        write_cmd(word3);
+        write_cmd_to_bram(header, word1, word2, word3);
     endtask
 
     // ====================================================================
@@ -758,8 +759,9 @@ module tb_gemm2d;
         cycle_count = 0;
         tests_run = 0;
         tests_passed = 0;
-        cmd_fifo_wdata = 32'd0;
-        cmd_fifo_wen = 1'b0;
+        cmd_bram_idx = 0;
+        cmd_cnt = 32'd0;
+        cmd_valid = 1'b0;
         captured_count = 0;
         
         $display("\n===============================================");
@@ -783,7 +785,7 @@ module tb_gemm2d;
         load_golden_results();
         
         // =================================================================
-        // Issue Command Sequence
+        // Issue Command Sequence (via BRAM batch interface)
         // =================================================================
         // **CRITICAL**: fetcher_2d expects LINE ADDRESSES, not byte addresses!
         // Block 0 (left):  lines 0-527
@@ -791,34 +793,32 @@ module tb_gemm2d;
         // =================================================================
         $display("\n=== ISSUING COMMAND SEQUENCE ===\n");
 
+        // Start a new command batch - all commands go to cmd_bram
+        begin_command_batch();
+
         // Step 1: Fetch RIGHT (weights) - block 1 starts at line 528
-        // IMPORTANT: fetcher_2d.sv expects LINE address, not byte address
-        // ugd_len = V_TOTAL (512) - MC partitions this to V=32 per row
         issue_fetch_command(
             .cmd_id(8'd1),
-            .start_addr(32'd528),           // Line address 528 (not byte address!)
-            .ugd_len(V_TOTAL),              // Total V across all rows (512), MC partitions to 32/row
-            .len(16'd528),                  // Full block (528 lines)
+            .start_addr(32'd528),
+            .ugd_len(V_TOTAL),
+            .len(16'd528),
             .fetch_right(1'b1)
         );
 
         // Step 1.5: Wait for RIGHT FETCH to complete before DISPATCH
-        // CRITICAL: Without this, DISPATCH reads stale data from FIFO
         issue_wait_disp_command(
-            .cmd_id(8'd11),                 // Use intermediate cmd_id
-            .wait_id(8'd1)                  // Wait for FETCH cmd_id=1 to complete
+            .cmd_id(8'd11),
+            .wait_id(8'd1)
         );
 
         // Step 2: Dispatch RIGHT (weights) to mlp_bram
-        // nv_cnt = C (number of UGD vectors/columns, per dispatcher_control_2d.sv)
-        // ugd_len = V_TOTAL (512), MC partitions to 32 per row
         issue_dispatch_command(
             .cmd_id(8'd2),
-            .nv_cnt(C),                     // C = number of columns (UGD vectors)
-            .ugd_len(V_TOTAL),              // Total V (512), MC partitions to 32/row
-            .tile_addr(16'd0),              // Start address in mlp_bram
-            .col_start(8'd0),               // Start at column 0
-            .disp_right(1'b1)               // Right = weights -> mlp_bram
+            .nv_cnt(C),
+            .ugd_len(V_TOTAL),
+            .tile_addr(16'd0),
+            .col_start(8'd0),
+            .disp_right(1'b1)
         );
 
         // Step 3: Wait for DISPATCH to complete
@@ -828,33 +828,28 @@ module tb_gemm2d;
         );
 
         // Step 4: Fetch LEFT (activations) - block 0 starts at line 0
-        // IMPORTANT: fetcher_2d.sv expects LINE address, not byte address
-        // ugd_len = V_TOTAL (512) - MC partitions this to V=32 per row
         issue_fetch_command(
             .cmd_id(8'd4),
-            .start_addr(32'd0),             // Line address 0
-            .ugd_len(V_TOTAL),              // Total V (512), MC partitions to 32/row
-            .len(16'd528),                  // Full block (528 lines)
+            .start_addr(32'd0),
+            .ugd_len(V_TOTAL),
+            .len(16'd528),
             .fetch_right(1'b0)
         );
 
         // Step 4.5: Wait for LEFT FETCH to complete before DISPATCH
-        // CRITICAL: Without this, DISPATCH reads stale data from FIFO
         issue_wait_disp_command(
-            .cmd_id(8'd44),                 // Use intermediate cmd_id
-            .wait_id(8'd4)                  // Wait for FETCH cmd_id=4 to complete
+            .cmd_id(8'd44),
+            .wait_id(8'd4)
         );
 
         // Step 5: Dispatch LEFT (activations) to row_bram
-        // nv_cnt = B (number of UGD vectors/batches, per dispatcher_control_2d.sv)
-        // ugd_len = V_TOTAL (512), MC partitions to 32 per row
         issue_dispatch_command(
             .cmd_id(8'd5),
-            .nv_cnt(B),                     // B = number of batches (UGD vectors)
-            .ugd_len(V_TOTAL),              // Total V (512), MC partitions to 32/row
-            .tile_addr(16'd0),              // Start address in row_bram
-            .col_start(8'd0),               // Ignored for left (broadcast mode)
-            .disp_right(1'b0)               // Left = activations -> row_bram (broadcast)
+            .nv_cnt(B),
+            .ugd_len(V_TOTAL),
+            .tile_addr(16'd0),
+            .col_start(8'd0),
+            .disp_right(1'b0)
         );
 
         // Step 6: Wait for DISPATCH to complete
@@ -864,31 +859,31 @@ module tb_gemm2d;
         );
 
         // Step 7: Issue MATMUL - compute O = A * W
-        // B batches, C columns, V_TOTAL = V * NUM_ROWS (MC partitions to V/row)
         issue_matmul_command(
             .cmd_id(8'd7),
-            .left_addr(16'd0),              // Start address in row_bram
-            .right_addr(16'd0),             // Start address in mlp_bram
-            .left_len(16'(B)),              // B (batch dimension)
-            .right_len(16'(C)),             // C (column dimension)
-            .ugd_len(V_TOTAL)               // Total V, MC partitions to V/row
+            .left_addr(16'd0),
+            .right_addr(16'd0),
+            .left_len(16'(B)),
+            .right_len(16'(C)),
+            .ugd_len(V_TOTAL)
         );
 
-        // Step 8: READOUT results - issue immediately after MATMUL (before WAIT)
-        // This registers the readout parameters; actual readout happens after MATMUL completes
-        // Output: B * C FP16 values
+        // Step 8: READOUT results
         issue_readout_command(
             .cmd_id(8'd8),
-            .left_len(16'(B)),              // B
-            .right_len(16'(C)),             // C
-            .ugd_len(V_TOTAL)               // Total V, for reduction tracking
+            .left_len(16'(B)),
+            .right_len(16'(C)),
+            .ugd_len(V_TOTAL)
         );
 
-        // Step 9: Wait for MATMUL to complete (blocks until computation done)
+        // Step 9: Wait for MATMUL to complete
         issue_wait_tile_command(
             .cmd_id(8'd9),
-            .wait_id(8'd7)                  // Wait for MATMUL cmd_id=7
+            .wait_id(8'd7)
         );
+
+        // Submit the command batch - triggers transfer from BRAM to engine FIFO
+        submit_command_batch();
         
         // Wait for command processing to start
         repeat(100) @(posedge clk);

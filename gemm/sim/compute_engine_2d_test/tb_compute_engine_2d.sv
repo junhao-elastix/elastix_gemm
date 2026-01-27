@@ -38,12 +38,18 @@
 module tb_compute_engine_2d;
 
     // =========================================================================
-    // Parameters
+    // Parameters - Configurable via Makefile defines
     // =========================================================================
     localparam int CLK_PERIOD_NS    = 10;        // 100MHz clock
     localparam int TIMEOUT_NS       = 100000000; // 100ms timeout
-    localparam int NUM_MLPS         = 8;
-    localparam int NUM_COLUMNS      = 16;        // 8 MLPs x 2 banks
+
+    // Configurable NUM_MLPS - override via Makefile +define+NUM_MLPS=N
+    `ifndef NUM_MLPS
+    `define NUM_MLPS 8
+    `endif
+    localparam int NUM_MLPS         = `NUM_MLPS;
+    localparam int NUM_COLS         = 2 * NUM_MLPS;  // 2 columns per MLP
+
     localparam int MAN_WIDTH        = 256;
     localparam int EXP_WIDTH        = 8;
     localparam int BRAM_DEPTH       = 512;
@@ -119,9 +125,9 @@ module tb_compute_engine_2d;
     logic [9:0]             wt_nv_idx;
 
     // Result FIFO Interface (unpacked arrays to match DUT ports)
-    logic [15:0]            result_data [NUM_COLUMNS-1:0];
-    logic                   result_rd_en [NUM_COLUMNS-1:0];
-    logic                   result_empty [NUM_COLUMNS-1:0];
+    logic [15:0]            result_data [NUM_COLS-1:0];
+    logic                   result_rd_en [NUM_COLS-1:0];
+    logic                   result_empty [NUM_COLS-1:0];
     logic                   result_afull;
 
     // Debug Interface
@@ -159,7 +165,7 @@ module tb_compute_engine_2d;
         .BRAM_DEPTH(BRAM_DEPTH),
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_MLPS(NUM_MLPS),
-        .NUM_COLUMNS(NUM_COLUMNS),
+        .NUM_COLS(NUM_COLS),
         .RESULT_FIFO_DEPTH(64)
     ) dut (
         .i_clk(clk),
@@ -368,32 +374,43 @@ module tb_compute_engine_2d;
     // Write Weights to MLPStack
     // Note: compute_engine_2d applies E5->E8 bias conversion internally
     //       so we pass RAW exponents here
-    // 
+    //
     // Address scheme for asymmetric BRAM (rdaddr N reads wraddrs 2N and 2N+1):
     //   - bank0 (even columns) chunks go to EVEN wraddrs
     //   - bank1 (odd columns) chunks go to ODD wraddrs
-    // Pattern: wraddr = v * 8 + chunk * 2 + bank
+    // Pattern: wraddr = wraddr_base + v * 8 + chunk * 2 + bank
+    //
+    // Column Group Wrapping (for C > NUM_COLS):
+    //   - col_sel cycles 0 to NUM_COLS-1
+    //   - When col_sel wraps, wraddr_base advances by V * 8
+    //   - This matches RTL: rd_base_addr_eff = base + cg_cnt * V * 8
     // =========================================================================
     task automatic write_weights(int C, int V);
         int mlp_idx;
         int bank;
         int src_nv;
         int direct_wraddr;
+        int col_sel;         // Current logical column (0 to NUM_COLS-1)
+        int wraddr_base;     // Base address, advances on column wrap
 
-        $display("[TB] Writing weights for %0d columns x %0d NVs", C, V);
+        $display("[TB] Writing weights for %0d columns x %0d NVs (NUM_COLS=%0d)", C, V, NUM_COLS);
+
+        col_sel = 0;         // Start at column 0
+        wraddr_base = 0;     // Start at base address 0
 
         for (int c = 0; c < C; c++) begin
-            mlp_idx = c / 2;  // Which MLP (0-7)
-            bank = c % 2;     // Which bank within MLP (0 or 1)
+            // Map logical column to physical MLP and bank
+            mlp_idx = col_sel / 2;  // Which MLP (0 to NUM_MLPS-1)
+            bank = col_sel % 2;     // Which bank within MLP (0 or 1)
 
             for (int v = 0; v < V; v++) begin
-                src_nv = c * V + v;  // Source NV index in hex file
+                src_nv = c * V + v;  // Source NV index in hex file (c-major order)
 
                 // Write 4 chunks with interleaved wraddrs
                 for (int chunk = 0; chunk < 4; chunk++) begin
-                    // Direct wraddr: v * 8 + chunk * 2 + bank
+                    // wraddr = wraddr_base + v * 8 + chunk * 2 + bank
                     // This interleaves bank0 at even and bank1 at odd addresses
-                    direct_wraddr = v * 8 + chunk * 2 + bank;
+                    direct_wraddr = wraddr_base + v * 8 + chunk * 2 + bank;
 
                     wt_mlp_sel = mlp_idx[2:0];
                     wt_nv_idx = direct_wraddr[9:0];
@@ -406,7 +423,18 @@ module tb_compute_engine_2d;
                 end
             end
 
-            $display("[TB]   Column %0d loaded to MLP %0d bank %0d", c, mlp_idx, bank);
+            $display("[TB]   Column %0d loaded to MLP %0d bank %0d (col_sel=%0d, wraddr_base=%0d)",
+                     c, mlp_idx, bank, col_sel, wraddr_base);
+
+            // Advance col_sel, wrap at NUM_COLS
+            if (col_sel == NUM_COLS - 1) begin
+                // Wrapped around: reset col_sel, advance wraddr_base
+                col_sel = 0;
+                wraddr_base = wraddr_base + V * 8;  // V NVs * 8 addresses per NV
+                $display("[TB]   Column wrap: col_sel->0, wraddr_base->%0d", wraddr_base);
+            end else begin
+                col_sel = col_sel + 1;
+            end
         end
 
         // NOTE: Do NOT initialize unused columns to zero.
@@ -470,7 +498,7 @@ module tb_compute_engine_2d;
         timeout_cnt = 0;
         
         // Clear all rd_en signals
-        for (int i = 0; i < NUM_COLUMNS; i++) begin
+        for (int i = 0; i < NUM_COLS; i++) begin
             result_rd_en[i] = 1'b0;
         end
 
@@ -490,14 +518,14 @@ module tb_compute_engine_2d;
             if (!any_available) break;
 
             // Assert rd_en for columns 0 to C-1
-            for (int c = 0; c < NUM_COLUMNS; c++) begin
+            for (int c = 0; c < NUM_COLS; c++) begin
                 result_rd_en[c] = (c < C) ? 1'b1 : 1'b0;
             end
 
             @(posedge clk);  // Cycle N: FIFO latches data and advances ptr
             
             // Deassert rd_en
-            for (int c = 0; c < NUM_COLUMNS; c++) begin
+            for (int c = 0; c < NUM_COLS; c++) begin
                 result_rd_en[c] = 1'b0;
             end
             
@@ -639,7 +667,7 @@ module tb_compute_engine_2d;
         // Reset DUT between tests
         matmul_en = 1'b0;
         num_results_collected = 0;
-        for (int i = 0; i < NUM_COLUMNS; i++) result_rd_en[i] = 1'b0;
+        for (int i = 0; i < NUM_COLS; i++) result_rd_en[i] = 1'b0;
 
         // Apply reset pulse to clear FIFOs and state
         rstn = 1'b0;
@@ -660,78 +688,86 @@ module tb_compute_engine_2d;
         // Issue MATMUL
         issue_matmul(cfg.B, cfg.C, cfg.V);
 
-        // Concurrent drain: Read FIFOs while waiting for matmul_done
-        // This prevents deadlock when results exceed FIFO depth (64)
+        // Concurrent drain: Read FIFOs using column group structure
+        // RTL outputs: for each (batch, column_group), pushes to all NUM_COLS FIFOs
+        // For partial column groups (C not divisible by NUM_COLS), pop ALL FIFOs
+        // but only keep the first 'active_cols' results
         $display("[TB] Starting concurrent result collection...");
         begin
             int collected;
             int timeout_cnt;
-            int drain_cycles;
             logic done_seen;
-            logic [NUM_COLUMNS-1:0] reading_col;
+            int num_col_groups;
+            int active_cols;
+            int logical_col;
 
             collected = 0;
             timeout_cnt = 0;
-            drain_cycles = 0;
             done_seen = 1'b0;
-            reading_col = '0;
 
-            // Drain FIFOs concurrently with computation
-            while (collected < expected_results && timeout_cnt < 500000) begin
-                @(posedge clk);
-                timeout_cnt++;
+            // Calculate column groups: ceil(C / NUM_COLS)
+            num_col_groups = (cfg.C + NUM_COLS - 1) / NUM_COLS;
+            $display("[TB] Column groups: %0d (C=%0d, NUM_COLS=%0d)", num_col_groups, cfg.C, NUM_COLS);
 
-                // Check if matmul_done was asserted
-                if (matmul_done && !done_seen) begin
-                    done_seen = 1'b1;
-                    $display("[TB] matmul_done asserted at cycle %0d, collected=%0d/%0d",
-                             timeout_cnt, collected, expected_results);
-                end
-
-                // Read from any non-empty FIFOs (up to C columns)
-                // Track which columns we're reading from
-                reading_col = '0;
-                for (int c = 0; c < cfg.C; c++) begin
-                    if (!result_empty[c]) begin
-                        result_rd_en[c] = 1'b1;
-                        reading_col[c] = 1'b1;
+            // Iterate: for each batch, for each column group
+            for (int b = 0; b < cfg.B && timeout_cnt < 500000; b++) begin
+                for (int cg = 0; cg < num_col_groups && timeout_cnt < 500000; cg++) begin
+                    // Calculate active columns for this column group
+                    // Last group may be partial
+                    if (cg == num_col_groups - 1) begin
+                        active_cols = cfg.C - cg * NUM_COLS;  // Remainder
                     end else begin
-                        result_rd_en[c] = 1'b0;
+                        active_cols = NUM_COLS;  // Full group
                     end
-                end
-                // Keep other columns disabled
-                for (int c = cfg.C; c < NUM_COLUMNS; c++) begin
-                    result_rd_en[c] = 1'b0;
-                end
 
-                @(posedge clk);  // FIFO latches rd_en, schedules data output
-                timeout_cnt++;
+                    // Wait for data in FIFO 0 (all FIFOs fill together)
+                    while (result_empty[0] && timeout_cnt < 500000) begin
+                        @(posedge clk);
+                        timeout_cnt++;
 
-                // Deassert rd_en after one cycle
-                for (int c = 0; c < NUM_COLUMNS; c++) begin
-                    result_rd_en[c] = 1'b0;
-                end
+                        // Check for matmul_done
+                        if (matmul_done && !done_seen) begin
+                            done_seen = 1'b1;
+                            $display("[TB] matmul_done at cycle %0d, collected=%0d/%0d",
+                                     timeout_cnt, collected, expected_results);
+                        end
+                    end
 
-                @(posedge clk);  // Data now stable on output
-                timeout_cnt++;
+                    if (timeout_cnt >= 500000) break;
 
-                // Capture results from columns that were read
-                for (int c = 0; c < cfg.C; c++) begin
-                    if (reading_col[c]) begin
-                        collected_results[collected] = result_data[c];
-                        $display("[TB_CAPTURE] @%0t col=%0d idx=%0d data=0x%04x empty=%b",
-                                 $time, c, collected, result_data[c], result_empty[c]);
+                    // Pop ALL NUM_COLS FIFOs (including garbage for partial groups)
+                    // Assert rd_en for all FIFOs
+                    for (int f = 0; f < NUM_COLS; f++) begin
+                        result_rd_en[f] = 1'b1;
+                    end
+
+                    @(posedge clk);  // FIFO latches rd_en
+                    timeout_cnt++;
+
+                    // Deassert rd_en
+                    for (int f = 0; f < NUM_COLS; f++) begin
+                        result_rd_en[f] = 1'b0;
+                    end
+
+                    @(posedge clk);  // Data now stable on outputs
+                    timeout_cnt++;
+
+                    // Capture only valid results (first active_cols FIFOs)
+                    for (int f = 0; f < active_cols; f++) begin
+                        logical_col = cg * NUM_COLS + f;
+                        collected_results[collected] = result_data[f];
                         collected++;
-                        drain_cycles++;
                     end
+
+                    // Discard garbage from FIFOs active_cols to NUM_COLS-1
+                    // (they were already popped, just don't store them)
                 end
             end
 
             num_results_collected = collected;
 
             if (timeout_cnt >= 500000) begin
-                $display("[TB] ERROR: Timeout waiting for results! collected=%0d/%0d",
-                         collected, expected_results);
+                $display("[TB] ERROR: Timeout! collected=%0d/%0d", collected, expected_results);
             end else begin
                 $display("[TB] Collection complete: %0d results in %0d cycles",
                          collected, timeout_cnt);
@@ -777,7 +813,7 @@ module tb_compute_engine_2d;
         wt_wr_exp = '0;
         wt_mlp_sel = 3'd0;
         wt_nv_idx = 10'd0;
-        for (int i = 0; i < NUM_COLUMNS; i++) result_rd_en[i] = 1'b0;
+        for (int i = 0; i < NUM_COLS; i++) result_rd_en[i] = 1'b0;
         tests_run = 0;
         tests_passed = 0;
 

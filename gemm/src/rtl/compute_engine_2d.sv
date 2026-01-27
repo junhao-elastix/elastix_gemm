@@ -42,7 +42,7 @@ import gemm_pkg::*;
     parameter int BRAM_DEPTH = 512,             // row_bram depth (activations only)
     parameter int ADDR_WIDTH = $clog2(BRAM_DEPTH),
     parameter int NUM_MLPS = 8,                 // Number of MLP primitives (2 columns each)
-    parameter int NUM_COLUMNS = 2*NUM_MLPS,     // Number of MLP columns (fixed)
+    parameter int NUM_COLS = 2*NUM_MLPS,     // Number of MLP columns (fixed)
     parameter int RESULT_FIFO_DEPTH = 64        // Result FIFO depth per column
 ) (
     input  logic                     i_clk,
@@ -86,9 +86,9 @@ import gemm_pkg::*;
     // Result FIFO Interface (16 parallel FP16 outputs)
     // Using unpacked arrays for compatibility with parent module wiring
     // =========================================================================
-    output logic [FP16_WIDTH-1:0]    o_result_data [NUM_COLUMNS-1:0],
-    input  logic                     i_result_rd_en [NUM_COLUMNS-1:0],
-    output logic                     o_result_empty [NUM_COLUMNS-1:0],
+    output logic [FP16_WIDTH-1:0]    o_result_data [NUM_COLS-1:0],
+    input  logic                     i_result_rd_en [NUM_COLS-1:0],
+    output logic                     o_result_empty [NUM_COLS-1:0],
     output logic                     o_result_afull,
 
     // =========================================================================
@@ -110,31 +110,36 @@ import gemm_pkg::*;
 
     // =========================================================================
     // Registered Command Parameters (depacked from payload words)
+    // Per MULTI_ROW_REFERENCE.md: B, C, V are all 16-bit fields
     // =========================================================================
     logic [15:0] left_addr_reg;      // Left base address for row_bram reads
     logic [15:0] right_addr_reg;     // Right base address for mlp_bram reads
-    logic [7:0]  B_reg;              // Number of activation batches
-    logic [7:0]  C_reg;              // Number of columns
-    logic [7:0]  V_reg;              // Number of NVs per dot product
+    logic [15:0] B_reg;              // Number of activation batches (16-bit per spec)
+    logic [15:0] C_reg;              // Number of columns (16-bit per spec)
+    logic [15:0] V_reg;              // Number of NVs per dot product (16-bit per spec)
     logic [7:0]  cmd_id_reg;         // Registered command ID
 
     // =========================================================================
-    // Column Group Support (for C > 16)
+    // Column Group Support (for C > NUM_COLS)
+    // Uses shift-based division for power-of-2 NUM_COLS values (4, 8, 16)
     // =========================================================================
-    logic [3:0] num_col_groups;      // G = ceil(C / 16), max 8
+    localparam int NUM_COLS_SHIFT = $clog2(NUM_COLS);  // 2 for 4, 3 for 8, 4 for 16
+    logic [11:0] num_col_groups;     // G = ceil(C / NUM_COLS), 12-bit for 16-bit C
 
     always_comb begin
-        num_col_groups = (C_reg + 8'd15) >> 4;
-        if (num_col_groups == 4'd0)
-            num_col_groups = 4'd1;
+        // For power-of-2 NUM_COLS: use shift instead of division
+        // C_reg is 16-bit, result fits in 12 bits (max 65535/16 = 4096)
+        num_col_groups = (C_reg + NUM_COLS[15:0] - 16'd1) >> NUM_COLS_SHIFT;
+        if (num_col_groups == 12'd0)
+            num_col_groups = 12'd1;
     end
 
     // =========================================================================
-    // Simple Counters
+    // Simple Counters (widened to match 16-bit B, C, V parameters)
     // =========================================================================
-    logic [7:0]  b_cnt;              // 0..B-1 (outer loop)
-    logic [3:0]  cg_cnt;             // 0..G-1 (column group)
-    logic [7:0]  v_cnt;              // 0..V-1 (NV within dot product)
+    logic [15:0] b_cnt;              // 0..B-1 (outer loop, 16-bit for full B range)
+    logic [3:0]  cg_cnt;             // 0..G-1 (column group, 4-bit sufficient)
+    logic [15:0] v_cnt;              // 0..V-1 (NV within dot product, 16-bit for full V range)
     logic [1:0]  l_cnt;              // 0..3 (line within NV)
 
     // =========================================================================
@@ -170,7 +175,7 @@ import gemm_pkg::*;
     // =========================================================================
     // MLPStack Signals
     // =========================================================================
-    logic [15:0] mlp_result_fp16 [NUM_COLUMNS-1:0];
+    logic [15:0] mlp_result_fp16 [NUM_COLS-1:0];
     logic        mlp_result_push;
     logic        mlp_result_fifo_full;
     logic [9:0]  rd_base_addr_eff;
@@ -222,9 +227,9 @@ import gemm_pkg::*;
     assign bram_rd_issued = (state_reg == CE_RUNNING) && (act_ready || !bram_data_valid);
 
     // Control signals computed from current counter state (before BRAM latency)
-    assign new_dot     = (v_cnt == 8'd0) && (l_cnt == 2'd0);
-    assign last_nv     = (v_cnt == (V_reg - 8'd1)) && (l_cnt == 2'd3);
-    assign last_matmul = (b_cnt == (B_reg - 8'd1)) && (cg_cnt == (num_col_groups - 4'd1)) && last_nv;
+    assign new_dot     = (v_cnt == 16'd0) && (l_cnt == 2'd0);
+    assign last_nv     = (v_cnt == (V_reg - 16'd1)) && (l_cnt == 2'd3);
+    assign last_matmul = (b_cnt == (B_reg - 16'd1)) && (cg_cnt == (num_col_groups - 12'd1)) && last_nv;
 
     // act_valid: For registered BRAM reads, gate with bram_data_valid
     // This ensures we wait for valid data after NV transitions
@@ -285,15 +290,15 @@ import gemm_pkg::*;
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             state_reg       <= CE_IDLE;
-            b_cnt           <= 8'd0;
+            b_cnt           <= 16'd0;
             cg_cnt          <= 4'd0;
-            v_cnt           <= 8'd0;
+            v_cnt           <= 16'd0;
             l_cnt           <= 2'd0;
             left_addr_reg   <= 16'd0;
             right_addr_reg  <= 16'd0;
-            B_reg           <= 8'd0;
-            C_reg           <= 8'd0;
-            V_reg           <= 8'd0;
+            B_reg           <= 16'd0;
+            C_reg           <= 16'd0;
+            V_reg           <= 16'd0;
             cmd_id_reg      <= 8'd0;
             result_count_reg <= 16'd0;
             compute_done    <= 1'b0;
@@ -309,21 +314,21 @@ import gemm_pkg::*;
                         //   word1 = {left_addr[15:0], right_addr[15:0]}
                         //   word2 = {left_len[15:0], right_len[15:0]} where B=left_len, C=right_len
                         //   word3 = {ugd_len[15:0], flags[15:0]} where V=ugd_len
-                        // Extract low byte of each 16-bit field (B, C, V are all < 256)
+                        // Extract FULL 16-bit fields (not just low byte!)
                         left_addr_reg  <= i_cmd_payload_word1[31:16];
                         right_addr_reg <= i_cmd_payload_word1[15:0];
-                        B_reg          <= i_cmd_payload_word2[23:16];  // Low byte of B[15:0]
-                        C_reg          <= i_cmd_payload_word2[7:0];    // Low byte of C[15:0]
-                        V_reg          <= i_cmd_payload_word3[23:16];  // Low byte of V[15:0]
+                        B_reg          <= i_cmd_payload_word2[31:16];  // Full 16-bit B
+                        C_reg          <= i_cmd_payload_word2[15:0];   // Full 16-bit C
+                        V_reg          <= i_cmd_payload_word3[31:16];  // Full 16-bit V
                         cmd_id_reg     <= i_cmd_id;
 
                         // synthesis translate_off
                         `ifdef DEBUG_COMPUTE
                         $display("[CE2D] @%0t MATMUL received: id=%0d, B=%0d, C=%0d, V=%0d, left_addr=%0d, right_addr=%0d",
                                  $time, i_cmd_id,
-                                 i_cmd_payload_word2[23:16],  // B
-                                 i_cmd_payload_word2[7:0],     // C
-                                 i_cmd_payload_word3[23:16],  // V
+                                 i_cmd_payload_word2[31:16],  // B (full 16-bit)
+                                 i_cmd_payload_word2[15:0],   // C (full 16-bit)
+                                 i_cmd_payload_word3[31:16],  // V (full 16-bit)
                                  i_cmd_payload_word1[31:16],  // left_addr
                                  i_cmd_payload_word1[15:0]);  // right_addr
                         $display("[CE2D]   word1=0x%08x, word2=0x%08x, word3=0x%08x",
@@ -332,9 +337,9 @@ import gemm_pkg::*;
                         // synthesis translate_on
 
                         // Reset counters
-                        b_cnt  <= 8'd0;
+                        b_cnt  <= 16'd0;
                         cg_cnt <= 4'd0;
-                        v_cnt  <= 8'd0;
+                        v_cnt  <= 16'd0;
                         l_cnt  <= 2'd0;
                         result_count_reg <= 16'd0;
                     end
@@ -347,18 +352,18 @@ import gemm_pkg::*;
                         if (l_cnt == 2'd3) begin
                             l_cnt <= 2'd0;
                             // v_cnt: (0..V-1)
-                            if (v_cnt == (V_reg - 8'd1)) begin
-                                v_cnt <= 8'd0;
+                            if (v_cnt == (V_reg - 16'd1)) begin
+                                v_cnt <= 16'd0;
                                 // cg_cnt: (0..G-1)
                                 if (cg_cnt == (num_col_groups - 4'd1)) begin
                                     cg_cnt <= 4'd0;
                                     // b_cnt: outermost (0..B-1)
-                                    b_cnt <= b_cnt + 8'd1;
+                                    b_cnt <= b_cnt + 16'd1;
                                 end else begin
                                     cg_cnt <= cg_cnt + 4'd1;
                                 end
                             end else begin
-                                v_cnt <= v_cnt + 8'd1;
+                                v_cnt <= v_cnt + 16'd1;
                             end
                         end else begin
                             l_cnt <= l_cnt + 2'd1;
@@ -510,7 +515,7 @@ import gemm_pkg::*;
     // comp_MLPStack_oFIFO Instance (16 result FIFOs)
     // =========================================================================
     comp_MLPStack_oFIFO #(
-        .NUM_COLUMNS(NUM_COLUMNS),
+        .NUM_COLS(NUM_COLS),
         .FIFO_DEPTH(RESULT_FIFO_DEPTH)
     ) u_result_fifos (
         .clk(i_clk),

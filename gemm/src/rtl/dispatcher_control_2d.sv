@@ -34,11 +34,11 @@
 module dispatcher_control_2d
 import gemm_pkg::*;
 #(
-    parameter MAN_WIDTH = 256,         // Mantissa data width
-    parameter EXP_WIDTH = 8,           // Exponent data width
-    parameter BRAM_DEPTH = 512,        // BRAM depth for dispatcher
-    parameter FIFO_DEPTH = 1024,       // flex_fifo depth
-    parameter NUM_COLS = 16,           // Number of columns for RIGHT path round-robin wrap
+    parameter int MAN_WIDTH = 256,         // Mantissa data width
+    parameter int EXP_WIDTH = 8,           // Exponent data width
+    parameter int BRAM_DEPTH = 512,        // BRAM depth for dispatcher
+    parameter int FIFO_DEPTH = 1024,       // flex_fifo depth
+    parameter int NUM_COLS = 16,           // Number of columns for RIGHT path round-robin wrap
     parameter AXI_ADDR_WIDTH = 42,     // AXI address width
     parameter ADDR_WIDTH = $clog2(BRAM_DEPTH),
     parameter [8:0] GDDR6_CTRL_ID = 9'd0  // GDDR6 Page ID for NoC routing
@@ -75,7 +75,7 @@ import gemm_pkg::*;
     output logic [EXP_WIDTH-1:0]         o_left_exp_wr_data,
 
     // ====================================================================
-    // Right Path: 16 Column BRAMs Write Interface (weights - direct write)
+    // Right Path: NUM_COLS Column BRAMs Write Interface (weights - direct write)
     // ====================================================================
     output logic [ADDR_WIDTH-1:0]        o_right_wr_addr,       // Shared address bus
     output logic [NUM_COLS-1:0]          o_right_wr_en,         // 16 separate write enables (one-hot)
@@ -135,9 +135,10 @@ import gemm_pkg::*;
     logic [15:0]            dispatcher_lines_processed;
 
     // Dispatcher parameters (registered from command)
+    localparam int COL_START_WIDTH = $clog2(NUM_COLS);
     logic [15:0]            disp_nv_cnt_reg;         // B (left) or C (right) count
     logic [15:0]            disp_ugd_len_reg;        // V count (NVs per UGD)
-    logic [3:0]             disp_col_start_reg;      // Starting column (0-15)
+    logic [COL_START_WIDTH-1:0] disp_col_start_reg;      // Starting column (0..NUM_COLS-1)
     logic                   disp_right_reg;          // 0=Left, 1=Right
     logic [ADDR_WIDTH-1:0]  disp_tile_addr_reg;      // Base write address
 
@@ -352,11 +353,24 @@ import gemm_pkg::*;
                 // Depack and register parameters
                 // word1 = {nv_cnt[31:16], v_count[15:0]}
                 // word2 = {reserved[31:16], tile_addr[15:0]}
-                // word3 = {reserved[31:16], col_start[15:8], reserved[7:3], disp_right[2], broadcast[1], man_4b[0]}
+                // word3 = {reserved[31:16], col_start[7:0], 5'b0, disp_right[2], broadcast[1], man_4b[0]}
+                // Note: Command format allocates 8 bits for col_start (bits [15:8])
+                // Extract COL_START_WIDTH bits from bits [7+COL_START_WIDTH:8]
+                // This supports NUM_COLS up to 256 (8 bits), but RTL must match command format
                 disp_nv_cnt_reg    <= i_cmd_payload_word1[31:16];         // nv_cnt (B or C)
                 disp_ugd_len_reg   <= i_cmd_payload_word1[15:0];          // v_count (V)
                 disp_tile_addr_reg <= i_cmd_payload_word2[ADDR_WIDTH-1:0]; // tile_addr
-                disp_col_start_reg <= i_cmd_payload_word3[11:8];          // col_start[3:0] (lower 4 bits of col_start field)
+                // Extract col_start: command format has 8 bits (bits [15:8])
+                // Extract COL_START_WIDTH bits starting from bit 8
+                // For COL_START_WIDTH <= 8: extract from [7+COL_START_WIDTH:8]
+                // For COL_START_WIDTH > 8: would need command format change
+                if (COL_START_WIDTH <= 8) begin
+                    disp_col_start_reg <= COL_START_WIDTH'(i_cmd_payload_word3[7+COL_START_WIDTH:8]);
+                end else begin
+                    // COL_START_WIDTH > 8 not supported by command format (only 8 bits allocated)
+                    // Zero-extend the 8-bit field
+                    disp_col_start_reg <= {COL_START_WIDTH-8'(0), COL_START_WIDTH'(i_cmd_payload_word3[15:8])};
+                end
                 disp_right_reg     <= i_cmd_payload_word3[2];             // disp_right
                 disp_cmd_id_reg    <= i_mc_cmd_id;
                 
