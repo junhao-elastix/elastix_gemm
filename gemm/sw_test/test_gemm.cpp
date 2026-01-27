@@ -386,12 +386,12 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
 
         // DMA matrices to GDDR6
         auto dma_start = chrono::high_resolution_clock::now();
-        if (!gemm_device.dma_write(GDDR6_BASE_LEFT, left_data.data(), left_data.size())) {
+        if (!gemm_device.dma_write(GDDR6_DMA_BASE_LEFT, left_data.data(), left_data.size())) {
             cerr << "ERROR: Failed to DMA write left matrix" << endl;
             return false;
         }
 
-        if (!gemm_device.dma_write(GDDR6_BASE_RIGHT, right_data.data(), right_data.size())) {
+        if (!gemm_device.dma_write(GDDR6_DMA_BASE_RIGHT, right_data.data(), right_data.size())) {
             cerr << "ERROR: Failed to DMA write right matrix" << endl;
             return false;
         }
@@ -408,7 +408,8 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         // ========== BATCH 1: FETCH LEFT + DISPATCH LEFT + WAIT_DISPATCH ==========
         // Hardware needs wait after FETCH (GDDR6→BRAM transfer) before DISPATCH
         auto fetch_left_start = chrono::high_resolution_clock::now();
-        gemm_device.fetch(GDDR6_BASE_LEFT, left_lines, false);
+        // Fetch uses page-relative byte base (hardware adds PAGE_ID)
+        gemm_device.fetch(GDDR6_FETCH_BASE_LEFT, left_lines, false);
         auto fetch_left_end = chrono::high_resolution_clock::now();
         timing_stats.fetch_left_ms = chrono::duration<double, milli>(fetch_left_end - fetch_left_start).count();
         
@@ -420,7 +421,7 @@ bool run_single_test(VP815GemmDevice& gemm_device, int B, int C, int V, bool ver
         
         // ========== BATCH 2: FETCH RIGHT + DISPATCH RIGHT + WAIT_DISPATCH ==========
         auto fetch_right_start = chrono::high_resolution_clock::now();
-        gemm_device.fetch(GDDR6_BASE_RIGHT, right_lines, true);
+        gemm_device.fetch(GDDR6_FETCH_BASE_RIGHT, right_lines, true);
         auto fetch_right_end = chrono::high_resolution_clock::now();
         timing_stats.fetch_right_ms = chrono::duration<double, milli>(fetch_right_end - fetch_right_start).count();
         

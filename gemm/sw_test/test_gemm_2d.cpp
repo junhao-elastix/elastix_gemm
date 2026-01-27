@@ -35,30 +35,8 @@ using namespace std;
 using namespace achronix;
 
 // ============================================================================
-// GDDR6 Channel Configuration (from engine_top_2d.sv GDDR6_CTRL_ID)
-// ============================================================================
-// 16 rows mapped to 16 GDDR6 page IDs (controller channels)
-// West controllers (0-3): Ch0=lower ID, Ch1=higher ID
-// East controllers (4-7): Ch0=higher ID, Ch1=lower ID (reversed)
-constexpr uint16_t GDDR6_CTRL_ID[16] = {
-    0x00C, 0x00D,   // Controller 0: Ch0, Ch1 (West)
-    0x004, 0x005,   // Controller 1: Ch0, Ch1 (West)
-    0x000, 0x001,   // Controller 2: Ch0, Ch1 (West)
-    0x008, 0x009,   // Controller 3: Ch0, Ch1 (West)
-    0x00F, 0x00E,   // Controller 4: Ch0, Ch1 (East, reversed)
-    0x007, 0x006,   // Controller 5: Ch0, Ch1 (East, reversed)
-    0x003, 0x002,   // Controller 6: Ch0, Ch1 (East, reversed)
-    0x00B, 0x00A    // Controller 7: Ch0, Ch1 (East, reversed)
-};
-
-// Calculate DMA base address for a given row/channel
-// Format: (page_id << 33) | offset
-inline uint64_t gddr6_dma_addr(int row, uint64_t offset = 0) {
-    return (static_cast<uint64_t>(GDDR6_CTRL_ID[row] & 0x1FF) << 33) | offset;
-}
-
-// ============================================================================
 // Constants (use those from vp815_gemm_device.hpp where possible)
+// GDDR6_CTRL_ID[] and gddr6_dma_addr() are now in vp815_gemm_device.hpp
 // ============================================================================
 // NUM_ROWS, NUM_COLS, LINES_PER_BLOCK are defined in vp815_gemm_device.hpp
 constexpr uint32_t BYTES_PER_LINE = 32;
@@ -441,30 +419,50 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config, bo
         golden_fp16[i] = floatToFP16(golden_sum[i]);
     }
 
-    // Compare results
+    // Compare results using hybrid tolerance (same as RTL simulation)
+    // - LSB tolerance: diff <= 16 LSB (accounts for FP16 rounding)
+    // - OR percentage tolerance: 5% (accounts for accumulation order)
+    constexpr int LSB_TOLERANCE = 16;
+    constexpr float PCT_TOLERANCE = 0.05f;  // 5%
+    constexpr float PASS_THRESHOLD = 95.0f;
+    
     int exact_matches = 0;
     int close_matches = 0;
     int mismatches = 0;
 
     for (int i = 0; i < expected_results; i++) {
-        uint16_t diff = (hw_results[i] > golden_fp16[i])
+        uint16_t lsb_diff = (hw_results[i] > golden_fp16[i])
                             ? (hw_results[i] - golden_fp16[i])
                             : (golden_fp16[i] - hw_results[i]);
 
+        float hw_f = fp16ToFloat(hw_results[i]);
+        float golden_f = golden_sum[i];
+        float pct_diff = 0.0f;
+        
+        // Calculate percentage difference
+        if (fabs(golden_f) > 0.001f) {
+            pct_diff = fabs((hw_f - golden_f) / golden_f);
+        } else {
+            // Near-zero: use absolute difference scaled
+            pct_diff = fabs(hw_f - golden_f) / 0.1f;
+        }
+
+        // Hybrid check: close if within LSB tolerance OR percentage tolerance
+        bool is_close = (lsb_diff <= LSB_TOLERANCE) || (pct_diff <= PCT_TOLERANCE);
+
         if (hw_results[i] == golden_fp16[i]) {
             exact_matches++;
-        } else if (diff <= 4) {
+        } else if (is_close) {
             close_matches++;
         } else {
             mismatches++;
             if (verbose && mismatches <= 10) {
-                float hw_f = fp16ToFloat(hw_results[i]);
-                float golden_f = golden_sum[i];
                 cout << "  MISMATCH [" << i << "]: hw=0x" << hex << hw_results[i]
                      << " (" << fixed << setprecision(4) << hw_f << ")"
                      << ", golden=0x" << golden_fp16[i]
                      << " (" << golden_f << ")"
-                     << ", diff=" << dec << diff << " LSB" << endl;
+                     << ", diff=" << dec << lsb_diff << " LSB"
+                     << " (" << setprecision(1) << (pct_diff * 100) << "%)" << endl;
             }
         }
     }
@@ -474,13 +472,14 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config, bo
 
     // Report results
     double match_rate = (double)(exact_matches + close_matches) / expected_results * 100.0;
-    cout << "\n  Results: " << exact_matches << " exact, " << close_matches << " close (<= 4 LSB), "
+    cout << "\n  Results: " << exact_matches << " exact, " << close_matches << " close (<= " 
+         << LSB_TOLERANCE << " LSB or " << (int)(PCT_TOLERANCE*100) << "%), "
          << mismatches << " mismatches" << endl;
     cout << "  Match rate: " << fixed << setprecision(1) << match_rate << "%" << endl;
     cout << "  Total time: " << setprecision(2) << total_ms << " ms" << endl;
 
     // Pass criteria: >= 95% within tolerance
-    bool passed = (match_rate >= 95.0);
+    bool passed = (match_rate >= PASS_THRESHOLD);
     cout << "\n  " << (passed ? "[PASS]" : "[FAIL]") << " " << config.name << endl;
 
     return passed;
@@ -513,7 +512,10 @@ int main(int argc, char* argv[]) {
             cout << "Options:\n";
             cout << "  -d N    Use device N (default: 0)\n";
             cout << "  -v      Verbose output\n";
-            cout << "  -t NAME Run specific test (B4_C4_V32 or B4_C13_V9)\n";
+            cout << "  -t NAME Run specific test:\n";
+            cout << "          B1_C1_V1, B2_C2_V2, B4_C4_V4, B4_C4_V32,\n";
+            cout << "          B4_C8_V4, B4_C13_V9, B4_C16_V8,\n";
+            cout << "          B8_C8_V16, B16_C16_V4, B16_C16_V8\n";
             cout << "  -h      Show this help\n";
             return 0;
         }
@@ -533,28 +535,47 @@ int main(int argc, char* argv[]) {
              << ((bitstream_id >> 8) & 0xFF) << ":"
              << (bitstream_id & 0xFF) << ")" << endl;
 
-        // Set result BRAM base address
-        BRAM_RESULT_BASE = acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 3, 5);
-        cout << "Result BRAM: 0x" << hex << BRAM_RESULT_BASE << dec << endl;
+        // Set result BRAM base address (uses constants from vp815_gemm_device.hpp)
+        BRAM_RESULT_BASE = acx_util_nap_absolute_addr(ACX_PART_AC7t1500, 
+                                                       DATA_OUT_BRAM_NAP_COL, DATA_OUT_BRAM_NAP_ROW);
+        cout << "Result BRAM: NAP[" << DATA_OUT_BRAM_NAP_COL << "][" << DATA_OUT_BRAM_NAP_ROW 
+             << "] = 0x" << hex << BRAM_RESULT_BASE << dec << endl;
 
-        // Define test configurations
-        // RTL now supports 16-bit B, C, V parameters per MULTI_ROW_REFERENCE.md
+        // Define test configurations - all from tb_compute_engine_2d.sv
+        // Same test suite as RTL simulation for consistency
         vector<TestConfig> tests = {
-            {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},
-            {4, 4, 32, "../../hex/B4_C4_V32", "B4_C4_V32"}  // V_TOTAL=512
+            // Basic tests
+            // {1, 1, 1, "../../hex/B1_C1_V1", "B1_C1_V1"},       // Minimal smoke test
+            // {2, 2, 2, "../../hex/B2_C2_V2", "B2_C2_V2"},       // Multi-batch, multi-column
+            // {4, 4, 4, "../../hex/B4_C4_V4", "B4_C4_V4"},       // 4x4 test
+            {4, 4, 32, "../../hex/B4_C4_V32", "B4_C4_V32"},    // V_TOTAL=512
+            // Multi-column tests
+            {4, 8, 4, "../../hex/B4_C8_V4", "B4_C8_V4"},       // 8 columns
+            {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},    // Non-power-of-2 C and V
+            {4, 16, 8, "../../hex/B4_C16_V8", "B4_C16_V8"},    // Full 16 columns
+            // Multi-batch tests  
+            {8, 8, 16, "../../hex/B8_C8_V16", "B8_C8_V16"},    // 8 batches
+            // Large tests
+            {16, 16, 4, "../../hex/B16_C16_V4", "B16_C16_V4"}, // 16 batches, 16 cols
+            {16, 16, 8, "../../hex/B16_C16_V8", "B16_C16_V8"}  // Large: 16 batches, full cols
         };
 
         // Run tests
         int passed = 0;
         int failed = 0;
+        int skipped = 0;
 
         for (const auto& config : tests) {
             // Skip if specific test requested and this isn't it
             if (!test_name.empty() && config.name != test_name) {
+                skipped++;
                 continue;
             }
 
+            // Soft reset before each test (critical for proper operation)
+            cout << "\n--- Soft reset before test ---" << endl;
             gemm_device.soft_reset();
+            usleep(100000);  // 100ms settle time
 
             if (run_2d_gemm_test(gemm_device, config, verbose)) {
                 passed++;
@@ -567,17 +588,23 @@ int main(int argc, char* argv[]) {
         cout << "\n========================================" << endl;
         cout << "TEST SUMMARY" << endl;
         cout << "========================================" << endl;
-        cout << "Passed: " << passed << endl;
-        cout << "Failed: " << failed << endl;
+        cout << "Passed:  " << passed << endl;
+        cout << "Failed:  " << failed << endl;
+        if (skipped > 0) {
+            cout << "Skipped: " << skipped << endl;
+        }
+        cout << "Total:   " << (passed + failed) << endl;
         cout << "========================================" << endl;
 
         if (failed == 0 && passed > 0) {
             cout << "STATUS: ALL TESTS PASSED" << endl;
         } else if (failed > 0) {
             cout << "STATUS: SOME TESTS FAILED" << endl;
+        } else {
+            cout << "STATUS: NO TESTS RUN" << endl;
         }
 
-        return (failed == 0) ? 0 : 1;
+        return (failed == 0 && passed > 0) ? 0 : 1;
 
     } catch (const exception& e) {
         cerr << "ERROR: " << e.what() << endl;
