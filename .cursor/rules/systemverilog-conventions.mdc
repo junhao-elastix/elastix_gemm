@@ -1,0 +1,222 @@
+---
+globs: *.sv,*.svh
+description: Modern SystemVerilog coding conventions and best practices
+---
+
+# SystemVerilog Coding Conventions
+
+## Data Types
+- **Always use `logic` instead of `wire` or `reg`**
+  - `logic` is the modern SystemVerilog unified data type
+  - Use for all ports, internal signals, and variables
+  - Example: `input logic [7:0] data_in`, `logic [15:0] internal_signal`
+  - Avoid legacy Verilog `wire` and `reg` declarations
+
+## State Machine Design Pattern
+When implementing state machines, use the **two-process separation pattern**:
+
+### 1. State Transition Process
+Separate combinational logic for next state determination:
+```systemverilog
+// State transition logic
+always_comb begin
+    next_state = current_state; // Default assignment
+    case (current_state)
+        IDLE: begin
+            if (start) next_state = ACTIVE;
+        end
+        ACTIVE: begin
+            if (done) next_state = COMPLETE;
+            else if (error) next_state = ERROR;
+        end
+        COMPLETE: begin
+            if (reset_req) next_state = IDLE;
+        end
+        ERROR: begin
+            if (clear_error) next_state = IDLE;
+        end
+    endcase
+end
+```
+
+### 2. Control Signal Assignment Process
+**List ALL control signals explicitly in EACH state** for clear debugging:
+```systemverilog
+// Control signal assignments
+always_comb begin
+    // Explicit assignment of ALL control signals in each state
+    case (current_state)
+        IDLE: begin
+            enable = 1'b0;
+            valid = 1'b0;
+            ready = 1'b1;
+            error_flag = 1'b0;
+            counter_reset = 1'b1;
+            data_latch = 1'b0;
+        end
+        ACTIVE: begin
+            enable = 1'b1;
+            valid = 1'b0;
+            ready = 1'b0;
+            error_flag = 1'b0;
+            counter_reset = 1'b0;
+            data_latch = 1'b1;
+        end
+        COMPLETE: begin
+            enable = 1'b0;
+            valid = 1'b1;
+            ready = 1'b1;
+            error_flag = 1'b0;
+            counter_reset = 1'b0;
+            data_latch = 1'b0;
+        end
+        ERROR: begin
+            enable = 1'b0;
+            valid = 1'b0;
+            ready = 1'b0;
+            error_flag = 1'b1;
+            counter_reset = 1'b1;
+            data_latch = 1'b0;
+        end
+    endcase
+end
+```
+
+### 3. Sequential State Update
+```systemverilog
+// Sequential state update
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        current_state <= IDLE;
+    end else begin
+        current_state <= next_state;
+    end
+end
+```
+
+## General SystemVerilog Best Practices
+
+### Modern Constructs
+- Use `always_comb` for combinational logic instead of `always @(*)`
+- Use `always_ff` for sequential logic instead of `always @(posedge clk)`
+- Use `logic` for all signal declarations
+- Use `interface` for complex port bundles when appropriate
+
+### Naming Conventions
+- Use lowercase with underscores: `data_valid`, `state_machine`
+- Use descriptive state names: `IDLE`, `FETCH_DATA`, `PROCESS_RESULT`
+- Prefix active-low signals with `n`: `rst_n`, `enable_n`
+
+### Code Organization
+- Declare all signals at the top of the module
+- Group related signals together
+- Use meaningful parameter names with descriptive comments
+- Add comments explaining complex logic or state transitions
+
+### Debugging Support
+- **Always list all control signals explicitly in each state** - this makes debugging much easier
+- Use meaningful signal names that reflect their purpose
+- Add debug outputs when appropriate using `ifdef DEBUG` blocks
+- Include state encoding comments for clarity
+
+## Example Complete State Machine
+```systemverilog
+module example_fsm #(
+    parameter integer DATA_WIDTH = 8
+)(
+    input  logic                    clk,
+    input  logic                    rst_n,
+    input  logic                    start,
+    input  logic [DATA_WIDTH-1:0]   data_in,
+    output logic                    ready,
+    output logic                    valid,
+    output logic [DATA_WIDTH-1:0]   data_out
+);
+
+    // State enumeration
+    typedef enum logic [1:0] {
+        IDLE     = 2'b00,
+        PROCESS  = 2'b01,
+        COMPLETE = 2'b10,
+        ERROR    = 2'b11
+    } state_t;
+
+    // State machine signals
+    state_t current_state, next_state;
+    
+    // Control signals
+    logic data_latch_en;
+    logic counter_reset;
+    logic output_enable;
+
+    // State transition logic
+    always_comb begin
+        next_state = current_state;
+        case (current_state)
+            IDLE: begin
+                if (start) next_state = PROCESS;
+            end
+            PROCESS: begin
+                if (counter_done) next_state = COMPLETE;
+                else if (error_detected) next_state = ERROR;
+            end
+            COMPLETE: begin
+                if (ack) next_state = IDLE;
+            end
+            ERROR: begin
+                if (clear_error) next_state = IDLE;
+            end
+        endcase
+    end
+
+    // Control signal assignments - ALL signals in ALL states
+    always_comb begin
+        case (current_state)
+            IDLE: begin
+                ready = 1'b1;
+                valid = 1'b0;
+                data_latch_en = 1'b0;
+                counter_reset = 1'b1;
+                output_enable = 1'b0;
+            end
+            PROCESS: begin
+                ready = 1'b0;
+                valid = 1'b0;
+                data_latch_en = 1'b1;
+                counter_reset = 1'b0;
+                output_enable = 1'b0;
+            end
+            COMPLETE: begin
+                ready = 1'b0;
+                valid = 1'b1;
+                data_latch_en = 1'b0;
+                counter_reset = 1'b0;
+                output_enable = 1'b1;
+            end
+            ERROR: begin
+                ready = 1'b0;
+                valid = 1'b0;
+                data_latch_en = 1'b0;
+                counter_reset = 1'b1;
+                output_enable = 1'b0;
+            end
+        endcase
+    end
+
+    // Sequential state update
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            current_state <= IDLE;
+        end else begin
+            current_state <= next_state;
+        end
+    end
+
+endmodule
+```
+
+This pattern ensures:
+- Clear separation of concerns
+- Easy debugging (all signals visible in each state)
+- Maintainable and readable code
+- Follows modern SystemVerilog conventions

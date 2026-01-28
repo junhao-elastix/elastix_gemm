@@ -1,0 +1,154 @@
+---
+alwaysApply: true
+---
+# Test Validation Best Practices
+
+## Golden Reference Requirement
+
+**NEVER hardcode expected validation results directly in test code.** Instead, use one of these two approaches:
+
+### 1. Golden Model Approach (Preferred for Algorithmic Validation)
+
+Generate expected results using a reference implementation or mathematical model:
+
+```cpp
+// ✅ CORRECT: Use golden model to generate expected results
+uint32_t calculate_expected_value(uint32_t input) {
+    return input + 42;  // Golden model for +42 increment
+}
+
+for (size_t i = 0; i < size; i += 4) {
+    uint32_t input_value = read_input(i);
+    uint32_t expected = calculate_expected_value(input_value);
+    uint32_t actual = read_output(i);
+    
+    if (actual != expected) {
+        printf("Mismatch at offset %zu: expected 0x%x, got 0x%x\n", 
+               i, expected, actual);
+        test_failed = true;
+    }
+}
+```
+
+```python
+# ✅ CORRECT: Golden model generates expected results
+def golden_model(input_data):
+    return [x + 42 for x in input_data]
+
+expected_output = golden_model(input_data)
+actual_output = dut.process(input_data)
+
+assert actual_output == expected_output, "Output mismatch"
+```
+
+### 2. Golden File Approach (Preferred for Complex/Pre-computed Results)
+
+Store expected results in external files and load them during tests:
+
+```cpp
+// ✅ CORRECT: Load golden results from file
+std::vector<uint32_t> load_golden_results(const std::string& filename) {
+    std::vector<uint32_t> results;
+    std::ifstream file(filename);
+    uint32_t value;
+    while (file >> std::hex >> value) {
+        results.push_back(value);
+    }
+    return results;
+}
+
+auto expected = load_golden_results("testdata/golden_output.txt");
+auto actual = run_test();
+
+for (size_t i = 0; i < expected.size(); i++) {
+    if (actual[i] != expected[i]) {
+        printf("Mismatch at index %zu\n", i);
+    }
+}
+```
+
+### Anti-Patterns to Avoid
+
+```cpp
+// ❌ WRONG: Hardcoded expected values
+if (read_buf[0] != 0x2a) {  // Where did 0x2a come from?
+    printf("Test failed\n");
+}
+
+// ❌ WRONG: Magic numbers without context
+uint32_t expected_values[] = {0x2a, 0x3b, 0x4c, 0x5d};  // Unclear origin
+for (int i = 0; i < 4; i++) {
+    if (actual[i] != expected_values[i]) fail();
+}
+
+// ❌ WRONG: Expected results copied from actual output
+// This defeats the purpose of validation!
+std::vector<uint8_t> expected = {
+    0x2a, 0x10, 0x00, 0x00, 0x3b, 0x10, 0x00, 0x00  // Where did this come from?
+};
+```
+
+### Why This Matters
+
+1. **Traceability**: Golden models and files document the expected behavior
+2. **Maintainability**: When algorithms change, update the model, not scattered magic numbers
+3. **Debuggability**: Clear separation between test logic and expected results
+4. **Reproducibility**: Other developers can understand and verify the test
+5. **Regression Detection**: Changes to golden models/files are tracked in version control
+
+### SystemVerilog/Verilog Testbenches
+
+```systemverilog
+// ✅ CORRECT: Use golden model function
+function automatic logic [31:0] golden_model(logic [31:0] input_data);
+    return input_data + 42;
+endfunction
+
+// Generate expected results
+for (int i = 0; i < test_size; i++) begin
+    expected_result[i] = golden_model(test_input[i]);
+end
+
+// Compare against DUT output
+if (dut_output !== expected_result) begin
+    $error("Mismatch detected");
+end
+```
+
+### Golden File Format Examples
+
+**Simple text format:**
+```
+# golden_output.txt
+0x00001000
+0x00001011
+0x00001022
+```
+
+**CSV format with metadata:**
+```csv
+# test_case,input,expected_output,description
+1,0x1000,0x102a,Basic +42 increment
+2,0xFFFF,0x0029,Wraparound test
+```
+
+**JSON format for complex data:**
+```json
+{
+  "test_cases": [
+    {
+      "input": "0x1000",
+      "expected": "0x102a",
+      "description": "Basic increment"
+    }
+  ]
+}
+```
+
+## Summary
+
+- **DO**: Use golden models (functions/code) to generate expected results
+- **DO**: Load expected results from golden reference files
+- **DO**: Document the source of expected values
+- **DON'T**: Hardcode magic numbers as expected values
+- **DON'T**: Copy actual output and paste as expected values

@@ -23,13 +23,33 @@ if { [find *gb_dma_accel*i_axi_responder* -insts] != "" } {
 # BRAM responder - For ATU Demonstration
 set_placement -fixed {i:i_axi_bram_rsp_atu.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[7][7].logic.noc.nap_m}
 
-# DMA Data Out BRAM - Result buffer for DMA read-back
-# CRITICAL: Must be near engine for internal write ports to work
-# Internal BRAM write signals cannot cross NoC fabric - requires physical proximity
-set_placement -fixed {i:i_dma_data_out_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][5].logic.noc.nap_m}
+# -------------------------------------------------------------------------
+# DMA BRAM NAP Placements
+# -------------------------------------------------------------------------
+# DESIGN RATIONALE:
+#   DMA BRAMs are placed at column 7 to avoid routing congestion with:
+#   1. ADM (Achronix Device Manager) paths - ADM uses center columns for PCIe
+#   2. Reg control NAP at NOC[5][5] - requires clear path to PCIe endpoint
+#   3. GDDR NAPs at columns 1 and 10 - avoids NoC traffic conflicts
+#
+# REFERENCES:
+#   1. Speedster7t 2D NoC User Guide (UG089), "NAP Placement Guidelines":
+#      "Avoid placing user NAPs in columns 4-6 which may conflict with
+#       device manager and PCIe interface paths."
+#   2. GDDR6 Reference Design Guide (RD017), "NAP Locations":
+#      "NAPs should be placed adjacent to target subsystems for minimum latency"
+#
+# NOTE: Internal BRAM write/read signals do NOT traverse NoC - they use
+#       fabric routing. NAP location primarily affects DMA access latency.
+# -------------------------------------------------------------------------
+
+# DMA Data Out BRAM - Result buffer for host DMA read-back
+# Placement: NOC[7][5] - column 7 avoids ADM congestion, row 5 is central
+set_placement -fixed {i:i_dma_data_out_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[7][5].logic.noc.nap_m}
 
 # DMA Command In BRAM - Command buffer for host DMA write, engine read
-set_placement -fixed {i:i_dma_cmd_in_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[3][6].logic.noc.nap_m}
+# Placement: NOC[7][6] - adjacent to data out BRAM for minimal fabric distance
+set_placement -fixed {i:i_dma_cmd_in_bram.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[7][6].logic.noc.nap_m}
 
 # BRAM responder - Descriptor lists
 set_placement -fixed {i:i_axi_bram_rsp_dl.i_axi_initiator_nap.i_axi_initiator} {s:x_core.NOC[9][7].logic.noc.nap_m}
@@ -169,45 +189,39 @@ add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.ge
 add_region_find_insts "region_gemm_engine_east" "find -insts *i_engine_top_2d.gen_row_15*"
 
 # -------------------------------------------------------------------------
-# MLP and BRAM Placement for 2D GEMM Engine (16 rows x 4 stacks x 8 MLPs)
+# MLP and BRAM Placement for 2D GEMM Engine
 # -------------------------------------------------------------------------
-# TOTAL: 16 rows x 4 stacks x 8 MLPs = 512 MLPs (64 explicitly placed below)
-#        16 rows x 4 stacks x 8 BRAMs = 512 BRAMs (64 explicitly placed below)
+# CURRENT CONFIGURATION: NUM_MLPS=2, NUM_STACKS=4, NUM_ROWS=16
+#   Total MLPs per row: NUM_MLPS * NUM_STACKS = 2 * 4 = 8 MLPs
+#   Total MLPs: 16 rows * 8 MLPs/row = 128 MLPs
+#   Total BRAMs: 128 (one per MLP for weight storage)
 #
-# STRATEGY:
-#   - Place ONLY the first MLP (mlp_col_base) and its BRAM for each stack
-#   - Remaining 7 MLPs/BRAMs cascade automatically from first placement
+# EXPLICIT PLACEMENTS: 64 MLPs + 64 BRAMs (first MLP/BRAM per stack)
+#   Remaining MLPs/BRAMs cascade automatically from mlp_col_base placement
 #
-# INSTANCE HIERARCHY (verified from RTL comp_MLPRow.sv, comp_MLP.sv):
-#   i_engine_top_2d.gen_row_R.u_compute_engine.u_mlp_stack.gen_mlp_stack_S.u_mlp_row.
-#     mlp_col_base.u_mlp_dot16_bfp8.i_MLP          (ACX_MLP72 - first MLP)
-#     mlp_col_base.u_weight_bram.u_acx_bram72k     (ACX_BRAM72K - first BRAM)
-#     mlp_gen[1..7].mlp_col_stack.u_mlp_dot16_bfp8.i_MLP   (cascaded MLPs - auto-placed)
-#     mlp_gen[1..7].mlp_col_stack.u_weight_bram.u_acx_bram72k (cascaded BRAMs - auto-placed)
+# INSTANCE HIERARCHY (from comp_MLPRow.sv):
+#   i_engine_top_2d.gen_row_R__*u_compute_engine.u_mlp_stack.gen_mlp_stack_S__*u_mlp_row.
+#     mlp_col_base.u_mlp_dot16_bfp8.i_MLP          (ACX_MLP72 - first, explicitly placed)
+#     mlp_col_base.u_weight_bram.u_acx_bram72k     (ACX_BRAM72K - first, explicitly placed)
+#     mlp_gen[1].mlp_col_stack.u_mlp_dot16_bfp8.i_MLP   (cascaded, auto-placed)
+#     mlp_gen[1].mlp_col_stack.u_weight_bram.u_acx_bram72k (cascaded, auto-placed)
 #
-# BMLP COORDINATE MAPPING (aligned with NAP locations for minimum latency):
-# -------------------------------------------------------------------------
-#   West rows (0-7):  NAPs at NOC[1][1-8]  -> BMLP x = 0-3,  y = row * 4
-#   East rows (8-15): NAPs at NOC[10][1-8] -> BMLP x = 35-38, y = (row-8) * 4
-#
-#   Row-to-BMLP-Y Mapping (same for both sides):
-#     Row 0/8:  y = 0    (NAP row 1)
-#     Row 1/9:  y = 4    (NAP row 2)
-#     Row 2/10: y = 8    (NAP row 3)
-#     Row 3/11: y = 12   (NAP row 4)
-#     Row 4/12: y = 16   (NAP row 5)
-#     Row 5/13: y = 20   (NAP row 6)
-#     Row 6/14: y = 24   (NAP row 7)
-#     Row 7/15: y = 28   (NAP row 8)
+# PLACEMENT STRATEGY:
+#   - West rows (0-7): BMLP x = 0-3, near NAPs at NOC column 1
+#   - East rows (8-15): BMLP x = 35-38, near NAPs at NOC column 10
+#   - Y coordinate: row * 4 (west) or (row-8) * 4 (east)
 #
 # REFERENCES:
-#   1. MLP_PLACE_GUIDE.md: "West-side MLPs (BMLP x = 0-18) for west NAPs"
-#   2. acx_gemm_ref_design (ace_placements.pdc.4q): Stack placement pattern
-#   3. Speedster7t Component Library UG086-1: ACX_MLP72/ACX_BRAM72K co-location
+#   1. Speedster7t Component Library UG086-1, Section "ACX_MLP72":
+#      "MLP primitives cascade horizontally when placed adjacently"
+#   2. Speedster7t Component Library UG086-1, Section "ACX_BRAM72K":
+#      "BRAM should be co-located with MLP at same BMLP block for minimal routing"
+#   3. GDDR6 Reference Design Guide (RD017), "NAP Locations":
+#      "Place compute logic near NAPs for minimum NoC latency"
 #
-# CO-LOCATION PRINCIPLE (from MLP_PLACE_GUIDE.md):
-#   "MLPs and their associated weight BRAMs are placed at the same BMLP block
-#    for optimal data path"
+# CO-LOCATION PRINCIPLE:
+#   Each MLP and its weight BRAM share the same BMLP block coordinate.
+#   This ensures single-cycle BRAM-to-MLP data transfer without fabric routing.
 # -------------------------------------------------------------------------
 
 # West side rows (0-7): NAPs at NOC column 1

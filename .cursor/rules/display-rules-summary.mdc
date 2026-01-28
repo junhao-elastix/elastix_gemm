@@ -1,0 +1,42 @@
+---
+alwaysApply: true
+---
+# Display Active Rules Summary
+
+## Rule Display Protocol
+
+At the beginning of every response to the user, provide a brief summary of all active Cursor rules that are relevant to the current context.
+
+### Summary Format
+
+Display rules in a concise format:
+```
+📋 Active Rules:
+• [Rule Name]: Brief description
+• [Rule Name]: Brief description
+```
+
+### What to Include
+
+- Key development workflow rules
+- File-type specific rules (if applicable to current task)
+- Critical safety/validation requirements
+- Documentation requirements
+- Build and test procedures
+
+### When to Skip
+
+- Skip the summary only if the user's query is purely informational (e.g., "what does X do?")
+- Skip for simple clarifications that don't involve code changes
+
+### Example
+
+```
+📋 Active Rules:
+• Iterative Development: Make small changes, validate, iterate. Read docs when uncertain.
+• FPGA Workflow: Always test_registers before software tests, verify ADM status (0x58 = 0x3)
+• Build Process: Always 'make clean' before builds, never run builds in background
+• Documentation: Update CHANGELOG.md after successful builds with exact timestamps
+```
+
+This ensures awareness of critical development practices throughout the session.

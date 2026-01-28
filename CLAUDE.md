@@ -64,38 +64,6 @@ pip install <package>        # Use pip if conda fails
     - **Modular Design** ALWAYS keep your code modular and self-contained. You should be able to avoid having monolithic State Machines. The designs should be able to be replaced or upgraded with a similar functionality with similar interfaces.
     - **Parameterized Bitwidths** Avoid hardcoding the bitwidths of the signals. Explore the opportunity to standardize and parameterize the bitwidths of either module parameters or local parameters. It is easier to maintain and debug. 
 
-- **FPGA Recovery Procedures (CRITICAL):**
-**VERY IMPORTANT** DO NOT SET TIMEOUT!!! DANDEROUS TO INTERRUPT
-```bash
-
-# When device shows 0xffffffff registers (device hang):
-/home/dev/Dev/hex_rescan_registers.sh    # Automated recovery (try at least twice before last resort)
-# Check PCIe
-sudo lspci -d 1b59: -v && sudo lspci -d 12ba: -v
-# Last resort:
-/home/dev/Dev/flash.sh
-sudo reboot
-```
-
-- **FPGA Build and Flash (MANDATORY):**
-```bash
-cd /home/dev/Dev/elastix_gemm/gemm
-./build_and_flash.sh
-
-# What the automated script does:
-# - cd /home/dev/Dev/elastix_gemm/matmul/build/
-# - make clean && make all          # Build RTL
-# - /home/dev/Dev/hex.sh            # Program FPGA  
-# - source /home/dev/rescan         # Rescan PCIe bus
-# - test_registers                  # Verify device health
-
-# Verify Success
-# Look for:
-# ✅ Device initialized successfully
-# ✅ Bitstream ID with correct timestamp
-# ✅ All registers readable (not 0xffffffff)
-```
-
 
 - **Monitor the build and flash in foreground (MANDATORY):**
 Do not run build in the background and forget to monitor. 

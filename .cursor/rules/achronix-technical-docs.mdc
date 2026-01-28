@@ -1,0 +1,63 @@
+---
+alwaysApply: true
+description: "Achronix technical documentation references for FPGA development"
+---
+
+# Achronix Technical Documentation References
+
+## Critical: Always Consult Official Documentation When Stuck
+
+When developing FPGA designs or debugging issues, **MANDATORY** consultation of Achronix technical documentation:
+
+### **Primary Documentation Sources**
+
+#### **Network-on-Chip Architecture**
+- **File**: [Speedster7t 2D Network on Chip User Guide UG089](mdc:../doc/2D_Network_on_Chip/Speedster7t_2D_Network_on_Chip_User_Guide_UG089.html)
+- **Usage**: NAP placement strategies, NoC routing, performance optimization
+- **When to use**: NAP placement issues, routing congestion, memory access patterns
+
+#### **GDDR6 Memory Integration**
+- **File**: [Speedster7t GDDR6 Reference Design Guide RD017](mdc:../doc/GDDR6_Reference_Design/Speedster7t_GDDR6_Reference_Design_Guide_RD017.html)  
+- **Usage**: GDDR6 configuration, training sequences, bandwidth optimization
+- **When to use**: Memory training failures, GDDR6 performance issues, channel configuration
+
+#### **Component Library**
+- **File**: [Speedster7t Component Library User Guide UG086-1](mdc:../doc/Component_Library/Speedster7t_Component_Library_User_Guide_UG086-1.html)
+- **Usage**: BRAM configurations, AXI interfaces, clock domain crossing
+- **When to use**: Component selection, interface design, resource optimization
+
+#### **Soft IP Configuration**
+- **File**: [Speedster7t Soft IP User Guide UG103-3](mdc:../doc/Soft_IP/Speedster7t_Soft_IP_User_Guide_UG103_3.html)
+- **Usage**: PCIe endpoint setup, PLL configuration, IP parameterization  
+- **When to use**: IP configuration errors, PCIe issues, clock generation problems
+
+### **Development Workflow Integration**
+
+#### **Before RTL Design**
+1. **Check NoC Guide (UG089)** for optimal NAP placement strategies
+2. **Check GDDR6 Guide (RD017)** for memory interface best practices
+3. **Check Component Library (UG086-1)** for appropriate IP usage patterns
+
+#### **When Debugging Issues**
+1. **NoC routing problems**: Consult UG089 routing and congestion sections
+2. **Memory training failures**: Consult RD017 training sequence documentation
+3. **AXI interface issues**: Consult UG086-1 AXI4 interface specifications
+4. **IP configuration errors**: Consult UG103-3 IP parameter documentation
+
+#### **Performance Optimization**
+1. **Bandwidth optimization**: RD017 performance tuning guidelines
+2. **NoC congestion**: UG089 performance optimization sections
+3. **Resource utilization**: UG086-1 component selection guidance
+
+### **Project-Specific Documentation**
+
+Each project maintains a [REFERENCES.md](mdc:REFERENCES.md) file that maps official documentation to specific project implementations and use cases.
+
+### **Enforcement**
+
+- **MANDATORY**: Consult relevant Achronix documentation before architectural decisions
+- **REQUIRED**: Reference official guides when troubleshooting design issues  
+- **CRITICAL**: Use documented best practices for NAP placement and memory interfaces
+- **ESSENTIAL**: Validate design choices against official reference designs and guidelines
+
+This ensures all FPGA development aligns with Achronix best practices and leverages official documentation for optimal results.

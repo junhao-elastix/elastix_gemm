@@ -1,0 +1,232 @@
+---
+alwaysApply: true
+description: Text formatting and character usage conventions - use only plain ASCII characters
+---
+
+# Text Formatting Conventions
+
+## CRITICAL RULE: Use Only Plain ASCII Characters
+
+**NEVER use special Unicode or non-ASCII characters** in any code output, documentation, or printouts.
+
+### Why Plain ASCII Only?
+
+- **Terminal Compatibility**: Avoids garbled characters like `â`, `Ã`, `✓`, `✗` in different terminal encodings
+- **Portability**: Works across all systems, editors, and documentation tools
+- **Searchability**: Makes grep/find operations reliable
+- **Readability**: Consistent appearance regardless of font or locale settings
+- **Build Systems**: Prevents issues in CI/CD pipelines and log parsers
+
+---
+
+## Character Substitution Guide
+
+### Status Indicators
+❌ **Never use**: `✓`, `✅`, `✗`, `❌`, `⚠️`, `🎉`  
+✅ **Use instead**:
+- `[PASS]` or `PASS` for success
+- `[FAIL]` or `FAIL` or `ERROR` for failures
+- `[WARN]` or `WARNING` for warnings
+- `[OK]` or `OK` for confirmation
+
+### Multiplication and Dimensions
+❌ **Never use**: `×`, `·`, `*` (in dimensions)  
+✅ **Use instead**: lowercase `x`
+- `2x2 matrix`
+- `128x1 results`
+- `BxC output`
+
+### Arrows and Flow
+❌ **Never use**: `→`, `←`, `⇒`, `⇐`, `↔`  
+✅ **Use instead**:
+- `->` for right arrow
+- `<-` for left arrow
+- `=>` for implies/transforms
+- `<->` for bidirectional
+
+### Mathematical Symbols
+❌ **Never use**: `≤`, `≥`, `≠`, `±`, `∞`, `√`, `∑`, `∏`  
+✅ **Use instead**:
+- `<=` for less than or equal
+- `>=` for greater than or equal
+- `!=` for not equal
+- `+/-` for plus/minus
+- `inf` or `INF` for infinity
+- `sqrt()` for square root
+- `sum()` for summation
+- `prod()` for product
+
+### Bullets and Lists
+❌ **Never use**: `•`, `◦`, `▪`, `▸`  
+✅ **Use instead**:
+- `-` or `*` for bullets
+- `1.`, `2.`, `3.` for numbered lists
+- `[*]` for emphasis
+
+### Quotation Marks
+❌ **Never use**: `"`, `"`, `'`, `'`, `‹`, `›`  
+✅ **Use instead**:
+- `"` (straight double quote)
+- `'` (straight single quote)
+
+### Ellipsis
+❌ **Never use**: `…`  
+✅ **Use instead**: `...` (three periods)
+
+### Dashes
+❌ **Never use**: `—` (em dash), `–` (en dash)  
+✅ **Use instead**:
+- `-` (hyphen) for ranges and compound words
+- ` - ` (hyphen with spaces) for parenthetical phrases
+- `--` (double hyphen) for longer pauses if needed
+
+---
+
+## Examples
+
+### Test Output
+
+**Correct:**
+```
+[TB] TEST 1: Generating single tile command sequence...
+[TB] Expected 128 results (128x1 matrix)
+[TB] All 128 results collected!
+Status: PASS
+
+Hardware: 128 results collected
+Expected: 128x1 = 128 results
+Match: [PASS]
+Errors: 0
+```
+
+**Incorrect:**
+```
+[TB] TEST 1: Generating single tile command sequence…
+[TB] Expected 128 results (128×1 matrix)
+[TB] All 128 results collected! 🎉
+Status: ✅ PASS
+
+Hardware: 128 results collected
+Expected: 128×1 = 128 results  
+Match: ✓
+Errors: 0
+```
+
+### Documentation
+
+**Correct:**
+```
+## Test Results
+
+| Configuration | Status | Notes |
+|---------------|--------|-------|
+| B=1, C=1, V=1 | PASS   | Baseline test |
+| B=128, C=1    | PASS   | Maximum B |
+
+Expected results: BxC where B <= 128 and C <= 128
+Performance: Completes in -> 10000 cycles
+```
+
+**Incorrect:**
+```
+## Test Results
+
+| Configuration | Status | Notes |
+|---------------|--------|-------|
+| B=1, C=1, V=1 | ✅ PASS | Baseline test |
+| B=128, C=1    | ✅ PASS | Maximum B |
+
+Expected results: B×C where B ≤ 128 and C ≤ 128
+Performance: Completes in → 10000 cycles
+```
+
+### Code Comments
+
+**Correct:**
+```systemverilog
+// FIFO has 1-cycle read latency -> wait before sampling
+// Expected: BxC results where B,C are from TILE command
+// Status: PASS if all results match within +/- 1 LSB
+```
+
+**Incorrect:**
+```systemverilog
+// FIFO has 1-cycle read latency → wait before sampling
+// Expected: B×C results where B,C are from TILE command
+// Status: ✅ if all results match within ± 1 LSB
+```
+
+---
+
+## Application Scope
+
+This rule applies to ALL text output:
+
+### Code
+- SystemVerilog `$display()` statements
+- Python `print()` statements
+- C/C++ `printf()` statements
+- Log file outputs
+
+### Documentation
+- README.md files
+- CHANGELOG.md files
+- Technical documentation
+- Test reports
+- Session summaries
+
+### Comments
+- Code comments in all languages
+- Commit messages
+- Issue descriptions
+- Documentation strings
+
+### Build/Test Output
+- Makefile echo statements
+- Test script output
+- CI/CD logs
+- Compilation messages
+
+---
+
+## Exception: Source Code String Literals
+
+The ONLY exception is when special characters are required in actual data or string constants:
+```python
+# OK: Data payload requires special characters
+data = "UTF-8 encoded: café"
+
+# OK: Testing Unicode handling
+test_string = "Test × special ÷ chars"
+```
+
+But even then, prefer ASCII when possible for test data.
+
+---
+
+## Enforcement
+
+When writing ANY output that will be displayed to users:
+
+1. **Review**: Check for any non-ASCII characters
+2. **Replace**: Use the substitution guide above
+3. **Test**: Verify output looks correct in basic terminal (`echo`, `cat`)
+4. **Validate**: Ensure no garbled characters appear
+
+**Remember**: If it's not on a standard US keyboard, don't use it in output or documentation.
+
+---
+
+## Quick Reference
+
+| Instead of | Use |
+|------------|-----|
+| ✓ ✅ ❌ ✗ | PASS, FAIL, OK, ERROR |
+| × · | x (lowercase) |
+| → ← ⇒ | ->, <-, => |
+| ≤ ≥ ≠ | <=, >=, != |
+| " " ' ' | " " ' ' (straight quotes) |
+| … | ... (three periods) |
+| • | - or * |
+
+**Golden Rule**: Stick to ASCII characters 0x20-0x7E (space through tilde).

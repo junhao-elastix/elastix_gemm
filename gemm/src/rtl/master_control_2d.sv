@@ -168,13 +168,23 @@ import gemm_pkg::*;
     logic all_dc_wait_complete;
     logic all_ce_wait_complete;
     
+    // Additional release condition: all rows are IDLE (state=0)
+    // If the unit is idle, it has finished its work even if ID wasn't updated
+    logic all_dc_idle;
+    logic all_ce_idle;
+    
     always_comb begin
         all_dc_wait_complete = 1'b1;
         all_ce_wait_complete = 1'b1;
+        all_dc_idle = 1'b1;
+        all_ce_idle = 1'b1;
         for (int r = 0; r < NUM_ROWS; r++) begin
             // Row is complete if its cmd_id >= wait_id
             all_dc_wait_complete = all_dc_wait_complete & (i_dc_id[r] >= wait_disp_id_reg);
             all_ce_wait_complete = all_ce_wait_complete & (i_ce_id[r] >= wait_matmul_id_reg);
+            // Row is idle if state == 0
+            all_dc_idle = all_dc_idle & (i_dc_state[r] == 4'd0);
+            all_ce_idle = all_ce_idle & (i_ce_state[r] == 4'd0);
         end
     end
     
@@ -268,20 +278,23 @@ import gemm_pkg::*;
 
             ST_WAIT_DISP: begin
                 // Wait for ALL rows' DC to complete up to wait_id
-                // Check if wait_id <= min(i_dc_id[r]) for all rows
-                // Simplified: check all rows have i_dc_id >= wait_id
-                if (all_dc_wait_complete) begin
+                // Release conditions (either one):
+                //   1. dc_id >= wait_id for all rows (ID-based completion)
+                //   2. All DCs are IDLE (state=0) - they finished their work
+                if (all_dc_wait_complete || all_dc_idle) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     // Block when DC is still serving the prior DISP command
-                    // of which the cmd_id is smaller then the wait_id of WAIT_DISP command
                     state_next = ST_WAIT_DISP;
                 end
             end
 
             ST_WAIT_MATMUL: begin
                 // Wait for ALL rows' CE to complete up to wait_id
-                if (all_ce_wait_complete) begin
+                // Release conditions (either one):
+                //   1. ce_id >= wait_id for all rows (ID-based completion)
+                //   2. All CEs are IDLE (state=0) - they finished their work
+                if (all_ce_wait_complete || all_ce_idle) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_MATMUL;

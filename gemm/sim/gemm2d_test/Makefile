@@ -60,16 +60,16 @@ VLOG_OPTIONS += +define+USE_BEHAVIORAL_BRAM
 # =========================================================================
 # Debug Macros - Uncomment to enable verbose output per module
 # =========================================================================
-# VLOG_OPTIONS += +define+DEBUG_DISPATCHER        # dispatcher_2d.sv
+VLOG_OPTIONS += +define+DEBUG_DISPATCHER        # dispatcher_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_FETCHER           # fetcher_2d.sv
-# VLOG_OPTIONS += +define+DEBUG_DISPATCHER_CTRL   # dispatcher_control_2d.sv
+VLOG_OPTIONS += +define+DEBUG_DISPATCHER_CTRL   # dispatcher_control_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_MASTER_CTRL       # master_control_2d.sv
-# VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStack_oFIFO.sv, weight_bram.sv, comp_fp_adder_pipeline.sv
-# VLOG_OPTIONS += +define+DEBUG_COMPUTE           # compute_engine_2d.sv
+VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStack_oFIFO.sv, weight_bram.sv, comp_fp_adder_pipeline.sv
+VLOG_OPTIONS += +define+DEBUG_COMPUTE           # compute_engine_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_FLEX_FIFO         # flex_fifo.sv (config display)
 # VLOG_OPTIONS += +define+DEBUG_CMD_FIFO          # cmd_fifo.sv (FIFO writes/reads)
 # VLOG_OPTIONS += +define+DEBUG_ENGINE_TOP        # engine_top_2d.sv (weight address calc)
-# VLOG_OPTIONS += +define+DEBUG_TB                # tb_gemm2d.sv (AXI, FIFO, MC state)
+VLOG_OPTIONS += +define+DEBUG_TB                # tb_gemm2d.sv (AXI, FIFO, MC state)
 # =========================================================================
 VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal
 VLOG_OPTIONS += +incdir+$(ACE_INSTALL_DIR)/libraries/

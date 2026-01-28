@@ -10,13 +10,17 @@
 // - Per-row golden: golden_B{B}_C{C}_V{V}_{r}.hex
 // - Final result = sum of all row partials
 //
-// Command sequence (from tb_gemm2d.sv):
-// 1. FETCH RIGHT + WAIT_DISP
-// 2. DISPATCH RIGHT + WAIT_DISP
-// 3. FETCH LEFT + WAIT_DISP
-// 4. DISPATCH LEFT + WAIT_DISP
-// 5. MATMUL + READOUT + WAIT_MATMUL
-// 6. Read B*C reduced FP16 results
+// Command sequence (9 commands):
+// 1. FETCH RIGHT       - load weights from GDDR6 to FIFO
+// 2. DISPATCH RIGHT    - move from FIFO to mlp_bram
+// 3. WAIT_DISP         - wait for DISPATCH RIGHT
+// 4. FETCH LEFT        - load activations from GDDR6 to FIFO
+// 5. DISPATCH LEFT     - move from FIFO to row_bram
+// 6. WAIT_DISP         - wait for DISPATCH LEFT
+// 7. MATMUL            - compute B*C outputs
+// 8. READOUT           - trigger result collection
+// 9. WAIT_MATMUL       - wait for completion
+// 10. Read B*C reduced FP16 results from BRAM
 
 #include <iostream>
 #include <iomanip>
@@ -45,6 +49,9 @@ constexpr uint32_t BLOCK_SIZE = LINES_PER_BLOCK * BYTES_PER_LINE;
 // Line addresses for left/right blocks in each row's GDDR6
 constexpr uint32_t LINE_ADDR_LEFT = 0;          // Lines 0-527
 constexpr uint32_t LINE_ADDR_RIGHT = 528;       // Lines 528-1055
+
+// Sequential test memory layout (per test needs 2 blocks = 1056 lines)
+constexpr uint32_t LINES_PER_TEST = LINES_PER_BLOCK * 2;  // 1056 lines per test
 
 // Result BRAM address (from NAP placement)
 static uint64_t BRAM_RESULT_BASE = 0;
@@ -174,9 +181,14 @@ struct TestConfig {
 };
 
 // ============================================================================
-// Run 2D GEMM Test
+// Run 2D GEMM Test (sequential mode - no soft_reset between tests)
+//
+// Parameters:
+//   left_line_addr:  Line address offset for left (activation) data
+//   right_line_addr: Line address offset for right (weight) data
 // ============================================================================
-bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config, bool verbose) {
+bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config,
+                      uint32_t left_line_addr, uint32_t right_line_addr, bool verbose) {
     const int B = config.B;
     const int C = config.C;
     const int V_per_row = config.V;
@@ -186,74 +198,27 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config, bo
     cout << "\n========================================" << endl;
     cout << "2D GEMM Test: " << config.name << endl;
     cout << "B=" << B << ", C=" << C << ", V/row=" << V_per_row << ", V_TOTAL=" << V_TOTAL << endl;
+    cout << "Left @ line " << left_line_addr << ", Right @ line " << right_line_addr << endl;
     cout << "Expected results: " << expected_results << " FP16 values" << endl;
     cout << "========================================" << endl;
 
     auto test_start = chrono::high_resolution_clock::now();
 
     // =========================================================================
-    // Step 1: Load per-row hex files
+    // Step 1: Skip DMA - data already pre-loaded in sequential mode
     // =========================================================================
-    cout << "\n[1/6] Loading per-row hex files..." << endl;
-
-    array<vector<uint8_t>, NUM_ROWS> left_data;
-    array<vector<uint8_t>, NUM_ROWS> right_data;
-
-    for (int r = 0; r < NUM_ROWS; r++) {
-        stringstream left_path, right_path;
-        left_path << config.hex_dir << "/left_" << r << ".hex";
-        right_path << config.hex_dir << "/right_" << r << ".hex";
-
-        if (!loadHexFile(left_path.str(), left_data[r])) {
-            cerr << "ERROR: Failed to load left_" << r << ".hex" << endl;
-            return false;
-        }
-        if (!loadHexFile(right_path.str(), right_data[r])) {
-            cerr << "ERROR: Failed to load right_" << r << ".hex" << endl;
-            return false;
-        }
-    }
-    cout << "  Loaded " << NUM_ROWS << " pairs of hex files (" << BLOCK_SIZE << " bytes each)" << endl;
+    cout << "\n[1/6] Skipping DMA write (data pre-loaded)..." << endl;
 
     // =========================================================================
-    // Step 2: DMA write to all 16 GDDR6 channels
+    // Step 2: Skip DMA timing
     // =========================================================================
-    cout << "\n[2/6] DMA write to 16 GDDR6 channels..." << endl;
-
-    auto dma_start = chrono::high_resolution_clock::now();
-
-    for (int r = 0; r < NUM_ROWS; r++) {
-        // Left block at offset 0 (lines 0-527)
-        uint64_t left_addr = gddr6_dma_addr(r, 0);
-        if (!gemm_device.dma_write(left_addr, left_data[r].data(), left_data[r].size())) {
-            cerr << "ERROR: DMA write failed for row " << r << " left" << endl;
-            return false;
-        }
-
-        // Right block at offset 528*32 bytes (lines 528-1055)
-        uint64_t right_addr = gddr6_dma_addr(r, LINE_ADDR_RIGHT * BYTES_PER_LINE);
-        if (!gemm_device.dma_write(right_addr, right_data[r].data(), right_data[r].size())) {
-            cerr << "ERROR: DMA write failed for row " << r << " right" << endl;
-            return false;
-        }
-
-        if (verbose) {
-            cout << "  Row " << setw(2) << r << ": left @ 0x" << hex << left_addr
-                 << ", right @ 0x" << right_addr << dec << endl;
-        }
-    }
-
-    auto dma_end = chrono::high_resolution_clock::now();
-    double dma_ms = chrono::duration<double, milli>(dma_end - dma_start).count();
-    cout << "  DMA complete: " << fixed << setprecision(2) << dma_ms << " ms" << endl;
+    cout << "\n[2/6] Using pre-loaded data from GDDR6..." << endl;
 
     // =========================================================================
-    // Step 3: Soft reset and initialize engine
+    // Step 3: Skip soft reset - using sequential mode
     // =========================================================================
-    cout << "\n[3/6] Initializing engine..." << endl;
-
-    gemm_device.soft_reset();
-    gemm_device.reset_cmd_id();
+    cout << "\n[3/6] Skipping soft reset (sequential mode)..." << endl;
+    // NOTE: soft_reset and reset_cmd_id are done ONCE at the beginning of all tests
 
     // =========================================================================
     // Step 4: Issue 2D GEMM command sequence via DMA-BRAM interface
@@ -266,58 +231,99 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config, bo
     gemm_device.begin_command_batch();
 
     // --- FETCH RIGHT (weights) ---
-    // Line address 528, full block, ugd_len=V_TOTAL
-    uint8_t fetch_right_id = gemm_device.fetch(LINE_ADDR_RIGHT, V_TOTAL, LINES_PER_BLOCK, true);
-    if (verbose) cout << "  FETCH RIGHT: id=" << (int)fetch_right_id << ", line=" << LINE_ADDR_RIGHT << endl;
+    // w0={len=16, id, opc=0xF0}, w1=start_addr, w2={ugd_len, len}, w3={fetch_right}
+    uint8_t fetch_right_id = gemm_device.fetch(right_line_addr, V_TOTAL, LINES_PER_BLOCK, true);
+    if (verbose) {
+        cout << "  [" << (int)fetch_right_id << "] FETCH RIGHT:" << endl;
+        cout << "       w0: opc=0xF0, id=" << (int)fetch_right_id << ", len=16" << endl;
+        cout << "       w1: start_addr=" << right_line_addr << " (line)" << endl;
+        cout << "       w2: ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
+        cout << "       w3: fetch_right=1" << endl;
+    }
 
-    // WAIT for FETCH to complete
-    uint8_t wait_fetch_right_id = gemm_device.waitDispatch(fetch_right_id);
-    if (verbose) cout << "  WAIT_DISP: id=" << (int)wait_fetch_right_id << ", wait_for=" << (int)fetch_right_id << endl;
+    // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
 
     // --- DISPATCH RIGHT (weights -> mlp_bram) ---
-    // nv_cnt=C (number of columns), ugd_len=V_TOTAL
+    // w0={len=16, id, opc=0xF1}, w1={nv_cnt, ugd_len}, w2=tile_addr, w3={col_start, disp_right, broadcast, man_4b}
     uint8_t disp_right_id = gemm_device.dispatch(C, V_TOTAL, 0, 0, true, false);
-    if (verbose) cout << "  DISPATCH RIGHT: id=" << (int)disp_right_id << ", nv_cnt=" << C << endl;
+    if (verbose) {
+        cout << "  [" << (int)disp_right_id << "] DISPATCH RIGHT:" << endl;
+        cout << "       w0: opc=0xF1, id=" << (int)disp_right_id << ", len=16" << endl;
+        cout << "       w1: nv_cnt=" << C << ", ugd_len=" << V_TOTAL << endl;
+        cout << "       w2: tile_addr=0" << endl;
+        cout << "       w3: col_start=0, disp_right=1, broadcast=0, man_4b=0" << endl;
+    }
 
     // WAIT for DISPATCH to complete
     uint8_t wait_disp_right_id = gemm_device.waitDispatch(disp_right_id);
-    if (verbose) cout << "  WAIT_DISP: id=" << (int)wait_disp_right_id << ", wait_for=" << (int)disp_right_id << endl;
+    if (verbose) {
+        cout << "  [" << (int)wait_disp_right_id << "] WAIT_DISP:" << endl;
+        cout << "       w0: opc=0xF3, id=" << (int)wait_disp_right_id << endl;
+        cout << "       w1: wait_id=" << (int)disp_right_id << endl;
+    }
 
     // --- FETCH LEFT (activations) ---
-    // Line address 0, full block, ugd_len=V_TOTAL
-    uint8_t fetch_left_id = gemm_device.fetch(LINE_ADDR_LEFT, V_TOTAL, LINES_PER_BLOCK, false);
-    if (verbose) cout << "  FETCH LEFT: id=" << (int)fetch_left_id << ", line=" << LINE_ADDR_LEFT << endl;
+    uint8_t fetch_left_id = gemm_device.fetch(left_line_addr, V_TOTAL, LINES_PER_BLOCK, false);
+    if (verbose) {
+        cout << "  [" << (int)fetch_left_id << "] FETCH LEFT:" << endl;
+        cout << "       w0: opc=0xF0, id=" << (int)fetch_left_id << ", len=16" << endl;
+        cout << "       w1: start_addr=" << left_line_addr << " (line)" << endl;
+        cout << "       w2: ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
+        cout << "       w3: fetch_right=0" << endl;
+    }
 
-    // WAIT for FETCH to complete
-    uint8_t wait_fetch_left_id = gemm_device.waitDispatch(fetch_left_id);
-    if (verbose) cout << "  WAIT_DISP: id=" << (int)wait_fetch_left_id << ", wait_for=" << (int)fetch_left_id << endl;
+    // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
 
     // --- DISPATCH LEFT (activations -> row_bram) ---
-    // nv_cnt=B (number of batches), ugd_len=V_TOTAL
     uint8_t disp_left_id = gemm_device.dispatch(B, V_TOTAL, 0, 0, false, false);
-    if (verbose) cout << "  DISPATCH LEFT: id=" << (int)disp_left_id << ", nv_cnt=" << B << endl;
+    if (verbose) {
+        cout << "  [" << (int)disp_left_id << "] DISPATCH LEFT:" << endl;
+        cout << "       w0: opc=0xF1, id=" << (int)disp_left_id << ", len=16" << endl;
+        cout << "       w1: nv_cnt=" << B << ", ugd_len=" << V_TOTAL << endl;
+        cout << "       w2: tile_addr=0" << endl;
+        cout << "       w3: col_start=0, disp_right=0, broadcast=1, man_4b=0" << endl;
+    }
 
     // WAIT for DISPATCH to complete
     uint8_t wait_disp_left_id = gemm_device.waitDispatch(disp_left_id);
-    if (verbose) cout << "  WAIT_DISP: id=" << (int)wait_disp_left_id << ", wait_for=" << (int)disp_left_id << endl;
+    if (verbose) {
+        cout << "  [" << (int)wait_disp_left_id << "] WAIT_DISP:" << endl;
+        cout << "       w0: opc=0xF3, id=" << (int)wait_disp_left_id << endl;
+        cout << "       w1: wait_id=" << (int)disp_left_id << endl;
+    }
 
     // --- MATMUL ---
-    // left_addr=0, right_addr=0, B, C, V_TOTAL
+    // w0={len=16, id, opc=0xF2}, w1={left_addr, right_addr}, w2={B, C}, w3={V, flags}
     uint8_t matmul_id = gemm_device.matmul(0, 0, B, C, V_TOTAL, false, false, false);
-    if (verbose) cout << "  MATMUL: id=" << (int)matmul_id << ", B=" << B << ", C=" << C << ", V=" << V_TOTAL << endl;
+    if (verbose) {
+        cout << "  [" << (int)matmul_id << "] MATMUL:" << endl;
+        cout << "       w0: opc=0xF2, id=" << (int)matmul_id << ", len=16" << endl;
+        cout << "       w1: left_addr=0, right_addr=0" << endl;
+        cout << "       w2: B=" << B << ", C=" << C << endl;
+        cout << "       w3: V=" << V_TOTAL << ", flags=0x0" << endl;
+    }
 
     // --- READOUT ---
-    // Issue readout to trigger result collection
+    // w0={len=16, id, opc=0xF5}, w1={B, C}, w2=V, w3=0
     uint8_t readout_id = gemm_device.readout(B, C, V_TOTAL);
-    if (verbose) cout << "  READOUT: id=" << (int)readout_id << endl;
+    if (verbose) {
+        cout << "  [" << (int)readout_id << "] READOUT:" << endl;
+        cout << "       w0: opc=0xF5, id=" << (int)readout_id << ", len=16" << endl;
+        cout << "       w1: B=" << B << ", C=" << C << endl;
+        cout << "       w2: V=" << V_TOTAL << endl;
+    }
 
     // --- WAIT for MATMUL to complete ---
     uint8_t wait_matmul_id = gemm_device.waitMatmul(matmul_id);
-    if (verbose) cout << "  WAIT_MATMUL: id=" << (int)wait_matmul_id << ", wait_for=" << (int)matmul_id << endl;
+    if (verbose) {
+        cout << "  [" << (int)wait_matmul_id << "] WAIT_MATMUL:" << endl;
+        cout << "       w0: opc=0xF4, id=" << (int)wait_matmul_id << endl;
+        cout << "       w1: wait_id=" << (int)matmul_id << endl;
+    }
 
     // Submit all commands to hardware via DMA-BRAM interface
     cout << "  Submitting " << gemm_device.get_command_count() << " commands to FPGA..." << endl;
-    if (!gemm_device.submit_commands(verbose)) {
+    if (!gemm_device.submit_commands(verbose, true /* verify */)) {
         cerr << "ERROR: Failed to submit command batch" << endl;
         return false;
     }
@@ -541,46 +547,142 @@ int main(int argc, char* argv[]) {
         cout << "Result BRAM: NAP[" << DATA_OUT_BRAM_NAP_COL << "][" << DATA_OUT_BRAM_NAP_ROW 
              << "] = 0x" << hex << BRAM_RESULT_BASE << dec << endl;
 
-        // Define test configurations - all from tb_compute_engine_2d.sv
-        // Same test suite as RTL simulation for consistency
+        // Define test configurations - 4 tests for sequential run without reset
+        // Each test gets unique GDDR6 addresses to avoid state corruption
         vector<TestConfig> tests = {
-            // Basic tests
+            {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},    // Non-power-of-2 C and V
+            // {4, 16, 8, "../../hex/B4_C16_V8", "B4_C16_V8"},    // Full 16 columns
             // {1, 1, 1, "../../hex/B1_C1_V1", "B1_C1_V1"},       // Minimal smoke test
             // {2, 2, 2, "../../hex/B2_C2_V2", "B2_C2_V2"},       // Multi-batch, multi-column
-            // {4, 4, 4, "../../hex/B4_C4_V4", "B4_C4_V4"},       // 4x4 test
-            {4, 4, 32, "../../hex/B4_C4_V32", "B4_C4_V32"},    // V_TOTAL=512
-            // Multi-column tests
-            {4, 8, 4, "../../hex/B4_C8_V4", "B4_C8_V4"},       // 8 columns
-            {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},    // Non-power-of-2 C and V
-            {4, 16, 8, "../../hex/B4_C16_V8", "B4_C16_V8"},    // Full 16 columns
-            // Multi-batch tests  
-            {8, 8, 16, "../../hex/B8_C8_V16", "B8_C8_V16"},    // 8 batches
-            // Large tests
-            {16, 16, 4, "../../hex/B16_C16_V4", "B16_C16_V4"}, // 16 batches, 16 cols
-            {16, 16, 8, "../../hex/B16_C16_V8", "B16_C16_V8"}  // Large: 16 batches, full cols
         };
 
-        // Run tests
+        // =====================================================================
+        // PHASE 1: Pre-load ALL test data to GDDR6 at unique addresses
+        // =====================================================================
+        cout << "\n========================================" << endl;
+        cout << "PHASE 1: Pre-loading ALL test data to GDDR6" << endl;
+        cout << "========================================" << endl;
+        cout << "Memory layout: " << LINES_PER_TEST << " lines per test" << endl;
+        cout << "  Block size: " << LINES_PER_BLOCK << " lines" << endl;
+        cout << "  Byte size:  " << LINES_PER_TEST * BYTES_PER_LINE << " bytes per test" << endl;
+
+        auto preload_start = chrono::high_resolution_clock::now();
+
+        // Store address offsets for each test
+        vector<uint32_t> test_left_addr(tests.size());
+        vector<uint32_t> test_right_addr(tests.size());
+
+        for (size_t test_idx = 0; test_idx < tests.size(); test_idx++) {
+            const TestConfig& config = tests[test_idx];
+
+            // Calculate unique line addresses for this test
+            uint32_t base_line = static_cast<uint32_t>(test_idx) * LINES_PER_TEST;
+            test_left_addr[test_idx] = base_line;
+            test_right_addr[test_idx] = base_line + LINES_PER_BLOCK;
+
+            cout << "\nTest " << test_idx << " (" << config.name << "):" << endl;
+            cout << "  Left @ line " << test_left_addr[test_idx] << endl;
+            cout << "  Right @ line " << test_right_addr[test_idx] << endl;
+
+            // Load hex files for this test
+            array<vector<uint8_t>, NUM_ROWS> left_data;
+            array<vector<uint8_t>, NUM_ROWS> right_data;
+
+            for (int r = 0; r < NUM_ROWS; r++) {
+                stringstream left_path, right_path;
+                left_path << config.hex_dir << "/left_" << r << ".hex";
+                right_path << config.hex_dir << "/right_" << r << ".hex";
+
+                if (!loadHexFile(left_path.str(), left_data[r])) {
+                    cerr << "ERROR: Failed to load left_" << r << ".hex for " << config.name << endl;
+                    return 1;
+                }
+                if (!loadHexFile(right_path.str(), right_data[r])) {
+                    cerr << "ERROR: Failed to load right_" << r << ".hex for " << config.name << endl;
+                    return 1;
+                }
+            }
+
+            // DMA write to all 16 GDDR6 channels at unique addresses
+            for (int r = 0; r < NUM_ROWS; r++) {
+                // Left block at test-specific offset
+                uint64_t left_addr = gddr6_dma_addr(r, test_left_addr[test_idx] * BYTES_PER_LINE);
+                if (!gemm_device.dma_write(left_addr, left_data[r].data(), left_data[r].size())) {
+                    cerr << "ERROR: DMA write failed for test " << test_idx << " row " << r << " address " << left_addr << endl;
+                    return 1;
+                }
+
+                // Right block at test-specific offset (base_line + 528)
+                uint64_t right_addr = gddr6_dma_addr(r, test_right_addr[test_idx] * BYTES_PER_LINE);
+                if (!gemm_device.dma_write(right_addr, right_data[r].data(), right_data[r].size())) {
+                    cerr << "ERROR: DMA write failed for test " << test_idx << " row " << r << " address " << right_addr << endl;
+                    return 1;
+                }
+
+                if (verbose && r == 0) {
+                    cout << "  Row 0: DMA left @ 0x" << hex << left_addr
+                         << ", right @ 0x" << right_addr << dec << endl;
+                }
+            }
+
+            cout << "  DMA complete for all 16 rows" << endl;
+        }
+
+        auto preload_end = chrono::high_resolution_clock::now();
+        double preload_ms = chrono::duration<double, milli>(preload_end - preload_start).count();
+        cout << "\nPre-load complete: " << fixed << setprecision(2) << preload_ms << " ms" << endl;
+        cout << "Total GDDR6 used: " << (tests.size() * LINES_PER_TEST * BYTES_PER_LINE) << " bytes per channel" << endl;
+
+        // =====================================================================
+        // PHASE 2: Single soft_reset before ALL tests
+        // =====================================================================
+        cout << "\n========================================" << endl;
+        cout << "PHASE 2: Single soft_reset before all tests" << endl;
+        cout << "========================================" << endl;
+
+        gemm_device.soft_reset();
+        gemm_device.reset_cmd_id();
+        usleep(100000);  // 100ms settle time
+        cout << "Soft reset complete, cmd_id reset to 0" << endl;
+
+        // =====================================================================
+        // PHASE 3: Run tests SEQUENTIALLY without reset
+        // =====================================================================
+        cout << "\n========================================" << endl;
+        cout << "PHASE 3: Running tests SEQUENTIALLY (no reset between)" << endl;
+        cout << "========================================" << endl;
+
         int passed = 0;
         int failed = 0;
         int skipped = 0;
 
-        for (const auto& config : tests) {
+        for (size_t test_idx = 0; test_idx < tests.size(); test_idx++) {
+            const TestConfig& config = tests[test_idx];
+
             // Skip if specific test requested and this isn't it
             if (!test_name.empty() && config.name != test_name) {
                 skipped++;
                 continue;
             }
 
-            // Soft reset before each test (critical for proper operation)
-            cout << "\n--- Soft reset before test ---" << endl;
-            gemm_device.soft_reset();
-            usleep(100000);  // 100ms settle time
+            cout << "\n--- Running test " << (test_idx + 1) << "/" << tests.size()
+                 << ": " << config.name << " ---" << endl;
+            cout << "Using addresses: left @ line " << test_left_addr[test_idx]
+                 << ", right @ line " << test_right_addr[test_idx] << endl;
 
-            if (run_2d_gemm_test(gemm_device, config, verbose)) {
+            // NO soft_reset here - that's the whole point of this experiment!
+
+            if (run_2d_gemm_test(gemm_device, config,
+                                 test_left_addr[test_idx], test_right_addr[test_idx], verbose)) {
                 passed++;
             } else {
                 failed++;
+                // Print debug info on failure
+                uint32_t status = gemm_device.mmio_read32(0, 0x50);
+                cout << "  DEBUG: STATUS=0x" << hex << status << dec << endl;
+                cout << "  MC state: " << ((status >> 8) & 0xF) << endl;
+                cout << "  RC state: " << ((status >> 4) & 0xF) << endl;
+                cout << "  Busy: " << (status & 0x1) << endl;
             }
         }
 

@@ -1,7 +1,13 @@
 #reference projects
 dma_ddr_ref
 gddr_ref_design
-llm_vp_demo_pcie_orig
+acx_gemm_ref_design
+matrix_engine_w4gfp8_stable
+mlp_jeremy
+acx_model_conv
+amd_gemm
+
+
 shell_demo
 
 #build results
@@ -13,12 +19,13 @@ shell_demo
 **/ioring/**
 **/work/**
 **/__pycache__/**
-hex/*.hex
-hex/*.txt
+hex/**/*.hex
+hex/**/*.txt
 **/sw_test/*
 !**/sw_test/Makefile
 !**/sw_test/*.*
 
+**/gemm/sim/**/*.txt
 #build artifacts
 **/*.tmp
 **/*.log

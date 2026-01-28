@@ -1,0 +1,69 @@
+---
+alwaysApply: true
+---
+# Iterative Development and Validation Workflow
+
+## Core Development Philosophy
+
+**Always make small changes, validate them, and iterate.**
+
+### Change Management
+
+1. **Small, Incremental Changes**
+   - Modify one component or feature at a time
+   - Make targeted edits rather than sweeping refactors
+   - Keep each change focused and testable
+   - Avoid changing multiple unrelated files simultaneously
+
+2. **Immediate Validation**
+   - Test after each small change
+   - Verify compilation/build success
+   - Check for regressions
+   - Validate expected behavior before proceeding
+
+3. **Iterative Refinement**
+   - Build upon validated changes
+   - Address one issue at a time
+   - Don't proceed if validation fails
+   - Fix problems immediately before adding complexity
+
+### Documentation-First Approach
+
+**When in doubt, read the documents again:**
+
+- Review [README.md](mdc:README.md) files in relevant directories
+- Check [CLAUDE.md](mdc:CLAUDE.md) for architecture and usage patterns
+- Consult [CHANGELOG.md](mdc:CHANGELOG.md) for historical context
+- Read any `.txt` documentation files
+- Review `.pdf` specifications and datasheets
+- Check project-specific documentation before making assumptions
+
+### Workflow Pattern
+
+```
+1. Read documentation → Understand current state
+2. Make small change → Single focused modification
+3. Validate change → Test and verify
+4. Document result → Update relevant docs if needed
+5. Iterate → Return to step 1 for next change
+```
+
+### Anti-Patterns to Avoid
+
+- ❌ Making large multi-file changes without intermediate testing
+- ❌ Assuming behavior without checking documentation
+- ❌ Skipping validation steps to "save time"
+- ❌ Proceeding when uncertain instead of reading docs
+- ❌ Batch changes without incremental verification
+
+### When Uncertain
+
+**STOP and read the documentation:**
+- Re-read README.md for project overview
+- Review CLAUDE.md for implementation details
+- Check CHANGELOG.md for related changes
+- Look for .txt files with specifications
+- Review .pdf datasheets or technical docs
+- Search for similar patterns in existing code
+
+This approach prevents cascading errors and ensures each step builds on a solid foundation.

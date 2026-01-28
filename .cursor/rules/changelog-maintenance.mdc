@@ -1,0 +1,207 @@
+---
+alwaysApply: true
+description: CHANGELOG maintenance after successful compilation
+---
+
+# CHANGELOG Maintenance Rule
+
+## Workflow Requirements After Successful Compilation
+
+When compilation completes successfully (no compile errors, returns to shell), you **MUST** maintain a CHANGELOG.md at the sub-project level.
+
+### Required Actions After Successful Build
+
+1. **Always read existing documentation first**:
+   - Read [README.md](mdc:README.md) in the sub-project directory
+   - Read [CLAUDE.md](mdc:CLAUDE.md) if it exists
+   - Read existing [CHANGELOG.md](mdc:CHANGELOG.md) if it exists
+
+2. **Verify consistency** before making modifications:
+   - Check for discrepancies between README, CLAUDE, and CHANGELOG
+   - Report any inconsistencies found
+   - Ensure documentation alignment
+
+3. **Update CHANGELOG.md with precise timestamps**:
+   - Always use `date` command for accurate timestamps
+   - Include compilation type (bitstream, software, simulation, etc.)
+   - Document any changes made during the build process
+
+### CHANGELOG.md Structure
+
+#### Basic Format
+```markdown
+# Changelog
+
+## [Version/Date] - YYYY-MM-DD HH:MM:SS
+
+### Changed
+- Brief description of changes made
+
+### Compilation
+- **Type**: [bitstream|software|simulation|test]
+- **Status**: SUCCESS
+- **Timestamp**: [exact timestamp from date command]
+- **Output**: [key output files or results]
+
+### Fixed
+- Any issues resolved (if applicable)
+
+### Added
+- New features or components (if applicable)
+```
+
+#### Example Entry
+```markdown
+## [1.2.3] - 2025-09-28 23:45:17
+
+### Changed
+- Updated BRAM responder configuration for enhanced +42 processing
+- Modified register mapping to support dual-memory control
+
+### Compilation
+- **Type**: bitstream
+- **Status**: SUCCESS
+- **Timestamp**: Sun Sep 28 23:45:17 PDT 2025
+- **Output**: Generated dma_test_top.ace in ../demo/bitstream/
+- **Resources**: 75% LUT utilization, 85% BRAM utilization
+
+### Fixed
+- Resolved synthesis timing closure issues
+- Fixed NAP placement conflicts
+```
+
+### Documentation Verification Process
+
+Before making CHANGELOG updates:
+
+1. **Read README.md**:
+   ```bash
+   cat README.md
+   ```
+   - Verify project purpose and scope
+   - Check documented features vs current implementation
+   - Note any outdated information
+
+2. **Read CLAUDE.md** (if exists):
+   ```bash
+   cat CLAUDE.md
+   ```
+   - Check usage instructions and architecture
+   - Verify compatibility with current changes
+   - Note any deprecated procedures
+
+3. **Read existing CHANGELOG.md**:
+   ```bash
+   cat CHANGELOG.md
+   ```
+   - Maintain consistent formatting
+   - Ensure chronological order
+   - Check version numbering scheme
+
+### Discrepancy Reporting
+
+If inconsistencies are found, report them in this format:
+
+```markdown
+## Documentation Discrepancies Found
+
+### README.md Issues
+- [List specific issues found]
+
+### CLAUDE.md Issues  
+- [List specific issues found]
+
+### CHANGELOG.md Issues
+- [List specific issues found]
+
+### Resolution Required
+- [Actions needed to fix discrepancies]
+```
+
+### Timestamp Requirements
+
+**ALWAYS use exact timestamps from `date` command**:
+```bash
+date
+# Use this exact output in CHANGELOG entries
+```
+
+**Never use**:
+- Relative terms ("today", "recently")
+- Placeholder dates
+- Copied timestamps from other entries
+
+### Applicable Build Types
+
+This rule applies to all successful compilation types:
+
+- **Bitstream builds**: Hardware compilation ending in .ace file generation
+- **Software compilation**: C/C++ builds ending in executable generation  
+- **Simulation compilation**: SystemVerilog/VHDL compilation for testbenches
+- **Test compilation**: Unit test or validation build completion
+- **Package builds**: Installation package or dependency builds
+
+### File Location Requirements
+
+CHANGELOG.md should be located:
+- Same directory as README.md (sub-project root)
+- Adjacent to CLAUDE.md if it exists
+- Typically in project subdirectories like:
+  - `/home/dev/Dev/elastix_gemm/engine_sim/`
+  - `/home/dev/Dev/elastix_gemm/matrix_engine_w4gfp8/`
+  - `/home/dev/Dev/elastix_gemm/matmul/`
+  - `/home/dev/Dev/elastix_gemm/llm_vp_demo_pcie_orig/`
+
+### Evidence-Based Documentation Requirements
+
+**ALL claims in CHANGELOG.md and README.md MUST be backed by actual results:**
+
+1. **Test Results**: Claims about functionality must reference actual test runs
+   - ❌ "Tests pass" - WRONG: No evidence
+   - ✅ "All 15 tests passed (see test_output.log)" - CORRECT: Verifiable
+
+2. **Performance Claims**: Must include actual measurements
+   - ❌ "System is fast" - WRONG: Subjective claim
+   - ✅ "Latency: 2.3ms average over 1000 runs" - CORRECT: Measured data
+
+3. **Tool Status**: Must reflect actual verification attempts
+   - ❌ "Python tools work correctly" - WRONG: Not verified
+   - ✅ "Python tools cannot run (ModuleNotFoundError: emulator)" - CORRECT: Actual status
+
+4. **Build Results**: Must include actual compilation output
+   - ❌ "Build succeeds" - WRONG: No evidence
+   - ✅ "Build completed: bitstream generated at build/output.ace (45MB)" - CORRECT: Verifiable
+
+5. **Feature Status**: Must distinguish implemented vs planned
+   - ❌ "Supports FP16/BFP8/Int8 modes" - AMBIGUOUS: Unclear if tested
+   - ✅ "Supports FP16/BFP8/Int8 modes (Int8 tested, FP16/BFP8 untested)" - CORRECT: Clear status
+
+### Evidence Documentation Format
+
+```markdown
+### Tested
+- Feature X: Verified with test Y, passed (log: path/to/log)
+- Feature Z: Code exists but not tested (status: untested)
+
+### Untested Claims
+- Feature A: Appears in code but no test run performed
+- Feature B: Documented but verification pending
+
+### Known Issues (Verified)
+- Issue X: Reproduced with steps: 1, 2, 3 (error: "specific error message")
+- Issue Y: Reported but not yet reproduced
+
+### Assumptions (Unverified)
+- Assumption X: Based on code review, needs testing
+```
+
+### Enforcement
+
+- **MANDATORY**: Every successful compilation must update CHANGELOG.md
+- **NO EXCEPTIONS**: Even if only documentation changes were made
+- **ACCURATE TIMESTAMPS**: `date` command verification required
+- **MAINTAIN CONSISTENCY**: Always check existing documentation first
+- **EVIDENCE REQUIRED**: All claims must cite actual results, test logs, or explicitly mark as untested
+- **NO ASPIRATIONAL CLAIMS**: Documentation reflects actual verified state, not desired state
+
+This ensures comprehensive project history tracking, maintains documentation quality, and prevents misleading documentation claims across all subprojects.

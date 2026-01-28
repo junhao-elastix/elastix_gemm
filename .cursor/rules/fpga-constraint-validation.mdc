@@ -1,0 +1,193 @@
+---
+alwaysApply: true
+description: "FPGA constraint validation workflow for RTL changes"
+---
+
+# FPGA Constraint Validation Rule
+
+## Critical: Always Validate Constraints After RTL Changes
+
+When modifying FPGA RTL code or commenting out modules, you **MUST** review and update constraint files before building. Constraint files often become **overspecified** or contain **stale references** after architectural changes.
+
+### Required Constraint Review Workflow
+
+#### **Before Every FPGA Build (Mandatory)**
+```bash
+# 1. After RTL changes, always review constraints
+cd src/constraints/
+
+# 2. Check placement constraints
+cat ace_placements.pdc
+# Look for:
+# - NAP placements for commented-out modules
+# - Placement regions for non-existent logic
+# - Instance paths that no longer exist
+
+# 3. Check timing constraints  
+cat ace_constraints.sdc
+# Look for:
+# - CDC paths for archived modules
+# - Clock references for removed logic
+# - Timing exceptions for unused paths
+```
+
+#### **When RTL Architecture Changes**
+Always update constraints when you:
+- **Comment out channels or modules**
+- **Archive obsolete functionality** 
+- **Add new NAP interfaces**
+- **Modify clock domains**
+- **Change module hierarchy**
+
+### Common Constraint Issues After RTL Changes
+
+#### **1. Unused NAP Placements**
+```pdc
+# WRONG: Placing NAPs for commented-out channels
+for {set ii 0} {$ii < 8} {incr ii} {
+    set_placement -fixed [find -insts "gddr_gen_noc_${ii}*"] ...
+}
+
+# CORRECT: Only place active channels
+set_placement -fixed [find -insts "gddr_gen_noc_0*i_axi_responder_wrapper.i_axi_responder"] ...
+```
+
+#### **2. Stale Instance References**
+```pdc  
+# WRONG: References archived module names
+add_region_find_insts "region_ch0" "find -insts *g2b_channel*"
+
+# CORRECT: Update to current module names
+add_region_find_insts "region_ch0" "find -insts *gemm_engine_channel*"
+```
+
+#### **3. Unnecessary Placement Regions**
+```pdc
+# WRONG: Creating regions for non-existent logic
+create_region "region_gddr6_ch7" "185 252 212 287" -snap fabric_clusters
+add_region_find_insts "region_gddr6_ch7" "find -insts *pkt_gen_channel*"  # Doesn't exist!
+
+# CORRECT: Only create regions for active logic
+# Remove or comment out unused regions
+```
+
+#### **4. CDC Path References**
+```sdc
+# WRONG: Timing constraints for archived modules
+set_false_path -from [get_clocks reg_clk] -to [get_pins "*g2b_processor*"]
+
+# CORRECT: Update or remove constraints for archived modules
+# set_false_path -from [get_clocks reg_clk] -to [get_pins "*g2b_processor*"] - ARCHIVED
+```
+
+### Constraint Files to Review
+
+#### **Primary Constraint Files**
+- **`ace_placements.pdc`**: NAP placements, placement regions, instance locations
+- **`ace_constraints.sdc`**: Timing constraints, clock relationships, CDC paths
+- **`synplify_constraints.sdc`**: Synthesis timing constraints
+- **`synplify_constraints.fdc`**: Physical constraints, resource allocation
+
+#### **What to Check in Each File**
+
+**ace_placements.pdc**:
+- ✅ NAP placements match active RTL modules
+- ✅ Placement regions reference existing instance paths
+- ✅ No constraints for commented-out channels/modules
+
+**ace_constraints.sdc**:
+- ✅ CDC timing paths reference active modules only
+- ✅ Clock domain relationships match current design
+- ✅ False path constraints updated for architectural changes
+
+**synplify_constraints.sdc**:
+- ✅ Clock definitions match current PLL usage
+- ✅ Clock groups properly defined
+- ✅ No dangling clock references
+
+### Validation Steps
+
+#### **After Constraint Updates**
+```bash
+# Test synthesis to catch constraint errors early
+cd build/
+make clean && timeout 120s make synthesis
+
+# Look for constraint warnings:
+# - "Instance not found" for placement constraints
+# - "Path not found" for timing constraints
+# - "Clock not found" for removed modules
+```
+
+#### **Synthesis Error Indicators**
+- ❌ "set_placement: Instance ... not found"
+- ❌ "add_region_find_insts: No instances found"
+- ❌ "set_false_path: Source ... not found"
+- ❌ "Clock group ... contains no clocks"
+
+### Integration with Build Workflow
+
+#### **FPGA Development Sequence** 
+```bash
+# 1. Modify RTL
+vim src/rtl/elastix_gemm_top.sv
+
+# 2. MANDATORY: Review constraints
+cd src/constraints/
+vim ace_placements.pdc ace_constraints.sdc
+
+# 3. Test synthesis (catch constraint errors early)
+cd ../build/
+make clean && timeout 120s make synthesis
+
+# 4. Fix any constraint errors, then full build
+make clean && make run
+
+# 5. Program and test
+/home/dev/Dev/hex.sh
+source /home/dev/rescan
+./test_registers
+```
+
+### Common Architectural Changes Requiring Constraint Updates
+
+#### **Channel Disable/Enable**
+- **RTL**: Comment out channel logic
+- **Constraints**: Remove NAP placements and regions
+
+#### **Module Archival**
+- **RTL**: Move modules to archive/
+- **Constraints**: Remove placement and timing references
+
+#### **Interface Changes**
+- **RTL**: Modify NAP interfaces or add new ones
+- **Constraints**: Add/update NAP placements
+
+#### **Clock Domain Changes**
+- **RTL**: Modify clock usage or add CDC
+- **Constraints**: Update clock groups and CDC constraints
+
+### Example: Channel Commenting Constraint Impact
+
+**Before** (RTL has 8 channels):
+```pdc
+for {set ii 0} {$ii < 8} {incr ii} {
+    set_placement -fixed [find -insts "gddr_gen_noc_${ii}*"] ...
+}
+```
+
+**After** (RTL has channels 1-7 commented out):
+```pdc
+# Channel 0: MS2.0 GEMM Engine NAP placement only
+set_placement -fixed [find -insts "gddr_gen_noc_0*i_axi_responder_wrapper.i_axi_responder"] ...
+# Channels 1-7: Commented out in RTL, no placement constraints needed
+```
+
+### Enforcement
+
+- **MANDATORY**: Review constraints after every RTL architectural change
+- **NO EXCEPTIONS**: Even small RTL modifications can affect constraint validity
+- **VALIDATE EARLY**: Use short synthesis timeout to catch constraint errors
+- **DOCUMENT CHANGES**: Update constraint comments to match RTL changes
+
+This ensures **constraint-RTL alignment** and prevents build failures, placement errors, and synthesis issues across all FPGA projects.

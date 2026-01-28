@@ -25,10 +25,10 @@ ESSENTIAL_BINS = test_registers test_gddr6 scan_registers test_bram
 #   test_gemm, test_gemm_full, test_multi_tile, test_readback, test_bulk_dma, test_linear
 # They are incompatible with the current 2D multi-row architecture.
 # Use test_gemm_2d instead.
-ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm_2d
+ALL_BINS = $(ESSENTIAL_BINS) dma_example dma_simple_example test_mem_endpoints test_dma_access test_gemm_2d test_gemm_2d_multi_iter test_gemm_2d_single_cmd
 
 # Core GEMM tests - only 2D multi-row test is active
-CORE_BINS = test_gemm_2d
+CORE_BINS = test_gemm_2d test_gemm_2d_multi_iter test_gemm_2d_single_cmd
 
 # Aliases for convenience
 BINS = $(ESSENTIAL_BINS)
@@ -82,6 +82,15 @@ test_bulk_dma: test_bulk_dma.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 test_gemm_2d: test_gemm_2d.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_gemm_2d_multi_iter: test_gemm_2d_multi_iter.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+test_gemm_2d_single_cmd: test_gemm_2d_single_cmd.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
+
+reset_and_check: reset_and_check.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
 # Clean targets
@@ -145,6 +154,8 @@ help:
 	@echo "  test_bulk_dma      - Bulk DMA address test for FETCH parameter validation"
 	@echo "  test_linear        - Linear layer test with 16 right dispatches (B4 C64 V32)"
 	@echo "  test_gemm_2d       - 2D multi-row GEMM test (16 rows with row-reduction)"
+	@echo "  test_gemm_2d_multi_iter - Multi-iteration weight persistence test"
+	@echo "  test_gemm_2d_single_cmd - Single command mode (debug: status after each cmd)"
 	@echo ""
 
 .PHONY: all clean clean_all test_basic test_memory test_scan test_all validate help

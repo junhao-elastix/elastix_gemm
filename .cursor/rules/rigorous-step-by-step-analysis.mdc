@@ -1,0 +1,98 @@
+---
+alwaysApply: true
+description: Rigorous step-by-step analysis rule for complex feature development
+---
+
+# Rigorous Step-by-Step Analysis Rule
+
+## Core Principle
+
+When implementing complex features, mathematical formulas, or algorithms, **ALWAYS** test edge cases systematically to identify misunderstandings before proceeding. Use concrete examples to verify the implementation matches the intended behavior.
+
+## Required Process
+
+### 1. Edge Case Analysis
+Before implementing any complex feature, ask yourself:
+- **"What if this happens when I use this input?"**
+- **"What are the boundary conditions?"**
+- **"What happens at the limits of the constraints?"**
+
+### 2. Systematic Testing
+Test these scenarios systematically:
+- **Minimum values** (e.g., B=1, C=1, V=1)
+- **Maximum values** (e.g., B=128, C=128, V=1)
+- **Boundary conditions** (e.g., B×V = 128, C×V = 128)
+- **Invalid inputs** (e.g., B×V > 128)
+- **Edge cases** (e.g., V = 128, B = 0, etc.)
+
+### 3. Discrepancy Detection
+When testing, look for:
+- **Unexpected dimensions** in output
+- **Inconsistent behavior** across test cases
+- **Results that don't match expectations**
+- **Error messages or warnings**
+
+### 4. Root Cause Analysis
+When discrepancies are found:
+- **Ask "Why?"** - What is causing this behavior?
+- **Ask "Why not?"** - What should be happening instead?
+- **Trace through the logic** step by step
+- **Verify assumptions** about input/output relationships
+
+## Example Application
+
+### Problem: Matrix Dimension Configuration
+**Feature**: Configurable B, C, V parameters for matrix multiplication
+
+**Edge Cases to Test**:
+1. **B = C = V = 1**: Should give 1×1 result
+2. **B = 2, C = 4, V = 1**: Should give 2×4 result  
+3. **B = 1, C = 1, V = 2**: Should give 1×1 result
+4. **B = 1, C = 1, V = 128**: Should give 1×1 result
+5. **B = 2, C = 1, V = 65**: Should fail constraint validation
+
+**Discrepancy Found**: V = 128 case showed incorrect dimensions
+- **Expected**: Matrix A: 1×16384, Matrix B: 16384×1
+- **Actual**: Matrix A: 1×128, Matrix B: 128×1
+- **Root Cause**: Implementation limited by available data (128×128)
+- **Fix**: Added `min(effective_dimensions, 128)` constraint
+
+## Implementation Guidelines
+
+### Before Coding
+1. **Identify all edge cases** for the feature
+2. **Define expected behavior** for each case
+3. **Plan test scenarios** to validate each case
+
+### During Development
+1. **Implement basic functionality** first
+2. **Test with simple cases** to verify basic behavior
+3. **Progressively test edge cases** to find issues
+4. **Fix issues immediately** before proceeding
+
+### After Implementation
+1. **Run comprehensive test suite** covering all edge cases
+2. **Verify results match expectations** for each case
+3. **Document any limitations** or constraints discovered
+4. **Update documentation** to reflect actual behavior
+
+## Anti-Patterns to Avoid
+
+- ❌ **Implementing without testing edge cases**
+- ❌ **Assuming behavior without verification**
+- ❌ **Proceeding when discrepancies are found**
+- ❌ **Not asking "why" when unexpected results occur**
+- ❌ **Skipping boundary condition testing**
+
+## Success Criteria
+
+A feature implementation is complete when:
+- ✅ **All edge cases tested** and behave as expected
+- ✅ **No discrepancies** between expected and actual behavior
+- ✅ **Root causes identified** for any issues found
+- ✅ **Documentation updated** to reflect actual behavior
+- ✅ **Constraints and limitations** clearly documented
+
+## Remember
+
+**Rigorous analysis prevents bugs and ensures the implementation matches the intended behavior.** Always test edge cases systematically before considering a feature complete.

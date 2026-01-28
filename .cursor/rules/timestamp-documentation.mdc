@@ -1,0 +1,69 @@
+---
+alwaysApply: true
+description: Timestamp requirement for documentation changes and reviews
+---
+
+# Timestamp Documentation Requirements
+
+## Critical Documentation Policy
+
+When creating, modifying, or reviewing any documentation, you **MUST** always include accurate timestamps using the `date` command from the shell.
+
+### Required Steps
+
+1. **Always run `date` command first** before documenting any changes:
+   ```bash
+   date
+   ```
+
+2. **Use the timestamp output** directly in your documentation with proper formatting
+
+3. **Include timestamps in**:
+   - Project reviews and analysis
+   - Documentation updates and modifications
+   - Testing results and test session reports
+   - Build and deployment logs
+   - Any technical changes or feature additions
+
+### Correct Timestamp Usage Examples
+
+```markdown
+**Review Date**: September 28, 2025
+**Last Updated**: Sun Sep 28 11:17:18 PM PDT 2025
+**Test Session**: September 28, 2025 at 11:17 PM PDT
+**Documentation Update**: Current timestamp from date command
+```
+
+### Wrong Usage (Do NOT Do This)
+
+```markdown
+**Review Date**: December 30, 2024  # ❌ WRONG - outdated date
+**Last Updated**: Today              # ❌ WRONG - vague timing
+**Test Session**: Recently          # ❌ WRONG - imprecise
+```
+
+### Implementation
+
+- **Never assume dates** or use placeholder dates
+- **Never copy timestamps** from other documents without verification
+- **Always fetch fresh timestamp** using `date` command for accuracy
+- **Use full timestamp format** including day, date, and time
+- **Be precise** - seconds matter for technical documentation
+
+### Context
+
+This ensures all documentation serves as an accurate historical record and prevents technical confusion from stale timestamps that become misleading over time.
+
+## Files This Applies To
+
+- All `.md` documentation files
+- All project review documentation
+- All testing result files
+- All changelog entries
+- All technical specifications
+- All README files
+- All documentation updates
+
+## Enforcement
+
+This rule is **MANDATORY** - timestamps without verification via `date` command are considered incomplete documentation.

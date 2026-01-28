@@ -1,0 +1,249 @@
+---
+alwaysApply: true
+---
+# FPGA Development Workflow
+
+## Critical: RTL Change → Build → Flash → Test Workflow
+
+When you modify RTL code, you MUST follow this exact sequence:
+
+### 1. Development Flow
+
+#### **Standard Development Cycle (Recommended)**
+```bash
+# 1. Modify RTL Code
+# Edit SystemVerilog files in src/rtl/
+
+# 2. Build and Flash (Automated)
+cd /home/dev/Dev/eus/shell_hw/vec_add
+./build_and_flash.sh
+
+# What the automated script does:
+# - cd /home/dev/Dev/eus/shell_hw/vec_add/build/
+# - make clean && make all          # Build RTL
+# - /home/dev/Dev/hex.sh            # Program FPGA  
+# - source /home/dev/rescan         # Rescan PCIe bus
+# - test_registers                  # Verify device health
+
+# 3. Verify Success
+# Look for:
+# ✅ Device initialized successfully
+# ✅ Bitstream ID with correct timestamp
+# ✅ All registers readable (not 0xffffffff)
+```
+
+#### **Manual Build Process (For Debugging)**
+```bash
+# Option 1: Manual build commands
+cd /home/dev/Dev/eus/shell_hw/vec_add/build/
+make clean && make all
+/home/dev/Dev/hex.sh
+source /home/dev/rescan
+cd ../sw_test && ./test_registers
+
+# Option 2: Individual steps for detailed debugging
+cd build/
+make clean                        # Clear stale artifacts
+make all                         # Build RTL (10-25 minutes)
+cd ../
+/home/dev/Dev/hex.sh            # Program FPGA
+source /home/dev/rescan         # Rescan PCIe bus
+cd sw_test/
+./test_registers                # Verify device health
+./debug_fsm                     # Test FSM transitions
+```
+
+**IMPORTANT**: The build and flash process is **LONG** (10-25 minutes typically):
+- **Synthesis**: 2-5 minutes
+- **Place & Route**: 5-15 minutes  
+- **Bitstream Generation**: 1-3 minutes
+- **Flashing**: 1-2 minutes
+- **PCI Rescan & Test**: 1 minute
+
+**Wait patiently** for the script to complete. Do NOT interrupt unless absolutely necessary.
+
+### 2. Successful Completion Signs
+When [build_and_flash.sh](mdc:Dev/eus/shell_hw/vec_add/build_and_flash.sh) completes successfully:
+- Script runs to completion without returning to shell early
+- Automatically runs [test_registers.cpp](mdc:Dev/eus/shell_hw/vec_add/sw_test/test_registers.cpp)
+- Shows register outputs with current Bitstream ID
+- Device remains visible on PCI bus
+
+### 3. Before Every Software Test
+**ALWAYS** verify device is accessible before running software tests:
+
+```bash
+# Run test_registers to verify device is accessible
+./test_registers
+```
+
+**Check for these signs of healthy device**:
+- ✅ "Device initialized successfully"
+- ✅ Registers show reasonable values (not all 0xffffffff)
+- ✅ Bitstream ID shows recent timestamp
+- ✅ No "PCIe link is down" errors
+
+### 4. Device Protection Mechanism
+The FPGA has **self-protection** that drops the device from PCI bus if:
+- Illegal PCIe transactions occur
+- Device hangs or clock failures
+- Invalid register accesses
+- FPGA logic errors cause system instability
+
+**Symptoms of device drop**:
+- All registers read back `0xffffffff`
+- "PCIe link is down" errors
+- Device not visible in `sudo lspci -d 1b59: -v`
+
+### 5. Recovery Procedures
+
+#### **Recovery Trigger: Device Hang Detection**
+When `test_registers` shows all registers returning `0xffffffff`:
+```bash
+Device initialized successfully
+  0x0000: 0xffffffff - Control Register
+  0x0004: 0xffffffff - Status Register
+  0x0008: 0xffffffff - Error Status Register
+# ❌ This indicates device hang or PCIe communication failure
+```
+
+#### **Step-by-Step Recovery Procedure**
+
+**Step 1: Hex Reprogram (First Try)**
+```bash
+/home/dev/Dev/hex.sh
+```
+- Reprograms FPGA with existing bitstream
+- Faster than full rebuild
+- Often resolves soft hangs and timing issues
+
+**Step 2: Rescan PCIe Bus**
+```bash
+source /home/dev/rescan
+```
+- Reinitializes PCIe communication
+- Reloads device driver (acxpcie)
+- Clears PCIe enumeration state
+
+**Step 3: Test Device Recovery**
+```bash
+cd /home/dev/Dev/eus/shell_hw/vec_add/sw_test
+./test_registers
+```
+- Verify device is responsive
+- Check for reasonable register values (not 0xffffffff)
+- Confirm bitstream timestamp matches expected build
+
+**Step 4: Verify FSM State (If Recovered)**
+```bash
+./debug_fsm
+```
+- Test monolithic FSM transitions
+- Verify FSM reaches DONE state (0x8)
+- Confirm no timeouts or error states
+
+**Step 5: Check PCIe Visibility (If Still Failed)**
+```bash
+sudo lspci -d 1b59: -v
+```
+- Verify Achronix device appears on PCIe bus
+- Check if acxpcie driver is loaded
+- Confirm hardware enumeration successful
+
+**Step 6: Reboot System (Last Resort)**
+```bash
+sudo reboot
+```
+- Only when hex.sh + rescan fails completely
+- Indicates hard hang requiring full system reset
+- Reinitializes all PCIe and system state
+
+#### **Recovery Success Indicators**
+- ✅ Registers show reasonable values (not all 0xffffffff)
+- ✅ Bitstream ID shows expected timestamp
+- ✅ "Device initialized successfully" message
+- ✅ Device visible in `sudo lspci -d 1b59: -v` output
+- ✅ FSM transitions properly in debug_fsm test
+
+#### **Recovery Failure Indicators**
+- ❌ All registers still return 0xffffffff after hex.sh + rescan
+- ❌ Device not visible in `lspci` output
+- ❌ Driver initialization failures
+- ❌ PCIe link down errors
+- ❌ FSM stuck in error states
+
+#### **When to Use Each Recovery Method**
+
+| Condition | Recovery Method | Success Rate |
+|-----------|----------------|--------------|
+| Soft hang (registers timeout) | hex.sh + rescan | ~80% |
+| Hard hang (0xffffffff) | hex.sh + rescan | ~60% |
+| PCIe enumeration failure | rescan only | ~40% |
+| Complete system freeze | reboot | ~95% |
+| Synthesis/timing issues | rebuild + flash | ~90% |
+
+### 6. Safe Development Practices
+
+#### Always Test Device Before Software Tests
+```bash
+# WRONG: Running software test without checking device
+./test_vector_add
+
+# CORRECT: Always check device first
+./test_registers && ./test_vector_add
+```
+
+#### Monitor for Device Drops
+Watch for these warning signs:
+- Registers returning unexpected values
+- Timeouts in software tests
+- PCIe communication errors
+- System becoming unresponsive
+
+#### Incremental Testing
+- Test basic register access after each RTL change
+- Use debug registers to monitor FSM states
+- Start with simple tests before complex operations
+- Reset FSMs using control register bit 4 if needed
+
+### 7. Debug Register Usage
+
+The system provides extensive debug registers:
+- **0x14**: FSM States (Host, Data, Compute FSMs)
+- **0x18**: Debug Counters (GDDR6, CE buffer addresses)
+- **0x1C**: Debug Signals (Control signals, buffer status)
+
+Use these to monitor system state and diagnose issues before they cause device drops.
+
+### 8. Example Safe Workflow
+
+```bash
+# 1. Modify RTL files
+vim src/rtl/vector_global_control.sv
+
+# 2. Build and flash (wait patiently!)
+./build_and_flash.sh
+
+# 3. Verify device is healthy
+./test_registers
+
+# 4. Run software tests
+./test_vector_add --verbose
+
+# 5. If device drops, recover
+if ! ./test_registers; then
+    echo "Device dropped, attempting recovery..."
+    rescan
+    ./test_registers || sudo reboot
+fi
+```
+
+## Remember: Patience and Verification
+
+- **Build process is SLOW** - wait for completion
+- **Always verify device** before software tests  
+- **Use rescan** for recovery attempts
+- **Reboot as last resort** for hard hangs
+- **Monitor debug registers** to prevent issues
+
+The FPGA development cycle requires patience and systematic verification at each step to avoid device drops and system hangs.

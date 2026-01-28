@@ -1,0 +1,284 @@
+---
+alwaysApply: true
+---
+# Documentation Accuracy Rule
+
+## Core Principle
+
+**CRITICAL: It is better to have NO information than WRONG information.**
+
+Wrong information is catastrophic because it:
+- Creates illusions and false confidence
+- Misguides designs and implementation decisions
+- Builds systems on false assumptions
+- Causes fragile foundations that eventually collapse
+- Wastes days or weeks of work when the truth is discovered
+
+## Absolute Requirements
+
+### 1. Zero False Claims Policy
+
+**NEVER document:**
+- Performance numbers without actual measurements
+- Timing characteristics without verification
+- Bandwidth claims without testing
+- Capacity limits without validation
+- Architecture specifications without code verification
+- "Expected" behavior that hasn't been tested
+
+### 2. Verification Standards
+
+Before documenting ANY technical detail, verify through:
+
+✅ **Code Review**: Check actual RTL/source code
+```systemverilog
+// CORRECT: Verified in code
+parameter BRAM_DEPTH = 2048;  // Found in dispatcher_bram.sv line 15
+
+// WRONG: Assumption
+"Command FIFO: 64×32-bit"  // Not verified in source
+```
+
+✅ **Test Results**: Reference actual test logs
+```markdown
+<!-- CORRECT: Verified test result -->
+**Test Status**: 8/9 tests passing (88%)
+Source: test_ms2_gemm_full output, Oct 14 2025
+
+<!-- WRONG: Aspirational claim -->
+**Test Status**: All tests passing
+```
+
+✅ **Build Reports**: Check synthesis/timing reports
+```markdown
+<!-- CORRECT: From timing report -->
+**Clock Status**: i_nap_clk at 400MHz with -0.499ns slack
+
+<!-- WRONG: Theoretical target -->
+**Clock Status**: 300MHz target frequency
+```
+
+✅ **Hardware Validation**: Actual FPGA test results
+```markdown
+<!-- CORRECT: Measured on hardware -->
+**Register Count**: 133 registers (verified with test_registers)
+
+<!-- WRONG: Design assumption -->
+**Register Count**: 128 registers
+```
+
+### 3. When Verification is Not Possible
+
+If you cannot verify a technical claim, use one of these approaches:
+
+**Option 1: Use Qualitative Descriptions**
+```markdown
+<!-- INSTEAD OF: "~42% performance improvement" -->
+✅ USE: "improved throughput with dual BRAM architecture"
+
+<!-- INSTEAD OF: "Up to 63.75 GB/s bandwidth" -->
+✅ USE: "High-bandwidth PCIe Gen5 x16 interface"
+
+<!-- INSTEAD OF: "Processes 128×128 matrices" -->
+✅ USE: "Matrix multiplication engine with configurable dimensions"
+```
+
+**Option 2: Mark as Unverified**
+```markdown
+<!-- If you must include unverified information -->
+⚠️ **Unverified Claim**: Performance estimated at ~40% improvement
+📝 **Status**: Requires benchmarking for validation
+```
+
+**Option 3: Don't Document It**
+```markdown
+<!-- BEST OPTION if unsure -->
+<!-- Simply omit the unverified technical detail -->
+```
+
+## Common Violations to Avoid
+
+### ❌ Performance Claims Without Measurement
+```markdown
+<!-- WRONG -->
+- "~42% faster with dual BRAM"
+- "Latency reduced by 30%"
+- "Throughput increased to 1.5 GB/s"
+
+<!-- CORRECT -->
+- "Improved throughput with dual BRAM parallel reads"
+- "Reduced latency through pipeline optimization"
+- "High-bandwidth memory interface"
+```
+
+### ❌ Timing Numbers Without Verification
+```markdown
+<!-- WRONG -->
+- "PCIe TLP round-trip: ~500ns"
+- "Register read/write: <1µs"
+- "GDDR6 access: ~100ns base + queue time"
+- "FETCH completes in ~33µs"
+- "MATMUL takes ~64µs @ 200MHz"
+
+<!-- CORRECT -->
+- "Low-latency PCIe communication"
+- "Fast register access via AXI4-Lite"
+- "High-bandwidth GDDR6 memory access"
+- "FETCH operation transfers matrix data from GDDR6"
+- "MATMUL executes matrix multiplication"
+```
+
+### ❌ Architecture Specs Without Code Check
+```markdown
+<!-- WRONG -->
+- "Command FIFO: 64×32-bit buffer"
+- "Result FIFO: 256×16-bit FP16 buffer"
+- "Supports up to 128×128 matrices"
+- "FP24 intermediate precision"
+
+<!-- CORRECT -->
+- "Command buffering for pipelined execution"
+- "Result buffering in BRAM for host access"
+- "Configurable matrix dimensions"
+- "GFP8 input, FP16 output (verified in gfp8_to_fp16.sv)"
+```
+
+### ❌ Inconsistent Information
+```markdown
+<!-- WRONG: Conflicting statements in same document -->
+- Architecture diagram shows "i_nap_clk (300MHz)"
+- Timing table shows "i_nap_clk (400MHz current)"
+
+<!-- CORRECT: Consistent throughout -->
+- All references show "i_nap_clk (400MHz)" with timing violation note
+```
+
+## Documentation Review Checklist
+
+Before committing documentation, verify:
+
+- [ ] Every performance number has a source (test log, report, measurement)
+- [ ] Every timing claim references actual hardware behavior
+- [ ] Every architecture spec is verified in source code
+- [ ] No theoretical/target values presented as current reality
+- [ ] No "expected" behavior without test validation
+- [ ] All numbers are consistent across the document
+- [ ] When in doubt, qualitative description used instead
+
+## Examples from Real Mistakes
+
+### Case Study: Oct 14, 2025 Documentation Cleanup
+
+**Problem Found**: Documentation contained numerous unverified claims:
+- "~42% performance improvement" - Never benchmarked
+- "Up to 63.75 GB/s" - Theoretical, not measured
+- "~500ns PCIe latency" - Assumed, not measured
+- "Command FIFO: 64×32-bit" - Not verified in code
+- "FP24 intermediate" - Actually wrong (FP32 used)
+
+**Solution Applied**: Removed ALL unverified claims
+- Replaced specific numbers with qualitative descriptions
+- Kept only verified facts (register counts, test results, actual clock frequencies)
+- Result: Trustworthy, reliable documentation
+
+**Lesson**: Days of development avoided by not building on false assumptions about performance or capabilities.
+
+### Case Study: Oct 25, 2025 Examples Must Be Source-Verified
+
+**Problem Found**: Documentation contained made-up examples to illustrate algorithms:
+- Block conversion example with values [5.75, 0.359375, 2.875] - Created to illustrate algorithm, NOT from official doc
+- Dequantization Python code example - Written to show process, NOT from official doc
+- Step-by-step worked example (0xDD → -5.8125) - Made up to demonstrate conversion
+
+**Critical Issue**: Even though these examples were technically correct and educational, they were **not verifiable** against the official source documentation. This creates uncertainty:
+- Are the numbers accurate?
+- Do they reflect actual hardware behavior?
+- Could they contain subtle errors that mislead readers?
+
+**Solution Applied**: 
+- **REMOVED all made-up examples** - Even correct ones
+- **KEPT ONLY** the one example (-5.79296875) that appears in the official Achronix document
+- **KEPT algorithms** - They are direct quotes from the official documentation
+- Clearly labeled the verified example: "Example from Achronix doc:"
+
+**Lesson Learned**: 
+- **For algorithm/format documentation:** ONLY use examples from official sources
+- **Never invent examples**, even if technically correct - they cannot be verified
+- **Always verify by searching source document** - grep/search for specific numbers
+- **When user asks for examples:** Search official docs first, only use what's actually there
+- **Better NO examples than UNVERIFIED examples**
+
+**Impact**: Ensures 100% traceability to authoritative sources, prevents accumulation of unverifiable claims
+
+## Examples in Documentation: Strict Verification Required
+
+### Rule for Technical Examples
+
+When documenting algorithms, file formats, or protocols:
+
+**✅ ALLOWED:**
+- Examples that appear verbatim in official documentation (search to verify!)
+- Examples from actual test logs with file/line references
+- Examples from verified source code with file/line references
+
+**❌ FORBIDDEN:**
+- Made-up examples to "illustrate the concept"
+- Simplified examples that seem reasonable
+- Worked examples created for educational purposes
+- Any example you cannot prove exists in authoritative source
+
+### Verification Process for Examples
+
+Before including ANY example:
+
+1. **Search official documentation** for exact numbers/values
+   ```bash
+   grep -i "5.79296875" official_doc.htm  # FOUND = OK to use
+   grep -i "5.75" official_doc.htm        # NOT FOUND = DO NOT USE
+   ```
+
+2. **If example not in source:**
+   - DO NOT create one
+   - Use algorithm description only
+   - Reference that official docs don't provide worked examples
+
+3. **Label source clearly:**
+   ```markdown
+   **Example from [Official Source]:** [exact citation]
+   ```
+
+### Why This Matters
+
+Made-up examples, even correct ones:
+- Cannot be verified against authoritative sources
+- May contain subtle errors that propagate
+- Create false confidence in unverified details
+- Blur the line between fact and assumption
+- Make it impossible to trace claims back to sources
+
+**Remember**: If official documentation doesn't provide an example, there's often a good reason. Don't fill the gap with unverified content.
+
+## Enforcement
+
+This rule is **MANDATORY** and applies to:
+
+- README.md files
+- CLAUDE.md files
+- CHANGELOG.md entries
+- Technical documentation
+- Code comments making performance claims
+- Architecture diagrams with specifications
+- Test reports and summaries
+
+**Violation Severity**: CRITICAL - Wrong documentation can waste days/weeks of work
+
+## Philosophy
+
+> "A system built on false assumptions will collapse. Documentation is the foundation of understanding. False documentation creates a false foundation. Better to build carefully on verified facts than quickly on attractive lies."
+
+When tempted to include an impressive-sounding number or claim:
+1. Can you verify it RIGHT NOW?
+2. If NO → Don't document it
+3. If YES → Include the verification source
+
+**Remember**: Future developers (including yourself) will trust what you write. Don't betray that trust with unverified claims.

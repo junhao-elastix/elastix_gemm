@@ -136,7 +136,6 @@ file delete -force ./ace/$implName
 create_project $projectPath -impl $implName
 set_impl_option -project $projectName -impl $implName  "partname"  $device
 set_impl_option -project $projectName -impl $implName  "speed_grade"  $speedGrade
-report_impl_options -project $projectName -impl $implName -outputfile "impl_options.txt" -text -show_standard -diff_options
 
 # Constraint files do not have variables, so no need for subst
 if { [info exists ace_constraints_files] } {
@@ -220,6 +219,9 @@ if { ([expr $ace_major_version] >= 10)  || ([expr $ace_major_version] == 0)} {
         set_project_option  -project $projectName -- "hdl_include_path" [file join $path_to_filelist "include" ]
     }
 
+
+    enable_flow_step "generate_all_ip_design_files"
+    enable_flow_step "report_timing_placed"
 
     # ------------------------------
     # Disable ACE 10.0 options
@@ -306,6 +308,18 @@ if { ($generate_ioring == "only") || ($generate_ioring == "all") } {
     return 0
 }
 
+# set_project_option -project {elastix_gemm_top} -- "check_final_timing" {1}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_fanout_limit" {256}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_default_frequency" {300}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "clock_skew_opt" {12}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "fanout_limit" {256}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "synthesis_remap" {off}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "push_flops_into_pads" {15}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "sync_timing_num_worst" {2}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "report_power" {1}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_retiming" {1}
+set_project_option -project {elastix_gemm_top} -- "bitstream_id_type" {1}
+report_impl_options -project $projectName -impl $implName -outputfile "impl_options.txt" -text -show_standard -diff_options
 
 if { ($mp == "-multiprocess") || ($mp != 0) } {
     # Will not have run synthesis at this point, needed before mp is run

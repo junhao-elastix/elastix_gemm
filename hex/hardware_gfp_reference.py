@@ -298,7 +298,7 @@ class HardwareGFPCompute:
         
         return np.array(results, dtype=np.uint16)
 
-def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
+def generate_multitile_golden_reference(B, C, V, left_hex_path=None, right_hex_path=None, output_prefix="golden"):
     """
     Generate multi-tile golden reference with command sequence.
 
@@ -310,6 +310,8 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
         B: Output rows (batch size)
         C: Output columns
         V: Inner dimension multiplier (V Native Vectors per output)
+        left_hex_path: Path to left matrix hex file (default: script_dir/left.hex)
+        right_hex_path: Path to right matrix hex file (default: script_dir/right.hex)
         output_prefix: Prefix for output files
 
     Returns:
@@ -330,8 +332,10 @@ def generate_multitile_golden_reference(B, C, V, output_prefix="golden"):
     print(f"  num_tiles={num_tiles} (bottleneck), total_results={total_results}")
 
     # Load matrices from hex files
-    left_hex_path = os.path.join(script_dir, 'left.hex')
-    right_hex_path = os.path.join(script_dir, 'right.hex')
+    if left_hex_path is None:
+        left_hex_path = os.path.join(script_dir, 'left.hex')
+    if right_hex_path is None:
+        right_hex_path = os.path.join(script_dir, 'right.hex')
     
     exp_left_raw, man_left_raw = load_hex_file(left_hex_path)
     left_exp_torch = decode_exponents(exp_left_raw)
@@ -557,6 +561,9 @@ def main():
     parser.add_argument('--B', type=int, default=128, help='Output rows (batch size)')
     parser.add_argument('--C', type=int, default=128, help='Output columns')
     parser.add_argument('--V', type=int, default=1, help='Inner dimension multiplier (V Native Vectors)')
+    parser.add_argument('--left', type=str, default=None, help='Path to left matrix hex file (default: script_dir/left.hex)')
+    parser.add_argument('--right', type=str, default=None, help='Path to right matrix hex file (default: script_dir/right.hex)')
+    parser.add_argument('--output', type=str, default=None, help='Path to output golden hex file (default: script_dir/golden_B{B}_C{C}_V{V}.hex)')
     parser.add_argument('--multitile', action='store_true', help='Generate multi-tile golden reference')
     args = parser.parse_args()
     
@@ -567,6 +574,22 @@ def main():
         print(f"ERROR: Invalid parameters! BxV={B*V} and CxV={C*V} must both be ≤ 128")
         sys.exit(1)
     
+    # Set default file paths if not provided
+    if args.left is None:
+        left_hex_path = os.path.join(script_dir, 'left.hex')
+    else:
+        left_hex_path = args.left
+    
+    if args.right is None:
+        right_hex_path = os.path.join(script_dir, 'right.hex')
+    else:
+        right_hex_path = args.right
+    
+    if args.output is None:
+        output_path = os.path.join(script_dir, f'golden_B{B}_C{C}_V{V}.hex')
+    else:
+        output_path = args.output
+    
     # Handle multi-tile mode
     if args.multitile:
         print("=" * 80)
@@ -574,7 +597,7 @@ def main():
         print("=" * 80)
 
         # Generate multi-tile golden reference
-        flat_results, command_sequence = generate_multitile_golden_reference(B, C, V)
+        flat_results, command_sequence = generate_multitile_golden_reference(B, C, V, left_hex_path, right_hex_path)
 
         print("\n" + "=" * 80)
         print("Multi-tile golden reference generation complete!")
@@ -598,8 +621,8 @@ def main():
 
     # Load matrices from hex files
     print("\n1. Loading matrices from hex files...")
-    left_hex_path = os.path.join(script_dir, 'left.hex')
-    right_hex_path = os.path.join(script_dir, 'right.hex')
+    print(f"   Left matrix: {left_hex_path}")
+    print(f"   Right matrix: {right_hex_path}")
 
     exp_left_raw, man_left_raw = load_hex_file(left_hex_path)
     left_exp_torch = decode_exponents(exp_left_raw)
@@ -696,9 +719,7 @@ def main():
         print(f"   NOTE: Compare this with golden_B{B}_C{C}_V{V}_emu.hex from generate_nv_hex.py")
     
     if results_to_write is not None:
-        output_path = os.path.join(script_dir, 'out.hex')
-        golden_path = os.path.join(script_dir, f'golden_B{B}_C{C}_V{V}.hex')
-
+        # Write to output file (user-specified or default)
         print(f"\n5. Writing results...")
         print(f"   Writing to {output_path}...")
         with open(output_path, 'w') as f:
@@ -706,11 +727,14 @@ def main():
                 f.write(f"{val:04x}\n")
         print(f"   ✓ Wrote {len(results_to_write)} values")
         
-        print(f"   Writing to {golden_path}...")
-        with open(golden_path, 'w') as f:
-            for val in results_to_write:
-                f.write(f"{val:04x}\n")
-        print(f"   ✓ Wrote {len(results_to_write)} values")
+        # Also write to out.hex for backward compatibility (unless output is explicitly set)
+        if args.output is None:
+            out_path = os.path.join(script_dir, 'out.hex')
+            print(f"   Writing to {out_path}...")
+            with open(out_path, 'w') as f:
+                for val in results_to_write:
+                    f.write(f"{val:04x}\n")
+            print(f"   ✓ Wrote {len(results_to_write)} values")
 
         # Verify first results
         print(f"\n6. Verification:")
@@ -730,9 +754,11 @@ def main():
         print(f"  golden_B{B}_C{C}_V{V}_multitile.hex - Flat FP16 results")
         print(f"  golden_B{B}_C{C}_V{V}_multitile_commands.txt - Command sequence")
         print("\nSingle-tile files generated:")
-        print(f"  golden_B{B}_C{C}_V{V}.hex - Hardware-accurate reference")
-        print(f"  golden_B{B}_C{C}_V{V}_emu_NEW.hex - Emulator reference")
-        print(f"  out.hex - Same as hardware-accurate reference")
+        print(f"  {output_path} - Hardware-accurate reference")
+        if args.output is None:
+            print(f"  out.hex - Same as hardware-accurate reference")
+        if results_emulator is not None:
+            print(f"  golden_B{B}_C{C}_V{V}_emu_NEW.hex - Emulator reference")
     else:
         print("Golden reference generation complete!")
     print("\nHardware-accurate GFP algorithm used:")

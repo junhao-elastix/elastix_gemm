@@ -1,0 +1,42 @@
+---
+alwaysApply: true
+---
+# Makefile Build Process Best Practices
+
+## Always Clean Before Building
+
+When working with Makefiles in this project, **ALWAYS run `make clean` first** before executing any build or run commands.
+
+### Required Command Sequence:
+
+1. **First**: `make clean` - Clear any stale build artifacts
+2. **Then**: Run your target command (`make run`, `make all`, `make compile`, etc.)
+
+### Examples:
+
+```bash
+# Correct approach - always clean first
+make clean && make run
+make clean && make compile  
+make clean && make all
+
+# Individual commands (if needed)
+make clean
+make run
+```
+
+### Why This Matters:
+
+- **Prevents stale builds**: Removes old compilation artifacts that could cause issues
+- **Ensures consistency**: Every build starts from a clean state
+- **Avoids protected code block errors**: Clears cached compilation states
+- **Debugging reliability**: Eliminates build-related variables when troubleshooting
+
+### Critical for This Project:
+
+This project has experienced compilation issues when builds are not properly cleaned, including:
+- Protected code block errors in SystemVerilog
+- Stale library references
+- Inconsistent module compilation states
+
+**Always use the pattern: `make clean && make <target>`**

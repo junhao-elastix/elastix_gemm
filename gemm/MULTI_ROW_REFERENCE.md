@@ -944,7 +944,7 @@ cmd[2] = 0
 cmd[3] = 0
 ```
 
-- **wait_id**: The ID of the DISPATCH command to wait for. The Master Control should release the barrier when the `wait_id` is less than the `cmd_id` that the Dispatcher is currently serving. 
+- **wait_id**: The ID of the DISPATCH command to wait for. The Master Control releases the barrier when the last completed DISPATCH `cmd_id >= wait_id`. 
 
 ---
 
@@ -961,7 +961,7 @@ cmd[2] = 0
 cmd[3] = 0
 ```
 
-- **wait_id**: The ID of the MATMUL command to wait for. The Master Control should release the barrier when the `wait_id` is less than the `cmd_id` that the Compute Engine is currently serving. 
+- **wait_id**: The ID of the MATMUL command to wait for. The Master Control releases the barrier when the last completed MATMUL `cmd_id >= wait_id`. 
 
 ---
 

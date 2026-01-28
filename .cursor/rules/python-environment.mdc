@@ -1,0 +1,40 @@
+---
+alwaysApply: true
+description: Python environment and package management rules
+---
+
+# Python Environment Management
+
+## Conda Environment Activation
+When working with Python code, **always activate the elastix conda environment** before running any Python commands:
+
+```bash
+conda activate elastix
+```
+
+## Package Installation Priority
+When packages are missing, follow this installation order:
+
+1. **First try conda install** (preferred method):
+   ```bash
+   conda install -y <package_name>
+   ```
+
+2. **If conda fails, then try pip install**:
+   ```bash
+   pip install <package_name>
+   ```
+
+## Examples
+- For numpy: `conda install -y numpy`
+- For torch: `conda install -y pytorch`
+- For missing packages: `conda install -y <package>` then `pip install <package>` if needed
+
+## Environment Verification
+Before running Python scripts, verify the environment is active:
+```bash
+conda info --envs
+# Should show elastix environment as active
+```
+
+This ensures consistent package management and avoids version conflicts.

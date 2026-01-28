@@ -208,7 +208,7 @@ module tb_dispatcher;
                 col_man_mem[c][right_wr_addr] <= right_man_wr_data;
                 col_exp_mem[c][right_wr_addr] <= right_exp_wr_data;
                 col_write_counts[c] <= col_write_counts[c] + 1;
-                
+
                 $display("[COL_BRAM] @%0t Col %0d: addr=%0d, exp=0x%02x, man[31:0]=0x%08x",
                          $time, c, right_wr_addr, right_exp_wr_data, right_man_wr_data[31:0]);
             end

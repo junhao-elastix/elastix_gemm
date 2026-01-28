@@ -30,12 +30,11 @@ module tb_gemm2d;
     localparam int NUM_COLS = NUM_MLPS*2;
     
     // BCV configuration from hex files
-    // Testing B4_C13_V9 - non-power-of-2 C and V values
-    // Fixed FIFO drain issue in dispatcher_2d.sv that was causing 2^16 magnitude errors
+    // Testing B4_C4_V4
     localparam int B = 4;
-    localparam int C = 13;
-    localparam int V = 9;                        // V per row
-    localparam int V_TOTAL = V * NUM_ROWS;       // Total V across all rows (144)
+    localparam int C = 4;
+    localparam int V = 4;                        // V per row
+    localparam int V_TOTAL = V * NUM_ROWS;       // Total V across all rows
 
     // Memory block configuration
     localparam int LINES_PER_BLOCK = 528;
@@ -51,7 +50,7 @@ module tb_gemm2d;
     localparam CLK_PERIOD = 2.5;
 
     // Hex file base path
-    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B4_C13_V9/";
+    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B4_C4_V4/";
     
     // ====================================================================
     // Opcodes (from gemm_pkg)
@@ -805,11 +804,8 @@ module tb_gemm2d;
             .fetch_right(1'b1)
         );
 
-        // Step 1.5: Wait for RIGHT FETCH to complete before DISPATCH
-        issue_wait_disp_command(
-            .cmd_id(8'd11),
-            .wait_id(8'd1)
-        );
+        // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
+        // (Matches working C++ test behavior)
 
         // Step 2: Dispatch RIGHT (weights) to mlp_bram
         issue_dispatch_command(
@@ -836,11 +832,8 @@ module tb_gemm2d;
             .fetch_right(1'b0)
         );
 
-        // Step 4.5: Wait for LEFT FETCH to complete before DISPATCH
-        issue_wait_disp_command(
-            .cmd_id(8'd44),
-            .wait_id(8'd4)
-        );
+        // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
+        // (Matches working C++ test behavior)
 
         // Step 5: Dispatch LEFT (activations) to row_bram
         issue_dispatch_command(

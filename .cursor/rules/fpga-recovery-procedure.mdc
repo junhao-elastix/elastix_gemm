@@ -1,0 +1,427 @@
+---
+alwaysApply: false
+---
+# FPGA Device Recovery Procedure
+
+## ⚠️ CRITICAL SAFETY WARNING ⚠️
+
+**BEFORE attempting ANY recovery procedure, ALWAYS check PCIe device visibility first!**
+
+### **MANDATORY Pre-Recovery Check**
+
+```bash
+# Check if device is visible on PCIe bus
+sudo lspci -d 1b59: -v
+```
+
+**Decision Tree:**
+
+1. **If device IS VISIBLE** → Safe to proceed with recovery (hex.sh, rescan, etc.)
+2. **If device NOT VISIBLE** → ⚠️ **DO NOT RUN RESCAN!** → **REBOOT IMMEDIATELY**
+
+### **Why This Matters - System Crash Risk**
+
+**Running `source /home/dev/rescan` when device is NOT visible on PCIe bus can cause:**
+- ❌ Complete system freeze
+- ❌ All shells stop responding
+- ❌ SSH connections hang
+- ❌ Requires physical power-off to recover
+- ❌ Potential filesystem corruption
+
+**NEVER run rescan if:**
+- Device not visible in `lspci` output
+- Getting "No such file or directory" errors
+- PCIe enumeration failed
+- JTAG programming showed "DRSCAN returned all ones"
+
+**Safe Recovery Path When Device Not Visible:**
+```bash
+# 1. Check PCIe (MANDATORY first step)
+sudo lspci -d 1b59: -v
+
+# 2. If device NOT visible, skip all recovery and reboot immediately
+sudo reboot
+
+# 3. After reboot, reprogram FPGA
+ace -batch -script_file hex.tcl
+source /home/dev/rescan  # Safe ONLY after successful reprogram
+```
+
+---
+
+## Critical: 0xffffffff Register Recovery
+
+When you encounter **all registers reading 0xffffffff**, this indicates a device hang or PCIe communication failure. Follow this exact recovery sequence:
+
+### Step 0: PCIe Visibility Check (MANDATORY FIRST)
+
+```bash
+# ALWAYS check device visibility BEFORE any recovery attempt
+sudo lspci -d 1b59: -v
+```
+
+**If device NOT visible → STOP → Reboot immediately (see safety warning above)**
+
+**If device IS visible → Proceed with recovery below**
+
+### Step 1: Use hex_rescan_registers Script (Preferred)
+```bash
+# Run the automated recovery script
+/home/dev/Dev/hex_rescan_registers.sh
+```
+- **Purpose**: Automated hex reprogram + rescan + test_registers
+- **Speed**: Single command for full recovery sequence
+- **Effectiveness**: Resolves most device issues (~90% success rate)
+- **If first run fails**: Run the script a second time
+- **If both runs fail**: Proceed to manual recovery or reboot
+
+### Step 2: Manual Recovery (If Script Fails)
+```bash
+# Manual hex reprogram
+/home/dev/Dev/hex.sh
+# Rescan PCIe bus
+source /home/dev/rescan
+# Test device recovery
+cd /home/dev/Dev/eus/shell_hw/vec_add/sw_test
+./test_registers
+```
+- **Purpose**: Manual control over each recovery step
+- **Use when**: hex_rescan_registers.sh fails twice
+- **Verify**: Register values are reasonable (not 0xffffffff)
+
+### Step 4: Verify FSM State (If Recovered)
+```bash
+# Test monolithic FSM transitions
+./debug_fsm
+```
+- **Purpose**: Verify FSM functionality after recovery
+- **Check**: FSM reaches DONE state (0x8) without timeouts
+- **Confirm**: No error states or stuck conditions
+
+### Step 5: Check PCIe Visibility (If Still Failed)
+```bash
+# Verify device appears on PCIe bus
+sudo lspci -d 1b59: -v
+```
+- **Purpose**: Confirm hardware enumeration
+- **Check**: Achronix device visible on PCIe bus
+- **Verify**: acxpcie driver loaded and functional
+
+### Recovery Success Indicators
+- ✅ Registers show reasonable values (not all 0xffffffff)
+- ✅ Bitstream ID shows expected timestamp
+- ✅ "Device initialized successfully" message
+- ✅ FSM states show valid values
+
+### If Recovery Fails
+
+**CRITICAL**: Always check PCIe visibility before any further action!
+
+1. **Check PCIe visibility (MANDATORY)**:
+```bash
+sudo lspci -d 1b59: -v
+```
+
+2. **Decision based on visibility**:
+   - **Device NOT visible** → ⚠️ **SKIP TO REBOOT** (DO NOT rescan!)
+   - **Device IS visible** → Try hex reprogram again:
+     ```bash
+     /home/dev/Dev/hex.sh
+     # Only if device was visible in lspci
+     ```
+
+3. **System reboot (when device not visible or all else fails)**:
+```bash
+sudo reboot
+```
+
+**NEVER run `source /home/dev/rescan` if device is not visible in lspci!**
+
+## Critical: GDDR6 Training Failure Recovery
+
+### Detecting GDDR6 Training Failure / Corruption
+
+GDDR6 can fail in two ways:
+1. **Initial Training Failure**: GDDR6 never trains after FPGA programming (rare if bitstream is correct)
+2. **Runtime Corruption**: GDDR6 trains successfully but becomes corrupted by illegal operations (common)
+
+**CRITICAL FINDING**: If a fresh bitstream programs successfully with GDDR6 trained (ADM Status bit 0 = 1), but later becomes corrupted (bit 0 = 0), this indicates **illegal operations are corrupting GDDR6 state** after programming.
+
+**Symptoms**:
+- ADM Status register reads `0x0a`, `0x08`, or similar (bit 0 = 0)
+- GDDR6 DMA operations timeout or fail
+- LED D3 remains OFF (not green) indicating training incomplete/corrupted
+- Initial programming worked, but subsequent operations broke it
+
+**Check GDDR6 Training Status**:
+```bash
+# Read ADM Status register
+cd sw_test
+./test_registers | grep "ADM Status"
+# Look for bit 0: 0 = training failed, 1 = training complete
+
+# Monitor LED D3 on the card:
+# - Green = GDDR6 trained successfully
+# - OFF = GDDR6 training incomplete or failed
+```
+
+### Recovery Procedure for GDDR6 Training Failure
+
+**CRITICAL**: GDDR6 training failure **cannot be fixed** with hex reprogram + rescan. You **MUST reboot the system**.
+
+```bash
+# 1. Confirm GDDR6 training failure
+./test_registers | grep "0x0060:"
+# If shows 0x0000000a or similar (bit 0 = 0), training failed
+
+# 2. System reboot required (ONLY solution)
+sudo reboot
+
+# 3. After reboot, reprogram FPGA
+cd /home/dev/Dev/eus/shell_hw/[project]/
+ace -batch -script_file hex.tcl
+source /home/dev/rescan
+
+# 4. Wait for GDDR6 training (can take 10-30 seconds)
+sleep 10
+
+# 5. Verify training completed
+cd sw_test
+./test_registers | grep "0x0060:"
+# Should show bit 0 = 1 (e.g., 0x0000000b or 0x00000003)
+```
+
+### Common Causes of GDDR6 Corruption
+
+**Illegal operations that can corrupt GDDR6 state**:
+
+1. **Invalid AXI Transactions**:
+   - Incorrect address mapping (missing GDDR6 prefix bits)
+   - Addr[41:37] not set to 5'b00000 for GDDR6 routing
+   - Addr[36:33] with invalid controller ID
+   - Misaligned addresses (not 32-byte aligned for 256-bit AXI)
+
+2. **NAP Architecture Errors**:
+   - Using NAP initiator instead of NAP responder for GDDR6
+   - Incorrect NAP placement (wrong NoC tile or slot)
+   - NAP conflicts with peripheral NoC routing
+
+3. **DMA Operations**:
+   - DMA to uninitialized/invalid GDDR6 addresses
+   - DMA transfers before GDDR6 training completes
+   - Concurrent conflicting DMA operations
+   - Buffer overruns or underruns
+
+4. **RTL Logic Errors**:
+   - AXI protocol violations (invalid handshakes)
+   - FSM states that generate malformed transactions
+   - Clock domain crossing issues
+   - Uninitialized or X-state signals propagating to GDDR6
+
+5. **Software/Driver Issues**:
+   - Incorrect SDK DMA API usage
+   - Race conditions in multi-threaded access
+   - Driver bugs or incompatibilities
+
+**Prevention Strategy**:
+- Always verify ADM Status (0x60) bit 0 = 1 **BEFORE** any GDDR6 operations
+- Test with small, known-good transactions first
+- Incrementally add functionality and test after each change
+- Monitor ADM Status after each test to catch corruption early
+- Document which operations cause corruption for debugging
+
+### Why Reboot is Required
+
+GDDR6 training/PHY state is a **hardware initialization process**:
+- Once corrupted, GDDR6 controller state persists in hardware
+- Corruption cannot be reset by PCIe rescan alone
+- FPGA reprogramming doesn't fully reinitialize corrupted GDDR6 PHY state
+- **Only a full system reboot** clears GDDR6 controller and restores clean state
+
+**Ineffective Recovery Methods** (don't waste time):
+- ❌ Hex reprogram (`hex.sh`)
+- ❌ PCIe rescan (`source /home/dev/rescan`)  
+- ❌ Multiple reprogram attempts
+- ❌ Different bitstream versions
+
+**Effective Recovery**:
+- ✅ **System reboot** (`sudo reboot`)
+
+### GDDR6 Training Timeline
+
+After reboot and FPGA programming:
+- **0-5 seconds**: GDDR6 PHY initialization
+- **5-15 seconds**: Memory controller training
+- **15-30 seconds**: Training completion and verification
+- **After 30 seconds**: If still not trained, likely hardware/configuration issue
+
+**Monitor training progress**:
+```bash
+# Poll ADM Status every 2 seconds for up to 30 seconds
+for i in {1..15}; do 
+    sleep 2
+    ./test_registers | grep "0x0060:" | grep -o "0x[0-9a-f]*"
+    # Watch for bit 0 to change from 0 to 1
+done
+```
+
+### Debugging GDDR6 Corruption
+
+**Workflow to identify what's corrupting GDDR6**:
+
+1. **Establish Baseline**:
+   ```bash
+   # Fresh program and verify GDDR6 trains
+   sudo reboot
+   ace -batch -script_file hex.tcl
+   source /home/dev/rescan
+   cd sw_test
+   ./test_registers | grep "0x0060:"  # Confirm bit 0 = 1
+   ```
+
+2. **Test Incrementally** (check ADM Status after EACH step):
+   ```bash
+   # After each test, check if GDDR6 still OK:
+   ./test_registers | grep "0x0060:"
+   
+   # If bit 0 changes from 1 to 0, the PREVIOUS operation corrupted GDDR6!
+   ```
+
+3. **Test Sequence** (one at a time):
+   ```bash
+   # Step 1: Basic register reads (should be safe)
+   ./test_registers
+   # Check: ADM Status still OK?
+   
+   # Step 2: Control register writes (should be safe)
+   # Write to 0x00 (Control Register)
+   # Check: ADM Status still OK?
+   
+   # Step 3: Simple DMA test
+   ./DMA_simple_example
+   # Check: ADM Status still OK? ← If corrupted here, DMA setup is wrong
+   
+   # Step 4: Complex DMA modes
+   ./DMA_example --mode [specific mode]
+   # Check: ADM Status still OK?
+   
+   # Step 5: Custom GDDR6 logic (if enabled)
+   # Enable gddr6_host_processor via control register
+   # Check: ADM Status still OK? ← If corrupted, RTL logic has issue
+   ```
+
+4. **Document Findings**:
+   ```bash
+   # Record exactly which operation causes corruption:
+   echo "GDDR6 corrupted after: <operation>" >> debug_log.txt
+   # This helps identify the root cause
+   ```
+
+5. **Isolate Root Cause**:
+   - If DMA_simple_example corrupts → Check SDK DMA addressing/API usage
+   - If enabling custom logic corrupts → Check RTL AXI transactions
+   - If specific DMA mode corrupts → That mode has configuration error
+   - If register write corrupts → Wrong register or invalid value
+
+### Persistent GDDR6 Training Failures
+
+If GDDR6 fails to train even after reboot (bit 0 stays at 0 immediately after programming):
+
+1. **Check GDDR6 IP Configuration**:
+   - Verify `.acxip` files are correct for your hardware
+   - Compare with working reference design (e.g., demo_all)
+   - Ensure NoC configuration routes to GDDR6 correctly
+
+2. **Check Hardware**:
+   - Verify GDDR6 modules are properly seated
+   - Check for hardware damage or connection issues
+   - Test with known-good reference bitstream
+
+3. **Check NoC Conflicts**:
+   - Verify NAP placements don't conflict with GDDR6 routing
+   - Ensure peripheral NoC paths are clear
+   - Review ACE place and route reports for warnings
+
+4. **Known Issues**:
+   - Some boards may have GDDR6 training issues
+   - Temperature can affect training reliability
+   - Power sequencing problems can cause persistent failures
+
+## Common Causes of 0xffffffff Hangs
+
+### Software-Related Hangs
+- **test_vector_add**: Can conflict with magical data in CE
+- **Improper register access**: Writing to wrong addresses
+- **Data conflicts**: External data writes conflicting with internal magical data
+
+### RTL-Related Hangs  
+- **FSM deadlocks**: States with no exit conditions
+- **Clock domain issues**: Cross-clock domain problems
+- **Buffer overflows**: Memory access violations
+- **Infinite loops**: Logic that never terminates
+
+## Prevention Strategies
+
+### Before Testing Software
+1. **Always run test_registers first** to verify device health
+2. **Use debug_fsm** for FSM testing (safer than test_vector_add)
+3. **Avoid data writes** when using magical data approaches
+4. **Monitor debug registers** for early warning signs
+
+### Development Workflow
+1. **Incremental testing**: Test each component individually
+2. **Use magical data**: Isolate CE testing from data flow issues  
+3. **Monitor debug outputs**: Watch for abnormal behavior
+4. **Quick recovery**: Use hex.sh + rescan before reboot
+
+## Example Recovery Session
+```bash
+# 1. Detect hang (all registers = 0xffffffff)
+./test_registers  # Shows 0xffffffff everywhere
+
+# 2. Attempt quick recovery
+/home/dev/Dev/hex.sh
+source /home/dev/rescan
+
+# 3. Verify recovery
+./test_registers  # Should show normal values
+
+# 4. If still hung, reboot as last resort
+sudo reboot
+```
+
+## Remember: Safety First, Then Recovery
+
+### ⚠️ **CRITICAL SAFETY RULE #1**
+**ALWAYS check `sudo lspci -d 1b59: -v` BEFORE any recovery attempt!**
+- **Device NOT visible** → **REBOOT IMMEDIATELY** (NEVER rescan!)
+- **Device IS visible** → Safe to try recovery
+
+### Recovery Decision Tree
+
+1. **PCIe/Register Hangs (0xffffffff)**:
+   - Check lspci first (MANDATORY)
+   - If device visible → Try hex.sh + rescan
+   - If device not visible → Reboot immediately
+
+2. **GDDR6 Training Failures (ADM Status bit 0 = 0)**:
+   - Reboot is REQUIRED
+   - hex.sh won't fix training issues
+   - Don't waste time on ineffective attempts
+
+3. **System Crash Prevention**:
+   - **NEVER run rescan if device not in lspci**
+   - This can freeze entire system requiring physical power-off
+   - Always verify PCIe enumeration before any PCIe operations
+
+### Time-Saving Best Practices
+
+- **Fast recovery** for device hangs (when device IS visible): hex.sh + rescan
+- **Immediate reboot** for training failures or missing devices (saves time vs ineffective attempts)
+- **Document issues** to prevent recurrence
+- **Test incrementally** to isolate problem areas
+
+This recovery procedure prevents catastrophic system crashes by:
+- Mandatory PCIe visibility checks before ANY recovery action
+- Clear decision tree for when rescan is safe vs dangerous
+- Understanding device state before attempting recovery operations

@@ -1,3 +1,5 @@
 {
-    "claudeCode.useTerminal": true
+    "claudeCode.useTerminal": true,
+    "[markdown]": {
+    }
 }

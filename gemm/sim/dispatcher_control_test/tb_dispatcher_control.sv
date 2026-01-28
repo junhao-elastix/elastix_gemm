@@ -869,10 +869,12 @@ module tb_dispatcher_control;
 
     // =========================================================================
     // Test 4: cmd_id Tracking
+    // Note: dc_id is ONLY updated after DISPATCH completion, NOT after FETCH
     // =========================================================================
     task automatic test_cmd_id_tracking();
         $display("\n========================================");
         $display("TEST 4: cmd_id Tracking");
+        $display("  Note: dc_id updates only on DISPATCH, not FETCH");
         $display("========================================");
         
         current_test_ok = 1;
@@ -882,16 +884,18 @@ module tb_dispatcher_control;
         if (dc_id != 0) begin
             $display("[TB] ERROR: Initial dc_id is %0d, expected 0", dc_id);
             current_test_ok = 0;
+        end else begin
+            $display("[TB] Initial dc_id: PASS (dc_id=0)");
         end
         
         // Issue FETCH with cmd_id=7
         issue_fetch(26'd0, 16'd32, 8'd7);
         
-        // After FETCH completion, dc_id should be 7
-        if (dc_id == 8'd7) begin
-            $display("[TB] dc_id after FETCH: PASS (dc_id=%0d)", dc_id);
+        // After FETCH completion, dc_id should still be 0 (FETCH doesn't update dc_id)
+        if (dc_id == 8'd0) begin
+            $display("[TB] dc_id after FETCH: PASS (dc_id=%0d, unchanged as expected)", dc_id);
         end else begin
-            $display("[TB] dc_id after FETCH: FAIL (dc_id=%0d, expected 7)", dc_id);
+            $display("[TB] dc_id after FETCH: FAIL (dc_id=%0d, expected 0 - FETCH shouldn't update dc_id)", dc_id);
             current_test_ok = 0;
         end
         

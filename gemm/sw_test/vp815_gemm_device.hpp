@@ -174,7 +174,7 @@ public:
 
     // Submit command batch to hardware via DMA-BRAM interface
     // Returns true on success, false on error
-    bool submit_commands(bool verbose = false) {
+    bool submit_commands(bool verbose = false, bool verify = false) {
         if (cmd_count_ == 0) {
             if (verbose) std::cout << "  No commands to submit" << std::endl;
             return true;
@@ -190,6 +190,55 @@ public:
         if (!dma_write(cmd_bram_addr_, cmd_buffer_.data(), cmd_buffer_.size())) {
             std::cerr << "ERROR: DMA write to command BRAM failed" << std::endl;
             return false;
+        }
+
+        // Step 1.5: Verify BRAM contents if requested
+        if (verify) {
+            std::vector<uint8_t> readback(cmd_buffer_.size());
+            if (!dma_read(cmd_bram_addr_, readback.data(), readback.size())) {
+                std::cerr << "ERROR: DMA read from command BRAM failed" << std::endl;
+                return false;
+            }
+
+            bool mismatch = false;
+            for (size_t i = 0; i < cmd_buffer_.size(); i++) {
+                if (cmd_buffer_[i] != readback[i]) {
+                    if (!mismatch) {
+                        std::cerr << "ERROR: BRAM verification failed!" << std::endl;
+                        mismatch = true;
+                    }
+                    std::cerr << "  Byte " << i << ": wrote 0x" << std::hex 
+                              << static_cast<int>(cmd_buffer_[i]) 
+                              << ", read 0x" << static_cast<int>(readback[i]) 
+                              << std::dec << std::endl;
+                }
+            }
+
+            if (mismatch) {
+                return false;
+            }
+
+            if (verbose) {
+                std::cout << "    BRAM verification passed (" << cmd_buffer_.size() << " bytes)" << std::endl;
+                // Print command contents for debugging
+                for (size_t cmd_idx = 0; cmd_idx < cmd_count_; cmd_idx++) {
+                    size_t offset = cmd_idx * CMD_BYTES_PER_LINE;
+                    uint32_t w3 = readback[offset + 0] | (readback[offset + 1] << 8) |
+                                  (readback[offset + 2] << 16) | (readback[offset + 3] << 24);
+                    uint32_t w2 = readback[offset + 4] | (readback[offset + 5] << 8) |
+                                  (readback[offset + 6] << 16) | (readback[offset + 7] << 24);
+                    uint32_t w1 = readback[offset + 8] | (readback[offset + 9] << 8) |
+                                  (readback[offset + 10] << 16) | (readback[offset + 11] << 24);
+                    uint32_t w0 = readback[offset + 12] | (readback[offset + 13] << 8) |
+                                  (readback[offset + 14] << 16) | (readback[offset + 15] << 24);
+                    uint8_t opcode = w0 & 0xFF;
+                    uint8_t cmd_id = (w0 >> 8) & 0xFF;
+                    std::cout << "    Cmd[" << cmd_idx << "]: opcode=0x" << std::hex 
+                              << static_cast<int>(opcode) << " id=" << static_cast<int>(cmd_id)
+                              << " w0=0x" << w0 << " w1=0x" << w1 
+                              << " w2=0x" << w2 << " w3=0x" << w3 << std::dec << std::endl;
+                }
+            }
         }
 
         // Step 2: Write command count to DMA_CMD_CNT register
