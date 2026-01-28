@@ -442,8 +442,8 @@ module elastix_gemm_top
     #(
         .TGT_DATA_WIDTH     (`ACX_NAP_AXI_DATA_WIDTH),
         .TGT_ADDR_WIDTH     (`ACX_NAP_AXI_INITIATOR_ADDR_WIDTH),
-        .NAP_COL            (3),
-        .NAP_ROW            (5),
+        .NAP_COL            (7),  // Column 7 - avoids ADM congestion (see ace_placements.pdc)
+        .NAP_ROW            (5),  // Row 5 - MATCHES PLACEMENT CONSTRAINT (NOC[7][5])
         .PROBE_NAME         ("dma_data_out_bram")
     ) i_dma_data_out_bram (
         .i_clk              (i_reg_clk),
@@ -466,8 +466,8 @@ module elastix_gemm_top
     #(
         .TGT_DATA_WIDTH     (`ACX_NAP_AXI_DATA_WIDTH),
         .TGT_ADDR_WIDTH     (`ACX_NAP_AXI_INITIATOR_ADDR_WIDTH),
-        .NAP_COL            (3),
-        .NAP_ROW            (6),
+        .NAP_COL            (7),  // Column 7 - avoids ADM congestion (see ace_placements.pdc)
+        .NAP_ROW            (6),  // Row 6 - MATCHES PLACEMENT CONSTRAINT (NOC[7][6])
         .PROBE_NAME         ("dma_cmd_in_bram")
     ) i_dma_cmd_in_bram (
         .i_clk              (i_reg_clk),
@@ -626,9 +626,10 @@ module elastix_gemm_top
     logic [12:0] cmd_fifo_count;  // Internal FIFO count from engine (debug)
 
     // DMA_CMD_VALID register with auto-clear support
+    // NOTE: Uses engine_rstn so soft_reset clears this register
     logic        dma_cmd_valid_reg;
     always_ff @(posedge i_reg_clk) begin
-        if (~reg_rstn) begin
+        if (~engine_rstn) begin
             dma_cmd_valid_reg <= 1'b0;
         end else if (cmd_valid_clr) begin
             // Bridge finished - auto-clear

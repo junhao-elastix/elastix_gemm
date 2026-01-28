@@ -42,8 +42,9 @@ import gemm_pkg::*;
     parameter int BRAM_DEPTH = 512,             // row_bram depth (activations only)
     parameter int ADDR_WIDTH = $clog2(BRAM_DEPTH),
     parameter int NUM_MLPS = 8,                 // Number of MLP primitives (2 columns each)
-    parameter int NUM_COLS = 2*NUM_MLPS,     // Number of MLP columns (fixed)
-    parameter int RESULT_FIFO_DEPTH = 64        // Result FIFO depth per column
+    parameter int NUM_COLS = 2*NUM_MLPS,        // Number of MLP columns (fixed)
+    parameter int MLP_SEL_WIDTH = $clog2(NUM_MLPS),  // Width for MLP selection
+    parameter int RESULT_FIFO_DEPTH = 512       // Result FIFO depth per column (increased for large batch support)
 ) (
     input  logic                     i_clk,
     input  logic                     i_reset_n,
@@ -79,7 +80,7 @@ import gemm_pkg::*;
     output logic                     o_wt_wr_ready,
     input  logic [255:0]             i_wt_wr_man,
     input  logic [EXP_WIDTH-1:0]     i_wt_wr_exp,
-    input  logic [2:0]               i_wt_mlp_sel,
+    input  logic [MLP_SEL_WIDTH-1:0] i_wt_mlp_sel,
     input  logic [9:0]               i_wt_nv_idx,
 
     // =========================================================================
@@ -135,6 +136,26 @@ import gemm_pkg::*;
     end
 
     // =========================================================================
+    // Valid Column Mask for FIFO Alignment
+    // =========================================================================
+    // For C that doesn't divide evenly by NUM_COLS, the last column group has
+    // fewer valid columns. Only push to FIFOs for valid columns to keep them aligned.
+    logic [NUM_COLS-1:0] valid_cols_mask;
+    logic [15:0] cols_in_group;
+    
+    always_comb begin
+        // Calculate how many columns are valid in current column group
+        // cols_in_group = min(NUM_COLS, C - cg_cnt * NUM_COLS)
+        cols_in_group = C_reg - ({12'b0, cg_cnt} << NUM_COLS_SHIFT);
+        if (cols_in_group > NUM_COLS[15:0])
+            cols_in_group = NUM_COLS[15:0];
+        
+        // Generate mask: (1 << cols_in_group) - 1
+        // For cols_in_group=4: mask=1111, for cols_in_group=1: mask=0001
+        valid_cols_mask = (NUM_COLS'(1) << cols_in_group) - NUM_COLS'(1);
+    end
+
+    // =========================================================================
     // Simple Counters (widened to match 16-bit B, C, V parameters)
     // =========================================================================
     logic [15:0] b_cnt;              // 0..B-1 (outer loop, 16-bit for full B range)
@@ -178,6 +199,8 @@ import gemm_pkg::*;
     logic [15:0] mlp_result_fp16 [NUM_COLS-1:0];
     logic        mlp_result_push;
     logic        mlp_result_fifo_full;
+    logic        mlp_result_fifo_afull;  // Almost-full for backpressure (provides pipeline headroom)
+    logic [NUM_COLS-1:0] mlp_result_valid_mask;  // Valid cols mask (delayed from MLPStack)
     logic [9:0]  rd_base_addr_eff;
 
     // =========================================================================
@@ -487,7 +510,8 @@ import gemm_pkg::*;
     // comp_MLPStack Instance
     // =========================================================================
     comp_MLPStack #(
-        .NUM_MLPS(NUM_MLPS)
+        .NUM_MLPS(NUM_MLPS),
+        .MLP_SEL_WIDTH(MLP_SEL_WIDTH)
     ) u_mlp_stack (
         .clk(i_clk),
         .rstn(i_reset_n),
@@ -506,9 +530,13 @@ import gemm_pkg::*;
         .i_new_dot(new_dot),
         .i_last_nv(last_nv),
         .i_last_matmul(last_matmul),
+        .i_valid_cols_mask(valid_cols_mask),
         .o_result_fp16(mlp_result_fp16),
         .o_result_push(mlp_result_push),
-        .i_result_fifo_full(mlp_result_fifo_full)
+        .o_valid_cols_mask(mlp_result_valid_mask),
+        // Use AFULL for backpressure to provide headroom for pipeline latency (~6 cycles)
+        // AFULL triggers at (DEPTH - 10%), giving ~7 entries headroom for DEPTH=64
+        .i_result_fifo_full(mlp_result_fifo_afull)
     );
 
     // =========================================================================
@@ -522,12 +550,16 @@ import gemm_pkg::*;
         .rstn(i_reset_n),
         .i_result_fp16(mlp_result_fp16),
         .i_result_push(mlp_result_push),
-        .o_result_fifo_full(mlp_result_fifo_full),
+        .i_valid_cols_mask(mlp_result_valid_mask),
+        .o_result_fifo_full(mlp_result_fifo_full),  // Full flag (unused, but kept for monitoring)
         .o_result_data(o_result_data),
         .i_result_rd_en(i_result_rd_en),
         .o_result_empty(o_result_empty),
-        .o_result_afull(o_result_afull)
+        .o_result_afull(mlp_result_fifo_afull)      // AFULL: used for MLPStack backpressure
     );
+
+    // Export afull for external monitoring (to master_control for command flow control)
+    assign o_result_afull = mlp_result_fifo_afull;
 
     // =========================================================================
     // Weight Write Ready - MLPStack has no backpressure

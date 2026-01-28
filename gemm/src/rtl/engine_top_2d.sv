@@ -436,7 +436,7 @@ import gemm_pkg::*;
                 .ADDR_WIDTH         (ADDR_WIDTH),
                 .NUM_MLPS           (NUM_MLPS),
                 .NUM_COLS           (NUM_COLS),
-                .RESULT_FIFO_DEPTH  (64)
+                .RESULT_FIFO_DEPTH  (512)  // Increased for large batch support
             ) u_compute_engine (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
@@ -488,7 +488,7 @@ import gemm_pkg::*;
         .NUM_ROWS           (NUM_ROWS),
         .NUM_COLS           (NUM_COLS),
         .ADDER_SEG_LEN      (2),
-        .OUTPUT_FIFO_DEPTH  (256)
+        .OUTPUT_FIFO_DEPTH  (512)  // Standardized FIFO depth
     ) u_result_collector (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),

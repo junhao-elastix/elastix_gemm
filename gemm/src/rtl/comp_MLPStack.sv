@@ -13,7 +13,7 @@
 // Weight Loading (SIMPLE COMBINATIONAL Interface - NO FSM):
 //   - External controller provides direct BRAM write signals
 //   - i_wt_wr_en: Immediate write enable (single cycle)
-//   - i_wt_mlp_sel[2:0]: Target MLP (0-7)
+//   - i_wt_mlp_sel[MLP_SEL_WIDTH-1:0]: Target MLP (0 to NUM_MLPS-1)
 //   - i_wt_stack_sel[1:0]: Target stack (0-3) for extraction and per-stack wren
 //   - i_wt_wr_addr[9:0]: Direct BRAM address
 //   - 64-bit mantissa extracted from 256-bit input based on stack_sel
@@ -61,6 +61,7 @@ module comp_MLPStack #(
     parameter integer NUM_MLPS = 8,
     parameter integer NUM_STACKS = 4,           // 4 parallel stacks
     parameter integer CYCLES_PER_NV = 4,        // 4 cycles per NV (32 elements / 8 per cycle)
+    parameter integer MLP_SEL_WIDTH = $clog2(NUM_MLPS),  // Width for MLP selection
     parameter integer PIPELINE_LATENCY = 2      // MLP pipeline latency for load timing
 ) (
     // Clock and Reset
@@ -81,12 +82,12 @@ module comp_MLPStack #(
     //   - i_wt_wr_en: Write enable (simple pulse, not handshake)
     //   - i_nv_right_man: 256-bit mantissa (distributed to 4 stacks via depack)
     //   - i_nv_right_exp: 8-bit exponent (broadcast to 4 stacks)
-    //   - i_wt_mlp_sel: Target MLP Column (0-7)
+    //   - i_wt_mlp_sel: Target MLP Column (0 to NUM_MLPS-1)
     //   - i_wt_wr_addr: Direct BRAM write address
     input  logic         i_wt_wr_en,          // Write enable (no handshake)
     input  logic [255:0] i_nv_right_man,      // 256-bit mantissa (distributed to 4 stacks)
     input  logic [7:0]   i_nv_right_exp,      // 8-bit exponent (broadcast to 4 stacks)
-    input  logic [2:0]   i_wt_mlp_sel,        // Target MLP Column (0-7)
+    input  logic [MLP_SEL_WIDTH-1:0] i_wt_mlp_sel,  // Target MLP Column (0 to NUM_MLPS-1)
     input  logic [9:0]   i_wt_wr_addr,        // Direct BRAM write address
 
     // =========================================================================
@@ -99,12 +100,14 @@ module comp_MLPStack #(
     input  logic        i_new_dot,            // Start new dot product (reset accumulator)
     input  logic        i_last_nv,            // This is the last NV of the current dot product
     input  logic        i_last_matmul,        // Truly last dot product of entire MATMUL (triggers final drain)
+    input  logic [2*NUM_MLPS-1:0] i_valid_cols_mask,  // Per-column valid mask (for FIFO alignment)
 
     // =========================================================================
     // Result Interface (downstream) - NUM_COLS parallel FP16 outputs to external FIFOs
     // =========================================================================
     output logic [15:0] o_result_fp16 [2*NUM_MLPS-1:0],  // NUM_COLS x FP16 results (NUM_MLPS * 2 columns)
     output logic        o_result_push,                   // Push enable for all FIFOs
+    output logic [2*NUM_MLPS-1:0] o_valid_cols_mask,    // Delayed valid mask (aligned with o_result_push)
     input  logic        i_result_fifo_full               // OR of all external FIFO full flags
 );
 
@@ -190,6 +193,17 @@ module comp_MLPStack #(
     // When a dot product completes (last_nv at cycle 3), we wait 2 cycles for result
     logic [1:0] capture_delay;
     logic dot_complete_pulse;
+    
+    // =========================================================================
+    // Valid Column Mask Delay Pipeline
+    // =========================================================================
+    // Store masks in a small FIFO, push when new dot starts, pop when result pushes
+    // This handles variable delays based on V (number of NVs per dot product)
+    localparam int MASK_FIFO_DEPTH = 8;  // Enough for typical pipeline depth
+    logic [2*NUM_MLPS-1:0] mask_fifo [0:MASK_FIFO_DEPTH-1];
+    logic [2:0] mask_fifo_wptr;
+    logic [2:0] mask_fifo_rptr;
+    logic [2*NUM_MLPS-1:0] valid_cols_mask_delayed;
 
     // Named conditions for clearer logic
     logic in_running;
@@ -458,12 +472,22 @@ module comp_MLPStack #(
             chunk_cnt        <= 2'd0;
             capture_delay    <= 2'b00;
             handshake_delay  <= 2'b00;
+            mask_fifo_wptr   <= 3'd0;
+            mask_fifo_rptr   <= 3'd0;
+            for (int i = 0; i < MASK_FIFO_DEPTH; i++) begin
+                mask_fifo[i] <= {(2*NUM_MLPS){1'b1}};  // Default all columns valid
+            end
         end else begin
             // State update (no backpressure - direct streaming)
             comp_state_reg <= comp_state_next;
 
             // Capture delay pipeline: shift register for dot product completion
             capture_delay <= {capture_delay[0], dot_complete_pulse};
+            
+            // Update mask FIFO read pointer when result is pushed
+            if (adder_output_valid) begin
+                mask_fifo_rptr <= mask_fifo_rptr + 3'd1;
+            end
 
             // Handshake delay pipeline: tracks valid data through MLP pipeline
             // Always shifts every cycle to properly delay by PIPELINE_LATENCY
@@ -479,6 +503,12 @@ module comp_MLPStack #(
                 new_dot_delay   <= {new_dot_delay[0], new_dot_reg};
                 last_nv_reg     <= i_last_nv;
                 last_matmul_reg <= i_last_matmul;
+                
+                // Push valid_cols_mask to FIFO when new dot product starts
+                if (i_new_dot) begin
+                    mask_fifo[mask_fifo_wptr] <= i_valid_cols_mask;
+                    mask_fifo_wptr <= mask_fifo_wptr + 3'd1;
+                end
 
                 // Proper chunk tracking: 4 chunks per NV
                 if (i_new_dot) begin
@@ -546,7 +576,9 @@ module comp_MLPStack #(
     // - Cycle 0: chunk 0 activations × weights at rdaddr 0
     // - Cycle 1: chunk 1 activations × weights at rdaddr 1
     // - etc.
-    assign o_act_ready = !wt_loading && ((comp_state_reg == COMP_IDLE) || in_running);
+    // CRITICAL: Gate with !i_result_fifo_full to propagate backpressure from output FIFOs
+    // Without this, CE continues pushing when FIFOs are full, causing dropped results
+    assign o_act_ready = !wt_loading && ((comp_state_reg == COMP_IDLE) || in_running) && !i_result_fifo_full;
 
     // =========================================================================
     // MLP BRAM Column Instances (4 stacks)
@@ -667,6 +699,10 @@ module comp_MLPStack #(
     // Output Push: From adder pipeline valid signal
     // =========================================================================
     assign o_result_push = adder_output_valid;
+    
+    // Pop valid_cols_mask from FIFO when result is pushed
+    assign valid_cols_mask_delayed = mask_fifo[mask_fifo_rptr];
+    assign o_valid_cols_mask = valid_cols_mask_delayed;
 
     // =========================================================================
     // Debug Output

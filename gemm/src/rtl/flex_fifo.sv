@@ -5,17 +5,17 @@
 // Features:
 //  - Parameterizable width and depth
 //  - 1-cycle read latency (standard synchronous BRAM read)
-//  - Adaptive almost-full threshold (10% remaining or 64, whichever smaller)
+//  - Fixed 64-entry headroom for consistent backpressure behavior
 //  - Full/empty status flags
 //  - Count output for monitoring
 //
 // Almost-Full Threshold Logic:
-//  - Remaining space = min(10% of DEPTH, 64)
-//  - AFULL asserts when remaining space drops below threshold
+//  - Fixed headroom of 64 entries (sufficient for pipeline latency)
+//  - AFULL asserts when count >= (DEPTH - 64)
 //  - Examples:
-//    * DEPTH=512  → 10%=51,  min(51,64)=51,  AFULL_THRESHOLD=461
-//    * DEPTH=1024 → 10%=102, min(102,64)=64, AFULL_THRESHOLD=960
-//    * DEPTH=256  → 10%=26,  min(26,64)=26,  AFULL_THRESHOLD=230
+//    * DEPTH=512  → AFULL_THRESHOLD=448
+//    * DEPTH=1024 → AFULL_THRESHOLD=960
+//    * DEPTH=256  → AFULL_THRESHOLD=192
 //
 // Author: Junhao Pan
 // Date: 11/13/2025
@@ -48,14 +48,13 @@ module flex_fifo #(
     // ===================================================================
     localparam ADDR_WIDTH = $clog2(DEPTH);
 
-    // Calculate 10% of DEPTH (ceiling division)
-    localparam TEN_PERCENT = (DEPTH + 9) / 10;
+    // Fixed headroom of 64 entries for consistent backpressure behavior
+    // This provides sufficient margin for pipeline latency (~6 cycles in MLPStack)
+    localparam REMAINING_SPACE = 64;
 
-    // Remaining space = min(10% of DEPTH, 64)
-    localparam REMAINING_SPACE = (TEN_PERCENT < 64) ? TEN_PERCENT : 64;
-
-    // Almost-full threshold
-    localparam AFULL_THRESHOLD = DEPTH - REMAINING_SPACE;
+    // Almost-full threshold: triggers when only 64 entries remain
+    // Edge case: If DEPTH <= REMAINING_SPACE, use 75% of DEPTH to avoid always-full
+    localparam AFULL_THRESHOLD = (DEPTH > REMAINING_SPACE) ? (DEPTH - REMAINING_SPACE) : ((DEPTH * 3) / 4);
 
     // ===================================================================
     // Internal Signals

@@ -166,7 +166,7 @@ module tb_compute_engine_2d;
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_MLPS(NUM_MLPS),
         .NUM_COLS(NUM_COLS),
-        .RESULT_FIFO_DEPTH(64)
+        .RESULT_FIFO_DEPTH(512)
     ) dut (
         .i_clk(clk),
         .i_reset_n(rstn),

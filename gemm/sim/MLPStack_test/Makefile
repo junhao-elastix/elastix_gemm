@@ -78,7 +78,6 @@ compile: create_library
 	@echo "Compiling MLP RTL modules..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
 	vlog $(VLOG_OPTIONS) \
-		$(MLP_RTL)/comp_mlp_dot16_int8.sv \
 		$(MLP_RTL)/comp_mlp_dot16_bfp8.sv \
 		$(MLP_RTL)/weight_bram.sv \
 		$(MLP_RTL)/comp_MLP.sv \

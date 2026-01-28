@@ -25,7 +25,7 @@
 
 module comp_MLPStack_oFIFO #(
     parameter int NUM_COLS = 16,    // 16 logical columns (8 MLPs x 2 banks)
-    parameter int FIFO_DEPTH  = 64     // Entries per FIFO
+    parameter int FIFO_DEPTH  = 512    // Entries per FIFO (increased for large batch support)
 ) (
     input  logic        clk,
     input  logic        rstn,
@@ -35,6 +35,7 @@ module comp_MLPStack_oFIFO #(
     // =========================================================================
     input  logic [15:0] i_result_fp16 [NUM_COLS-1:0],  // 16 x FP16 results
     input  logic        i_result_push,                     // Push enable (all 16 FIFOs)
+    input  logic [NUM_COLS-1:0] i_valid_cols_mask,         // Per-column valid mask (1=write, 0=skip)
     output logic        o_result_fifo_full,                // Feedback: any FIFO full
 
     // =========================================================================
@@ -66,8 +67,9 @@ module comp_MLPStack_oFIFO #(
                 .i_reset_n(rstn),
 
                 // Write Interface
+                // Only write to FIFO if column is valid (handles C % NUM_COLS != 0)
                 .i_wr_data(i_result_fp16[c]),
-                .i_wr_en(i_result_push && !fifo_full[c]),
+                .i_wr_en(i_result_push && !fifo_full[c] && i_valid_cols_mask[c]),
                 .o_full(fifo_full[c]),
                 .o_afull(fifo_afull[c]),
 

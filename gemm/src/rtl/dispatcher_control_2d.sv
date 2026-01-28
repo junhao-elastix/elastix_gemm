@@ -392,24 +392,15 @@ import gemm_pkg::*;
     assign o_dc_ack_disp = disp_ack_reg;
 
     // ====================================================================
-    // cmd_id Tracking - Update on Actual Completion
+    // cmd_id Tracking - Update on DISPATCH Completion Only
+    // WAIT_DISP waits for DISPATCH (data in BRAMs), not FETCH (data in FIFO)
     // ====================================================================
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
             dc_id_reg <= 8'd0;
         end else begin
-            // Update dc_id when fetcher completes
-            if (fetcher_done_internal) begin
-                dc_id_reg <= fetch_cmd_id_reg;
-
-                // synthesis translate_off
-                `ifdef DEBUG_DISPATCHER_CTRL
-                $display("[DC2D] @%0t FETCH completed: dc_id=%0d", $time, fetch_cmd_id_reg);
-                `endif
-                // synthesis translate_on
-            end
-
-            // Update dc_id when dispatcher completes
+            // Only update dc_id when dispatcher (DISP) completes
+            // FETCH completion does NOT update dc_id - WAIT_DISP waits for DISPATCH
             if (dispatcher_done_internal) begin
                 dc_id_reg <= disp_cmd_id_reg;
 
