@@ -38,6 +38,18 @@ constexpr uint32_t BLOCK_SIZE = LINES_PER_BLOCK * BYTES_PER_LINE;
 constexpr uint32_t LINE_ADDR_LEFT = 0;
 constexpr uint32_t LINE_ADDR_RIGHT = 528;
 
+// Ring buffer register offsets (per RESULT_BUFFER_REFERENCE.md)
+constexpr uint32_t REG_RD_PTR        = 0x230;  // Host-controlled read pointer (9-bit line addr)
+constexpr uint32_t REG_WR_PTR        = 0x234;  // Hardware write pointer (9-bit line addr)
+constexpr uint32_t REG_USED_ENTRIES  = 0x238;  // Valid lines count (10-bit)
+constexpr uint32_t REG_RESULT_EMPTY  = 0x23C;  // Buffer empty flag
+
+// Ring buffer constants
+constexpr uint32_t BRAM_LINE_DEPTH   = 512;    // 512 lines total
+constexpr uint32_t BRAM_LINE_MASK    = 0x1FF;  // 9-bit mask for line pointer wrap
+constexpr uint32_t FP16_PER_LINE     = 16;     // 16 FP16 values per 256-bit line
+constexpr uint32_t BYTES_PER_BRAM_LINE = 32;   // 256 bits = 32 bytes
+
 static uint64_t BRAM_RESULT_BASE = 0;
 
 // ============================================================================
@@ -228,8 +240,8 @@ int main(int argc, char* argv[]) {
     // Parse command line
     int device_id = 0;
     bool verbose = true;  // Always verbose for this debug test
-    int B = 4, C = 13, V_per_row = 9;
-    string hex_dir = "../../hex/B4_C13_V9";
+    int B = 8, C = 8, V_per_row = 16;
+    string hex_dir = "../../hex/B8_C8_V16";
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -336,67 +348,91 @@ int main(int argc, char* argv[]) {
 
         gemm_device.soft_reset();
         gemm_device.reset_cmd_id();
+
+        // Reset ring buffer read pointer to 0
+        gemm_device.mmio_write32(0, REG_RD_PTR, 0);
+
         usleep(100000);  // 100ms settle
+
+        // Verify ring buffer state after reset
+        uint32_t init_rd_ptr = gemm_device.mmio_read32(0, REG_RD_PTR) & BRAM_LINE_MASK;
+        uint32_t init_wr_ptr = gemm_device.mmio_read32(0, REG_WR_PTR) & BRAM_LINE_MASK;
         cout << "Soft reset complete" << endl;
+        cout << "Ring buffer: rd_ptr=" << init_rd_ptr << ", wr_ptr=" << init_wr_ptr << endl;
         print_engine_status(gemm_device, "RESET");
 
         // =====================================================================
-        // Step 3: Submit commands - ALL except WAIT_MATMUL in one batch
+        // Step 3: Submit commands in groups
         // =====================================================================
         cout << "\n========================================" << endl;
-        cout << "Step 3: Submitting commands" << endl;
+        cout << "Step 3: Submitting commands in groups" << endl;
         cout << "========================================" << endl;
 
-        // --- FULL BATCH MODE: ALL 9 commands in one batch ---
-        cout << "\n[FULL BATCH] ALL 9 commands together" << endl;
+        // --- GROUP 1: FETCH + DISPATCH RIGHT + WAIT ---
+        cout << "\n[GROUP 1] FETCH + DISPATCH RIGHT + WAIT" << endl;
         gemm_device.begin_command_batch();
-        
+
         // FETCH RIGHT
         uint8_t fetch_right_id = gemm_device.fetch(LINE_ADDR_RIGHT, V_TOTAL, LINES_PER_BLOCK, true);
-        cout << "  [CMD 0] FETCH RIGHT: start_addr=" << LINE_ADDR_RIGHT 
+        cout << "  [CMD 0] FETCH RIGHT: start_addr=" << LINE_ADDR_RIGHT
              << ", ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
-        
+
         // DISPATCH RIGHT
         uint8_t disp_right_id = gemm_device.dispatch(C, V_TOTAL, 0, 0, true, false);
         cout << "  [CMD 1] DISPATCH RIGHT: nv_cnt=" << C << ", ugd_len=" << V_TOTAL << endl;
-        
-        // WAIT_DISP RIGHT
+
+        // WAIT_DISPATCH RIGHT
         uint8_t wait_disp_right_id = gemm_device.waitDispatch(disp_right_id);
-        cout << "  [CMD 2] WAIT_DISP: wait_for=" << (int)disp_right_id << endl;
-        
+        cout << "  [CMD 2] WAIT_DISP RIGHT: wait_for=" << (int)disp_right_id << endl;
+
+        // if (!submit_group(gemm_device, "FETCH+DISPATCH RIGHT", true)) return 1;
+
+        // --- GROUP 2: FETCH + DISPATCH LEFT + WAIT ---
+        cout << "\n[GROUP 2] FETCH + DISPATCH LEFT + WAIT" << endl;
+        // gemm_device.begin_command_batch();
+
         // FETCH LEFT
         uint8_t fetch_left_id = gemm_device.fetch(LINE_ADDR_LEFT, V_TOTAL, LINES_PER_BLOCK, false);
-        cout << "  [CMD 3] FETCH LEFT: start_addr=" << LINE_ADDR_LEFT 
+        cout << "  [CMD 3] FETCH LEFT: start_addr=" << LINE_ADDR_LEFT
              << ", ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
-        
+
         // DISPATCH LEFT
         uint8_t disp_left_id = gemm_device.dispatch(B, V_TOTAL, 0, 0, false, false);
         cout << "  [CMD 4] DISPATCH LEFT: nv_cnt=" << B << ", ugd_len=" << V_TOTAL << endl;
-        
-        // WAIT_DISP LEFT
+
+
         uint8_t wait_disp_left_id = gemm_device.waitDispatch(disp_left_id);
-        cout << "  [CMD 5] WAIT_DISP: wait_for=" << (int)disp_left_id << endl;
-        
-        // MATMUL
+        cout << "  [CMD 5] WAIT_DISP LEFT: wait_for=" << (int)disp_left_id << endl;
+
+        // if (!submit_group(gemm_device, "FETCH+DISPATCH LEFT", true)) return 1;
+
+        // --- GROUP 3: MATMUL + READOUT ---
+        cout << "\n[GROUP 3] MATMUL + READOUT" << endl;
+        // gemm_device.begin_command_batch();
+
         uint8_t matmul_id = gemm_device.matmul(0, 0, B, C, V_TOTAL, false, false, false);
         cout << "  [CMD 6] MATMUL: B=" << B << ", C=" << C << ", V=" << V_TOTAL << endl;
-        
-        // READOUT
+
         uint8_t readout_id = gemm_device.readout(B, C, V_TOTAL);
         cout << "  [CMD 7] READOUT: B=" << B << ", C=" << C << endl;
-        
-        // WAIT_MATMUL - in the SAME batch!
-        uint8_t wait_matmul_id = gemm_device.waitMatmul(matmul_id);
-        cout << "  [CMD 8] WAIT_MATMUL: wait_for=" << (int)matmul_id << endl;
-        
-        if (!submit_group(gemm_device, "FULL_BATCH_9_CMDS", true)) return 1;
+
+        // if (!submit_group(gemm_device, "MATMUL+READOUT", true)) return 1;
+
+        // --- GROUP 4: WAIT_MATMUL ---
+        cout << "\n[GROUP 4] WAIT_MATMUL" << endl;
+        // gemm_device.begin_command_batch();
+
+        uint8_t wait_matmul_id = gemm_device.waitMatmul(readout_id);
+        cout << "  [CMD 8] WAIT_MATMUL: wait_for=" << (int)readout_id << " (READOUT id)" << endl;
+
+        if (!submit_group(gemm_device, "WAIT_MATMUL", true)) return 1;
 
         // Suppress unused variable warnings
         (void)fetch_right_id;
-        (void)wait_disp_right_id;
         (void)fetch_left_id;
+        (void)wait_disp_right_id;
         (void)wait_disp_left_id;
-        (void)readout_id;
+        (void)matmul_id;
         (void)wait_matmul_id;
 
         // =====================================================================
@@ -429,20 +465,88 @@ int main(int argc, char* argv[]) {
         print_engine_status(gemm_device, "COMPLETE");
 
         // =====================================================================
-        // Step 5: Read results
+        // Step 5: Read results from BRAM (using wr_ptr directly)
         // =====================================================================
         cout << "\n========================================" << endl;
         cout << "Step 5: Reading results from BRAM" << endl;
         cout << "========================================" << endl;
 
-        int lines_to_read = (expected_results + 15) / 16;
-        int bytes_to_read = lines_to_read * 32;
+        // Calculate lines needed (16 FP16 per line)
+        uint32_t lines_needed = (expected_results + FP16_PER_LINE - 1) / FP16_PER_LINE;
 
-        vector<uint8_t> result_data(bytes_to_read);
-        if (!gemm_device.dma_read(BRAM_RESULT_BASE, result_data.data(), bytes_to_read)) {
-            cerr << "ERROR: Failed to read results from BRAM" << endl;
-            return 1;
+        // Get pointers from registers
+        uint32_t rd_ptr = gemm_device.mmio_read32(0, REG_RD_PTR) & BRAM_LINE_MASK;
+        uint32_t wr_ptr = gemm_device.mmio_read32(0, REG_WR_PTR) & BRAM_LINE_MASK;
+        uint32_t used_entries = gemm_device.mmio_read32(0, REG_USED_ENTRIES) & 0x3FF;
+
+        // Calculate available lines from wr_ptr (bypass broken used_entries register)
+        uint32_t lines_available = (wr_ptr >= rd_ptr) ? (wr_ptr - rd_ptr) : (512 - rd_ptr + wr_ptr);
+
+        cout << "  rd_ptr=" << rd_ptr << ", wr_ptr=" << wr_ptr << endl;
+        cout << "  used_entries (reg)=" << used_entries << ", lines_available (calc)=" << lines_available << endl;
+        cout << "  lines_needed=" << lines_needed << endl;
+
+        if (lines_available < lines_needed) {
+            cerr << "WARNING: wr_ptr says " << lines_available << " lines, need " << lines_needed << endl;
+            cerr << "         Reading " << lines_needed << " lines anyway (wr_ptr may be next-write position)" << endl;
+            // Don't reduce lines_needed - try reading all expected lines
         }
+
+        // Read data from BRAM, handling wrap-around
+        uint32_t bytes_to_read = lines_needed * BYTES_PER_BRAM_LINE;
+        vector<uint8_t> result_data(bytes_to_read);
+
+        if (rd_ptr + lines_needed > BRAM_LINE_DEPTH) {
+            // Wrap-around case: split into two DMA reads
+            uint32_t first_chunk_lines = BRAM_LINE_DEPTH - rd_ptr;
+            uint32_t second_chunk_lines = lines_needed - first_chunk_lines;
+            uint32_t first_bytes = first_chunk_lines * BYTES_PER_BRAM_LINE;
+            uint32_t second_bytes = second_chunk_lines * BYTES_PER_BRAM_LINE;
+
+            uint64_t first_addr = BRAM_RESULT_BASE + (rd_ptr * BYTES_PER_BRAM_LINE);
+            uint64_t second_addr = BRAM_RESULT_BASE;  // Wrap to start
+
+            cout << "  Wrap-around read: " << first_chunk_lines << " lines @ " << rd_ptr
+                 << " + " << second_chunk_lines << " lines @ 0" << endl;
+
+            if (!gemm_device.dma_read(first_addr, result_data.data(), first_bytes) ||
+                !gemm_device.dma_read(second_addr, result_data.data() + first_bytes, second_bytes)) {
+                cerr << "ERROR: DMA read failed (wrap-around)" << endl;
+                return 1;
+            }
+
+            // Update read pointer (wrapped)
+            rd_ptr = second_chunk_lines;
+        } else {
+            // Normal case: single DMA read
+            uint64_t byte_addr = BRAM_RESULT_BASE + (rd_ptr * BYTES_PER_BRAM_LINE);
+
+            if (!gemm_device.dma_read(byte_addr, result_data.data(), bytes_to_read)) {
+                cerr << "ERROR: DMA read failed" << endl;
+                return 1;
+            }
+
+            // Update read pointer
+            rd_ptr = (rd_ptr + lines_needed) & BRAM_LINE_MASK;
+        }
+
+        // Dump raw BRAM contents (first 8 lines regardless of wr_ptr)
+        cout << "\n  === Raw BRAM Dump (first 8 lines) ===" << endl;
+        vector<uint8_t> bram_dump(8 * BYTES_PER_BRAM_LINE);
+        if (gemm_device.dma_read(BRAM_RESULT_BASE, bram_dump.data(), bram_dump.size())) {
+            for (int line = 0; line < 8; line++) {
+                cout << "  Line " << setw(2) << line << ": ";
+                for (int i = 0; i < 16; i++) {
+                    uint16_t val = *(uint16_t*)(bram_dump.data() + line * 32 + i * 2);
+                    cout << hex << setw(4) << setfill('0') << val << " ";
+                }
+                cout << dec << setfill(' ') << endl;
+            }
+        }
+
+        // Update hardware read pointer register (allows engine to reuse buffer space)
+        gemm_device.mmio_write32(0, REG_RD_PTR, rd_ptr);
+        cout << "\n  Updated rd_ptr to " << rd_ptr << endl;
 
         // Extract FP16 results
         vector<uint16_t> hw_results(expected_results);
@@ -450,11 +554,11 @@ int main(int argc, char* argv[]) {
             hw_results[i] = *(uint16_t*)(result_data.data() + i * 2);
         }
 
-        cout << "First 8 results:" << endl;
-        for (int i = 0; i < min(8, expected_results); i++) {
+        cout << "\nFirst 16 results (as FP16):" << endl;
+        for (int i = 0; i < min(16, expected_results); i++) {
             float val = fp16ToFloat(hw_results[i]);
-            cout << "  [" << i << "] 0x" << hex << setw(4) << setfill('0') 
-                 << hw_results[i] << dec << " = " << fixed << setprecision(4) << val << endl;
+            cout << "  [" << setw(2) << i << "] 0x" << hex << setw(4) << setfill('0')
+                 << hw_results[i] << dec << setfill(' ') << " = " << fixed << setprecision(4) << setw(10) << val << endl;
         }
 
         // =====================================================================

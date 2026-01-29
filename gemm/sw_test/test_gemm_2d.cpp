@@ -56,6 +56,18 @@ constexpr uint32_t LINES_PER_TEST = LINES_PER_BLOCK * 2;  // 1056 lines per test
 // Result BRAM address (from NAP placement)
 static uint64_t BRAM_RESULT_BASE = 0;
 
+// Ring buffer register offsets (per RESULT_BUFFER_REFERENCE.md)
+constexpr uint32_t REG_RD_PTR        = 0x230;  // Host-controlled read pointer (9-bit line addr)
+constexpr uint32_t REG_WR_PTR        = 0x234;  // Hardware write pointer (9-bit line addr)
+constexpr uint32_t REG_USED_ENTRIES  = 0x238;  // Valid lines count (10-bit)
+constexpr uint32_t REG_RESULT_EMPTY  = 0x23C;  // Buffer empty flag
+
+// Ring buffer constants
+constexpr uint32_t BRAM_LINE_DEPTH   = 512;    // 512 lines total
+constexpr uint32_t BRAM_LINE_MASK    = 0x1FF;  // 9-bit mask for line pointer wrap
+constexpr uint32_t FP16_PER_LINE     = 16;     // 16 FP16 values per 256-bit line
+constexpr uint32_t BYTES_PER_BRAM_LINE = 32;   // 256 bits = 32 bytes
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -314,7 +326,7 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config,
     }
 
     // --- WAIT for MATMUL to complete ---
-    uint8_t wait_matmul_id = gemm_device.waitMatmul(matmul_id);
+    uint8_t wait_matmul_id = gemm_device.waitMatmul(readout_id);
     if (verbose) {
         cout << "  [" << (int)wait_matmul_id << "] WAIT_MATMUL:" << endl;
         cout << "       w0: opc=0xF4, id=" << (int)wait_matmul_id << endl;
@@ -360,19 +372,92 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config,
     cout << "  Commands complete: " << fixed << setprecision(2) << cmd_ms << " ms" << endl;
 
     // =========================================================================
-    // Step 5: Read results from BRAM
+    // Step 5: Read results from BRAM via Ring Buffer
     // =========================================================================
-    cout << "\n[5/6] Reading results from BRAM..." << endl;
+    cout << "\n[5/6] Reading results from ring buffer..." << endl;
 
-    // Results are packed 16 FP16 per 256-bit line
-    // Total lines needed = ceil(expected_results / 16)
-    int lines_to_read = (expected_results + 15) / 16;
-    int bytes_to_read = lines_to_read * 32;
+    // Calculate lines needed (16 FP16 per line)
+    uint32_t lines_needed = (expected_results + FP16_PER_LINE - 1) / FP16_PER_LINE;
 
+    // Get current read pointer from register
+    uint32_t rd_ptr = gemm_device.mmio_read32(0, REG_RD_PTR) & BRAM_LINE_MASK;
+
+    if (verbose) {
+        uint32_t wr_ptr = gemm_device.mmio_read32(0, REG_WR_PTR) & BRAM_LINE_MASK;
+        cout << "  Ring buffer: rd_ptr=" << rd_ptr << ", wr_ptr=" << wr_ptr << endl;
+    }
+
+    // Poll used_entries until we have enough data
+    uint32_t used_entries = gemm_device.mmio_read32(0, REG_USED_ENTRIES) & 0x3FF;
+    int poll_count = 0;
+    constexpr int MAX_POLLS = 100000;  // 10 second timeout at 100µs/poll
+
+    while (used_entries < lines_needed) {
+        // Adaptive sleep based on how far we are from ready
+        if (used_entries < lines_needed / 2) {
+            usleep(100);  // Far from ready
+        } else {
+            usleep(10);   // Almost ready
+        }
+
+        used_entries = gemm_device.mmio_read32(0, REG_USED_ENTRIES) & 0x3FF;
+
+        if (++poll_count > MAX_POLLS) {
+            cerr << "ERROR: Ring buffer timeout: expected " << lines_needed
+                 << " lines, got " << used_entries << " (after " << poll_count << " polls)" << endl;
+            return false;
+        }
+    }
+
+    if (verbose) {
+        cout << "  Ring buffer has " << used_entries << " lines, need " << lines_needed << endl;
+    }
+
+    // Read data from BRAM, handling wrap-around
+    uint32_t bytes_to_read = lines_needed * BYTES_PER_BRAM_LINE;
     vector<uint8_t> result_data(bytes_to_read);
-    if (!gemm_device.dma_read(BRAM_RESULT_BASE, result_data.data(), bytes_to_read)) {
-        cerr << "ERROR: Failed to read results from BRAM" << endl;
-        return false;
+
+    if (rd_ptr + lines_needed > BRAM_LINE_DEPTH) {
+        // Wrap-around case: split into two DMA reads
+        uint32_t first_chunk_lines = BRAM_LINE_DEPTH - rd_ptr;
+        uint32_t second_chunk_lines = lines_needed - first_chunk_lines;
+        uint32_t first_bytes = first_chunk_lines * BYTES_PER_BRAM_LINE;
+        uint32_t second_bytes = second_chunk_lines * BYTES_PER_BRAM_LINE;
+
+        uint64_t first_addr = BRAM_RESULT_BASE + (rd_ptr * BYTES_PER_BRAM_LINE);
+        uint64_t second_addr = BRAM_RESULT_BASE;  // Wrap to start
+
+        if (verbose) {
+            cout << "  Wrap-around read: " << first_chunk_lines << " lines @ " << rd_ptr
+                 << " + " << second_chunk_lines << " lines @ 0" << endl;
+        }
+
+        if (!gemm_device.dma_read(first_addr, result_data.data(), first_bytes) ||
+            !gemm_device.dma_read(second_addr, result_data.data() + first_bytes, second_bytes)) {
+            cerr << "ERROR: DMA read failed (wrap-around)" << endl;
+            return false;
+        }
+
+        // Update read pointer (wrapped)
+        rd_ptr = second_chunk_lines;
+    } else {
+        // Normal case: single DMA read
+        uint64_t byte_addr = BRAM_RESULT_BASE + (rd_ptr * BYTES_PER_BRAM_LINE);
+
+        if (!gemm_device.dma_read(byte_addr, result_data.data(), bytes_to_read)) {
+            cerr << "ERROR: DMA read failed" << endl;
+            return false;
+        }
+
+        // Update read pointer
+        rd_ptr = (rd_ptr + lines_needed) & BRAM_LINE_MASK;
+    }
+
+    // Update hardware read pointer register (allows engine to reuse buffer space)
+    gemm_device.mmio_write32(0, REG_RD_PTR, rd_ptr);
+
+    if (verbose) {
+        cout << "  Updated rd_ptr to " << rd_ptr << endl;
     }
 
     // Extract FP16 results
@@ -550,10 +635,15 @@ int main(int argc, char* argv[]) {
         // Define test configurations - 4 tests for sequential run without reset
         // Each test gets unique GDDR6 addresses to avoid state corruption
         vector<TestConfig> tests = {
-            {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},    // Non-power-of-2 C and V
+            // {2, 2, 2, "../../hex/B2_C2_V2", "B2_C2_V2"},       // Multi-batch, multi-column (simulation validated)
+            // {4, 13, 9, "../../hex/B4_C13_V9", "B4_C13_V9"},    // Non-power-of-2 C and V
             // {4, 16, 8, "../../hex/B4_C16_V8", "B4_C16_V8"},    // Full 16 columns
             // {1, 1, 1, "../../hex/B1_C1_V1", "B1_C1_V1"},       // Minimal smoke test
-            // {2, 2, 2, "../../hex/B2_C2_V2", "B2_C2_V2"},       // Multi-batch, multi-column
+            // {4, 4, 4, "../../hex/B4_C4_V4", "B4_C4_V4"},       // 4x4 test
+            // {4, 8, 4, "../../hex/B4_C8_V4", "B4_C8_V4"},       // 4x8x4 test
+            {8, 8, 16, "../../hex/B8_C8_V16", "B8_C8_V16"},     // 8x8x16 test
+            // {16, 16, 4, "../../hex/B16_C16_V4", "B16_C16_V4"},  // 16x16x4 test
+            // {16, 16, 8, "../../hex/B16_C16_V8", "B16_C16_V8"},  // 16x16x8 test
         };
 
         // =====================================================================
@@ -642,8 +732,17 @@ int main(int argc, char* argv[]) {
 
         gemm_device.soft_reset();
         gemm_device.reset_cmd_id();
+
+        // Reset ring buffer read pointer to 0
+        gemm_device.mmio_write32(0, REG_RD_PTR, 0);
+
         usleep(100000);  // 100ms settle time
+
+        // Verify buffer is empty after reset
+        uint32_t wr_ptr = gemm_device.mmio_read32(0, REG_WR_PTR) & BRAM_LINE_MASK;
+        uint32_t rd_ptr = gemm_device.mmio_read32(0, REG_RD_PTR) & BRAM_LINE_MASK;
         cout << "Soft reset complete, cmd_id reset to 0" << endl;
+        cout << "Ring buffer reset: rd_ptr=" << rd_ptr << ", wr_ptr=" << wr_ptr << endl;
 
         // =====================================================================
         // PHASE 3: Run tests SEQUENTIALLY without reset

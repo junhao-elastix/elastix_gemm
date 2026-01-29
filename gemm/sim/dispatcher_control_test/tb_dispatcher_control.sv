@@ -755,10 +755,10 @@ module tb_dispatcher_control;
     endtask
 
     // =========================================================================
-    // Test 1: FETCH + LEFT DISPATCH
+    // Test 1: FETCH + LEFT DISPATCH (B1C64V2 configuration)
     // =========================================================================
     task automatic test_fetch_left_dispatch();
-        int B = 4;   // Number of batches
+        int B = 1;   // Number of batches (B1C64V2)
         int V = 2;   // NVs per batch
         
         $display("\n========================================");
@@ -915,29 +915,30 @@ module tb_dispatcher_control;
     endtask
 
     // =========================================================================
-    // Test 5: RIGHT DISPATCH with C > NUM_COLS (C=24, V=2)
+    // Test 5: RIGHT DISPATCH with C=64, V=2 (B1C64V2 - 4 column group wraps)
     // =========================================================================
-    // This test validates the wrap behavior when C > 16:
+    // This test validates the wrap behavior when C=64 (4x NUM_COLS):
     // - col_sel wraps at NUM_COLS (16), not at nv_cnt
     // - wraddr_start advances when wrapping
-    task automatic test_right_dispatch_c_greater_than_16();
-        int C = 24;  // More columns than NUM_COLS (16)
+    // - 4 total wraps: cols 0-15, 16-31, 32-47, 48-63
+    task automatic test_right_dispatch_c64_v2();
+        int C = 64;  // 4x NUM_COLS (16) -> 4 column group wraps
         int V = 2;   // NVs per column
 
         $display("\n========================================");
-        $display("TEST 5: RIGHT DISPATCH C > NUM_COLS (C=%0d, V=%0d)", C, V);
+        $display("TEST 5: RIGHT DISPATCH B1C64V2 (C=%0d, V=%0d)", C, V);
         $display("  Total NVs: %0d, Total lines: %0d", C*V, C*V*LINES_PER_NV);
-        $display("  Expected: cols 0-15 get C=0-15, cols 0-7 also get C=16-23");
+        $display("  Expected: 4 column group wraps (0-15, 16-31, 32-47, 48-63)");
         $display("========================================");
 
         current_test_ok = 1;
         reset_dut();
 
-        // FETCH block 1 (right data) - need enough data for C=24, V=2 = 48 NVs = 192 lines
-        // Block has 528 lines (512 mantissa + 16 exp), so this fits
+        // FETCH block 1 (right data) - need data for C=64, V=2 = 128 NVs = 512 lines
+        // Block has 528 lines (512 mantissa + 16 exp), so this fits exactly
         issue_fetch(26'd528, 16'd528, 8'd9);
 
-        // RIGHT DISPATCH with C=24
+        // RIGHT DISPATCH with C=64
         issue_dispatch(C, V, 0, 1, 0, 8'd10);
 
         // Verify results using extended verification
@@ -1023,6 +1024,7 @@ module tb_dispatcher_control;
         $display("===============================================\n");
 
         // Load hex files into golden storage
+        // Testing B1_C64_V2 configuration (files copied to default location)
         load_hex_file("/home/dev/Dev/elastix_gemm/hex/left.hex", golden_left);
         load_hex_file("/home/dev/Dev/elastix_gemm/hex/right.hex", golden_right);
 
@@ -1035,13 +1037,13 @@ module tb_dispatcher_control;
         rstn = 1'b1;
         repeat(10) @(posedge clk);
 
-        // Run tests
+        // Run tests (B1C64V2 configuration)
         test_fetch_left_dispatch();
         test_fetch_right_dispatch();
         test_ack_timing();
         test_cmd_id_tracking();
-        test_right_dispatch_c_greater_than_16();  // Test 5: C > NUM_COLS wrap
-        test_right_dispatch_4x_b4c24v4();         // Test 6: 4 consecutive B4C24V4
+        test_right_dispatch_c64_v2();             // Test 5: B1C64V2 main test (C=64, 4 wraps)
+        // test_right_dispatch_4x_b4c24v4();      // Test 6: Disabled for B1C64V2
 
         // Summary
         $display("\n===============================================");

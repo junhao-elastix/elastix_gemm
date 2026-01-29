@@ -19,8 +19,8 @@
 //   Lines 0-15:   Exponent data (16 lines x 32 bytes = 512 exponents)
 //   Lines 16-527: Mantissa data (512 lines x 32 bytes = 128 NVs x 4 chunks)
 //
-// Command Interface (packed payload from master_control_2d):
-//   - i_matmul_en: Pulse to start MATMUL
+// Command Interface (raw opcode from master_control_2d):
+//   - i_mc_cmd_op: Raw opcode (CE detects MATMUL=0xF2 internally)
 //   - i_cmd_id: Command ID
 //   - i_cmd_payload_word1: {left_addr[15:0], right_addr[15:0]}
 //   - i_cmd_payload_word2: {B[15:0], C[15:0]}
@@ -96,17 +96,21 @@ module tb_compute_engine_2d;
     logic rstn;
 
     // =========================================================================
-    // DUT Interface Signals - New Packed Command Interface
+    // DUT Interface Signals - Raw Opcode Command Interface
     // =========================================================================
-    // Master Control Interface (packed payload)
-    logic         matmul_en;
+    // Master Control Interface (raw opcode - CE does internal edge detection)
+    logic [7:0]   mc_cmd_op;            // Raw opcode (0xF2 = MATMUL)
     logic [7:0]   cmd_id;
     logic [31:0]  cmd_payload_word1;    // {left_addr[15:0], right_addr[15:0]}
     logic [31:0]  cmd_payload_word2;    // {B[15:0], C[15:0]}
     logic [31:0]  cmd_payload_word3;    // {V[15:0], flags[15:0]}
-    logic         matmul_ack;
+    logic         ce_ack_matmul;
     logic [7:0]   ce_id;
     logic         matmul_done;
+
+    // Opcode constants
+    localparam logic [7:0] OPC_NOP    = 8'h00;
+    localparam logic [7:0] OPC_MATMUL = 8'hF2;
 
     // row_bram Write Interface (Activations)
     logic [ADDR_WIDTH-1:0]  man_left_wr_addr;
@@ -156,7 +160,7 @@ module tb_compute_engine_2d;
     int left_lines_loaded, right_lines_loaded;
 
     // =========================================================================
-    // DUT Instantiation - New Interface
+    // DUT Instantiation - Raw Opcode Interface
     // =========================================================================
     compute_engine_2d #(
         .MATMUL_ID(0),
@@ -171,13 +175,13 @@ module tb_compute_engine_2d;
         .i_clk(clk),
         .i_reset_n(rstn),
 
-        // Master Control Interface (packed payload)
-        .i_matmul_en(matmul_en),
+        // Master Control Interface (raw opcode - CE does internal edge detection)
+        .i_mc_cmd_op(mc_cmd_op),
         .i_cmd_id(cmd_id),
         .i_cmd_payload_word1(cmd_payload_word1),
         .i_cmd_payload_word2(cmd_payload_word2),
         .i_cmd_payload_word3(cmd_payload_word3),
-        .o_matmul_ack(matmul_ack),
+        .o_ce_ack_matmul(ce_ack_matmul),
         .o_ce_id(ce_id),
         .o_matmul_done(matmul_done),
 
@@ -446,34 +450,39 @@ module tb_compute_engine_2d;
     endtask
 
     // =========================================================================
-    // Issue MATMUL Command (Packed Payload Interface)
-    // Payload format:
+    // Issue MATMUL Command (Raw Opcode Interface)
+    // CE does internal edge detection on opcode transition to 0xF2
+    // Payload format (per MULTI_ROW_REFERENCE.md):
     //   word1: {left_addr[15:0], right_addr[15:0]}
-    //   word2: {B[7:0], 8'b0, C[7:0], 8'b0}  -> {B[15:8]=B, B[7:0]=0, C[15:8]=C, C[7:0]=0}
-    //   word3: {V[7:0], 8'b0, flags[15:0]}   -> {V[15:8]=V, V[7:0]=0, flags=0}
+    //   word2: {B[15:0], C[15:0]}
+    //   word3: {V[15:0], flags[15:0]}
     // =========================================================================
     task automatic issue_matmul(int B, int C, int V);
         $display("[TB] Issuing MATMUL: B=%0d, C=%0d, V=%0d", B, C, V);
 
         // Pack command payload - must match compute_engine_2d extraction:
-        //   B_reg <= i_cmd_payload_word2[23:16]
-        //   C_reg <= i_cmd_payload_word2[7:0]
-        //   V_reg <= i_cmd_payload_word3[23:16]
-        cmd_payload_word1 = {16'd0, 16'd0};                    // {left_addr, right_addr}
-        cmd_payload_word2 = {8'd0, B[7:0], 8'd0, C[7:0]};      // {0, B, 0, C}
-        cmd_payload_word3 = {8'd0, V[7:0], 16'd0};             // {0, V, flags}
+        //   B_reg <= i_cmd_payload_word2[31:16]
+        //   C_reg <= i_cmd_payload_word2[15:0]
+        //   V_reg <= i_cmd_payload_word3[31:16]
+        cmd_payload_word1 = {16'd0, 16'd0};              // {left_addr, right_addr}
+        cmd_payload_word2 = {B[15:0], C[15:0]};          // {B, C}
+        cmd_payload_word3 = {V[15:0], 16'd0};            // {V, flags}
         cmd_id = 8'd1;
 
+        // Issue opcode - CE detects rising edge from NOP -> MATMUL
         @(posedge clk);
-        matmul_en = 1'b1;
-        @(posedge clk);
-        matmul_en = 1'b0;
+        mc_cmd_op = OPC_MATMUL;
 
-        // Wait for ACK
+        // Wait for ACK (CE generates ACK one cycle after detecting opcode)
         @(posedge clk);
-        if (matmul_ack) begin
+        @(posedge clk);
+        if (ce_ack_matmul) begin
             $display("[TB] MATMUL command acknowledged");
         end
+
+        // Return opcode to NOP to allow next command
+        @(posedge clk);
+        mc_cmd_op = OPC_NOP;
     endtask
 
     // =========================================================================
@@ -665,7 +674,7 @@ module tb_compute_engine_2d;
         $display("[TB] Expected results: %0d", expected_results);
 
         // Reset DUT between tests
-        matmul_en = 1'b0;
+        mc_cmd_op = OPC_NOP;
         num_results_collected = 0;
         for (int i = 0; i < NUM_COLS; i++) result_rd_en[i] = 1'b0;
 
@@ -797,7 +806,7 @@ module tb_compute_engine_2d;
 
         // Initialize signals
         rstn = 1'b0;
-        matmul_en = 1'b0;
+        mc_cmd_op = OPC_NOP;
         cmd_id = 8'd0;
         cmd_payload_word1 = 32'd0;
         cmd_payload_word2 = 32'd0;

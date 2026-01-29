@@ -39,9 +39,9 @@ GEMM_INC := ../../src/include
 GEMM_TB := ../../src/tb
 SIM_DIR := .
 
-# Configurable parameters (default: 8 MLPs, 16 columns)
+# Configurable parameters (default: 2 MLPs, 4 columns - matches hardware)
 # Override via: make run NUM_MLPS=2  (or NUM_MLPS=4, NUM_MLPS=8)
-NUM_MLPS ?= 8
+NUM_MLPS ?= 2
 NUM_COLS ?= $(shell echo $$(($(NUM_MLPS) * 2)))
 
 # Compilation flags
@@ -68,7 +68,7 @@ VLOG_OPTIONS += +define+DEBUG_MLPSTACK          # comp_MLPStack.sv, comp_MLPStac
 VLOG_OPTIONS += +define+DEBUG_COMPUTE           # compute_engine_2d.sv
 # VLOG_OPTIONS += +define+DEBUG_FLEX_FIFO         # flex_fifo.sv (config display)
 # VLOG_OPTIONS += +define+DEBUG_CMD_FIFO          # cmd_fifo.sv (FIFO writes/reads)
-# VLOG_OPTIONS += +define+DEBUG_ENGINE_TOP        # engine_top_2d.sv (weight address calc)
+VLOG_OPTIONS += +define+DEBUG_ENGINE_TOP        # engine_top_2d.sv (weight address calc)
 VLOG_OPTIONS += +define+DEBUG_TB                # tb_gemm2d.sv (AXI, FIFO, MC state)
 # =========================================================================
 VLOG_OPTIONS += -err VCP2675 W1   # Suppress warning: initial block + always_ff on same signal

@@ -26,7 +26,7 @@ module tb_gemm2d;
     // Test Configuration
     // ====================================================================
     localparam int NUM_ROWS = 16;
-    localparam int NUM_MLPS = 8;
+    localparam int NUM_MLPS = 2;
     localparam int NUM_COLS = NUM_MLPS*2;
     
     // BCV configuration from hex files
@@ -117,6 +117,20 @@ module tb_gemm2d;
     logic [31:0] bram_wr_strobe;
 
     // ====================================================================
+    // Circular Buffer Interface
+    // ====================================================================
+    logic [8:0]  rd_ptr;           // Read pointer (testbench controlled)
+    logic [8:0]  wr_ptr;           // Write pointer from DUT
+    logic [9:0]  used_entries;     // Used entries from DUT
+    logic        almost_full;      // Backpressure signal from DUT
+    logic        result_empty;     // Empty flag from DUT
+
+    // For simulation: keep rd_ptr at 0 since tests produce few results
+    // Buffer depth is 512, almost_full threshold is 496, so small tests won't trigger backpressure
+    // In real hardware, host software advances rd_ptr after consuming results via DMA
+    assign rd_ptr = 9'd0;
+
+    // ====================================================================
     // Result BRAM Model (for verification)
     // ====================================================================
     logic [255:0] result_bram [0:511];  // 512 x 256-bit
@@ -138,6 +152,16 @@ module tb_gemm2d;
     logic        engine_busy;
     logic [3:0]  mc_state;
     logic [3:0]  rc_state;
+
+    // ====================================================================
+    // Debug Interface (optional monitoring)
+    // ====================================================================
+    logic [NUM_ROWS-1:0] dbg_ce_ack_matmul;
+    logic [NUM_ROWS-1:0] dbg_dc_ack_fetch;
+    logic                dbg_cmd_valid;
+    logic                dbg_matmul_en_pulse;
+    logic [3:0]          dbg_ce_state_row0;
+    logic [3:0]          dbg_dc_state_row0;
 
     // ====================================================================
     // AXI Interfaces (16 channels)
@@ -184,11 +208,26 @@ module tb_gemm2d;
         .o_bram_wr_addr     (bram_wr_addr),
         .o_bram_wr_data     (bram_wr_data),
         .o_bram_wr_strobe   (bram_wr_strobe),
+
+        // Circular Buffer Interface
+        .i_rd_ptr           (rd_ptr),
+        .o_wr_ptr           (wr_ptr),
+        .o_used_entries     (used_entries),
+        .o_result_almost_full (almost_full),
+        .o_result_empty     (result_empty),
         
         // Status
         .o_engine_busy      (engine_busy),
         .o_mc_state         (mc_state),
-        .o_rc_state         (rc_state)
+        .o_rc_state         (rc_state),
+
+        // Debug outputs
+        .o_dbg_ce_ack_matmul   (dbg_ce_ack_matmul),
+        .o_dbg_dc_ack_fetch    (dbg_dc_ack_fetch),
+        .o_dbg_cmd_valid       (dbg_cmd_valid),
+        .o_dbg_matmul_en_pulse (dbg_matmul_en_pulse),
+        .o_dbg_ce_state_row0   (dbg_ce_state_row0),
+        .o_dbg_dc_state_row0   (dbg_dc_state_row0)
     );
 
     // ====================================================================
@@ -808,6 +847,7 @@ module tb_gemm2d;
         // (Matches working C++ test behavior)
 
         // Step 2: Dispatch RIGHT (weights) to mlp_bram
+        // Matches C++ test: nv_cnt = C, ugd_len = V_TOTAL
         issue_dispatch_command(
             .cmd_id(8'd2),
             .nv_cnt(C),
@@ -836,6 +876,7 @@ module tb_gemm2d;
         // (Matches working C++ test behavior)
 
         // Step 5: Dispatch LEFT (activations) to row_bram
+        // Matches C++ test: nv_cnt = B, ugd_len = V_TOTAL
         issue_dispatch_command(
             .cmd_id(8'd5),
             .nv_cnt(B),
