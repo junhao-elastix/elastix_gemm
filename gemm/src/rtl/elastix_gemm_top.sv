@@ -607,6 +607,9 @@ module elastix_gemm_top
     logic        dbg_matmul_en_pulse;    // MATMUL enable pulse
     logic [3:0]  dbg_ce_state_row0;      // CE state for row 0
     logic [3:0]  dbg_dc_state_row0;      // DC state for row 0
+    logic        dbg_dc_fifo_afull;      // Dispatcher FIFO almost-full (any row)
+    logic        dbg_ce_fifo_afull;      // CE result FIFO almost-full (any row)
+    logic        dbg_rc_fifo_afull;      // Result collector output FIFO almost-full
 
     // Soft-reset for engine
     logic engine_soft_reset;
@@ -647,6 +650,12 @@ module elastix_gemm_top
     logic [255:0] engine_2d_bram_wr_data;
     logic [31:0]  engine_2d_bram_wr_strobe;
 
+    // Circular buffer status from engine (for ring buffer interface)
+    logic [8:0]   engine_2d_wr_ptr;
+    logic [9:0]   engine_2d_used_entries;
+    logic         engine_2d_result_almost_full;
+    logic         engine_2d_result_empty;
+
     // 2D GEMM Engine with 16 AXI interfaces
     // Note: Interface arrays require individual connections for each element
     localparam int ENGINE_NUM_MLPS = 2;
@@ -685,6 +694,13 @@ module elastix_gemm_top
         .o_bram_wr_data     (engine_2d_bram_wr_data),
         .o_bram_wr_strobe   (engine_2d_bram_wr_strobe),
 
+        // Circular Buffer Interface (Ring Buffer for Results)
+        .i_rd_ptr           (user_regs_write[REG_RD_PTR][8:0]),
+        .o_wr_ptr           (engine_2d_wr_ptr),
+        .o_used_entries     (engine_2d_used_entries),
+        .o_result_almost_full(engine_2d_result_almost_full),
+        .o_result_empty     (engine_2d_result_empty),
+
         // Status outputs
         .o_engine_busy      (engine_busy),
         .o_mc_state         (mc_state_2d),
@@ -696,7 +712,10 @@ module elastix_gemm_top
         .o_dbg_cmd_valid        (dbg_cmd_valid),
         .o_dbg_matmul_en_pulse  (dbg_matmul_en_pulse),
         .o_dbg_ce_state_row0    (dbg_ce_state_row0),
-        .o_dbg_dc_state_row0    (dbg_dc_state_row0)
+        .o_dbg_dc_state_row0    (dbg_dc_state_row0),
+        .o_dbg_dc_fifo_afull    (dbg_dc_fifo_afull),
+        .o_dbg_ce_fifo_afull    (dbg_ce_fifo_afull),
+        .o_dbg_rc_fifo_afull    (dbg_rc_fifo_afull)
     );
 
     // Connect engine BRAM writer to module-level signals
@@ -720,18 +739,25 @@ module elastix_gemm_top
     // Engine status: {reserved[12], reserved[4], mc_state[4], rc_state[4], reserved[4], busy[1]}
     assign user_regs_read[ENGINE_STATUS] = {12'h0, 4'h0, mc_state_2d, rc_state_2d, 3'b0, engine_busy};
     assign user_regs_read[ENGINE_RESULT_COUNT] = 32'h0;  // TODO: Add result counter to engine_top_2d
-    // ENGINE_DEBUG: {bridge_busy, reserved[2], FIFO_empty, rc_state[3:0], mc_state[3:0], FIFO_count[12:0], 3'b0}
-    assign user_regs_read[ENGINE_DEBUG] = {cmd_bram_bridge_busy, 2'b0,
-                                           cmd_fifo_count == 13'd0,  // empty
-                                           rc_state_2d, mc_state_2d, 
-                                           cmd_fifo_count, 3'b0};
+    // ENGINE_DEBUG: {bridge_busy[31], dc_afull[30], ce_afull[29], rc_afull[28],
+    //                 FIFO_empty[27], rc_state[26:23], mc_state[22:19], FIFO_count[18:6], 6'b0}
+    assign user_regs_read[ENGINE_DEBUG] = {cmd_bram_bridge_busy,     // [31] Bridge busy
+                                           dbg_dc_fifo_afull,        // [30] Dispatcher FIFO almost-full
+                                           dbg_ce_fifo_afull,        // [29] CE result FIFO almost-full
+                                           dbg_rc_fifo_afull,        // [28] RC output FIFO almost-full
+                                           cmd_fifo_count == 13'd0,  // [27] FIFO empty
+                                           rc_state_2d,              // [26:23] RC state
+                                           mc_state_2d,              // [22:19] MC state
+                                           cmd_fifo_count,           // [18:6] FIFO count
+                                           6'b0};                    // [5:0] Reserved
 
-    // Circular buffer interface registers (simplified for 2D engine)
-    assign user_regs_read[ENGINE_WRITE_TOP] = {23'h0, engine_2d_bram_wr_addr};
+    // Circular buffer interface registers (from engine_top_2d result_to_dma)
+    // Ring buffer: 512 lines (9-bit address), wr_ptr from HW, rd_ptr from SW
+    assign user_regs_read[ENGINE_WRITE_TOP] = {23'h0, engine_2d_wr_ptr};
     assign user_regs_read[REG_RD_PTR] = user_regs_write[REG_RD_PTR];  // Host-controlled read pointer
-    assign user_regs_read[REG_WR_PTR] = {23'h0, engine_2d_bram_wr_addr};
-    assign user_regs_read[REG_USED_ENTRIES] = 32'h0;  // TODO: Add tracking
-    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, ~engine_busy};  // Empty when not busy
+    assign user_regs_read[REG_WR_PTR] = {23'h0, engine_2d_wr_ptr};
+    assign user_regs_read[REG_USED_ENTRIES] = {22'h0, engine_2d_used_entries};  // Lines available to read
+    assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, engine_2d_result_empty};  // Empty when no data
 
     // NAP error status (aggregate across all 16 NAPs)
     assign user_regs_read[NAP_ERROR_STATUS] = 32'h0;  // TODO: Aggregate NAP errors

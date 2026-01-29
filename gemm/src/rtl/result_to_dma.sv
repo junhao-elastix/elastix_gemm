@@ -1,22 +1,23 @@
 // ------------------------------------------------------------------
-// Result to DMA BRAM Adapter Module (Simple Registered)
+// Result to DMA BRAM Adapter Module (Circular Buffer)
 //
 // Purpose: Converts ready-valid stream from result_collector_2d to
-//          BRAM write interface for DMA readback.
+//          BRAM write interface with circular buffer semantics.
 //
-// Design: Simple registered adapter - no FIFO
-//  - Always ready to accept data
-//  - On valid input, register data and generate BRAM write next cycle
-//  - Sequential address generation
+// Design: Circular buffer adapter with backpressure
+//  - wr_ptr managed by hardware, rd_ptr from host register
+//  - Backpressure via almost_full when buffer nears capacity
+//  - Used entries calculated for host polling
 //  - 16-bit keep mask expanded to 32-bit byte strobe
 //
 // Author: Junhao Pan
-// Date: Jan 23, 2026
+// Date: Jan 28, 2026
 // ------------------------------------------------------------------
 
 module result_to_dma #(
     parameter DATA_WIDTH = 256,
-    parameter ADDR_WIDTH = 9
+    parameter ADDR_WIDTH = 9,
+    parameter ALMOST_FULL_MARGIN = 16  // Backpressure margin
 ) (
     input  logic                    i_clk,
     input  logic                    i_reset_n,
@@ -28,12 +29,27 @@ module result_to_dma #(
     input  logic                    i_valid,
     output logic                    o_ready,
 
+    // Circular Buffer Control (from host register)
+    input  logic [ADDR_WIDTH-1:0]   i_rd_ptr,
+
+    // Circular Buffer Status (to host registers)
+    output logic [ADDR_WIDTH-1:0]   o_wr_ptr,
+    output logic [ADDR_WIDTH:0]     o_used_entries,  // 10 bits for 0-512
+    output logic                    o_almost_full,
+    output logic                    o_empty,
+
     // BRAM Write Output (to dma_bram_bridge)
     output logic                    o_bram_wr_en,
     output logic [ADDR_WIDTH-1:0]   o_bram_wr_addr,
     output logic [DATA_WIDTH-1:0]   o_bram_wr_data,
     output logic [31:0]             o_bram_wr_strobe
 );
+
+    // ===================================================================
+    // Local Parameters
+    // ===================================================================
+    localparam BUFFER_DEPTH = (1 << ADDR_WIDTH);  // 512 lines
+    localparam ALMOST_FULL_THRESHOLD = BUFFER_DEPTH - ALMOST_FULL_MARGIN;  // 496
 
     // ===================================================================
     // Keep-to-Strobe Expansion Function
@@ -48,20 +64,40 @@ module result_to_dma #(
     endfunction
 
     // ===================================================================
-    // Registered Output with Address Counter
+    // Circular Buffer Pointers
     // ===================================================================
-    logic [ADDR_WIDTH-1:0]  addr_counter;
+    logic [ADDR_WIDTH-1:0] wr_ptr_reg;
+    logic [ADDR_WIDTH:0]   used_entries_comb;
+    logic                  almost_full_comb;
+    logic                  empty_comb;
+
+    // Used entries calculation (combinational)
+    // Handles wrap-around: if wr_ptr < rd_ptr, buffer has wrapped
+    always_comb begin
+        if (wr_ptr_reg >= i_rd_ptr)
+            used_entries_comb = {1'b0, wr_ptr_reg} - {1'b0, i_rd_ptr};
+        else
+            used_entries_comb = BUFFER_DEPTH[ADDR_WIDTH:0] - {1'b0, i_rd_ptr} + {1'b0, wr_ptr_reg};
+    end
+
+    // Backpressure and empty flags
+    assign almost_full_comb = (used_entries_comb >= ALMOST_FULL_THRESHOLD);
+    assign empty_comb = (wr_ptr_reg == i_rd_ptr);
+
+    // Ready signal: accept data when not almost full
+    assign o_ready = ~almost_full_comb;
+
+    // ===================================================================
+    // Registered Outputs
+    // ===================================================================
     logic                   wr_en_reg;
     logic [ADDR_WIDTH-1:0]  wr_addr_reg;
     logic [DATA_WIDTH-1:0]  wr_data_reg;
     logic [31:0]            wr_strobe_reg;
 
-    // Always ready - simple passthrough with 1-cycle latency
-    assign o_ready = 1'b1;
-
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
-            addr_counter  <= {ADDR_WIDTH{1'b0}};
+            wr_ptr_reg    <= {ADDR_WIDTH{1'b0}};
             wr_en_reg     <= 1'b0;
             wr_addr_reg   <= {ADDR_WIDTH{1'b0}};
             wr_data_reg   <= {DATA_WIDTH{1'b0}};
@@ -70,13 +106,18 @@ module result_to_dma #(
             // Default: no write
             wr_en_reg <= 1'b0;
 
-            // On valid input, register for BRAM write
-            if (i_valid) begin
+            // On valid input AND ready, register for BRAM write
+            if (i_valid && o_ready) begin
                 wr_en_reg     <= 1'b1;
-                wr_addr_reg   <= addr_counter;
+                wr_addr_reg   <= wr_ptr_reg;
                 wr_data_reg   <= i_data;
                 wr_strobe_reg <= expand_keep_to_strobe(i_keep);
-                addr_counter  <= addr_counter + {{(ADDR_WIDTH-1){1'b0}}, 1'b1};
+
+                // Increment write pointer with wrap-around
+                if (wr_ptr_reg == BUFFER_DEPTH - 1)
+                    wr_ptr_reg <= {ADDR_WIDTH{1'b0}};
+                else
+                    wr_ptr_reg <= wr_ptr_reg + {{(ADDR_WIDTH-1){1'b0}}, 1'b1};
             end
         end
     end
@@ -84,9 +125,16 @@ module result_to_dma #(
     // ===================================================================
     // Output Assignments
     // ===================================================================
+    // BRAM interface
     assign o_bram_wr_en     = wr_en_reg;
     assign o_bram_wr_addr   = wr_addr_reg;
     assign o_bram_wr_data   = wr_data_reg;
     assign o_bram_wr_strobe = wr_strobe_reg;
+
+    // Circular buffer status
+    assign o_wr_ptr       = wr_ptr_reg;
+    assign o_used_entries = used_entries_comb;
+    assign o_almost_full  = almost_full_comb;
+    assign o_empty        = empty_comb;
 
 endmodule : result_to_dma

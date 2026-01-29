@@ -221,10 +221,11 @@ import gemm_pkg::*;
 
         case (state_reg)
             ST_IDLE: begin
-                // Only start next command if:
-                // 1. Command FIFO has data
-                // 2. No row's result FIFO is almost-full (backpressure)
-                if (!i_cmd_fifo_empty && !any_ce_result_fifo_afull) begin
+                // Start next command if command FIFO has data
+                // NOTE: Backpressure (ce_result_fifo_afull) removed from ST_IDLE
+                // Reason: READOUT command must proceed to drain FIFOs even when full
+                // CE has internal backpressure via mlp_result_fifo_afull → MLPStack
+                if (!i_cmd_fifo_empty) begin
                     state_next = ST_WAIT_DATA;  // Wait for FIFO read latency
                 end
             end
@@ -290,11 +291,14 @@ import gemm_pkg::*;
             end
 
             ST_WAIT_MATMUL: begin
-                // Wait for ALL rows' CE to complete up to wait_id
-                // Release conditions (either one):
-                //   1. ce_id >= wait_id for all rows (ID-based completion)
-                //   2. All CEs are IDLE (state=0) - they finished their work
-                if (all_ce_wait_complete || all_ce_idle) begin
+                // Wait for READOUT to complete (RC finished draining results)
+                // This ensures all results are written to BRAM before next batch
+                //
+                // Usage: WAIT_MATMUL(readout_id) - waits for READOUT completion
+                // - wait_matmul_id_reg = READOUT cmd_id from WAIT_MATMUL command
+                // - RC sets completed_id_reg = cmd_id when finishing READOUT
+                //
+                if ((i_rc_state == 4'd0) || (i_rc_id >= wait_matmul_id_reg)) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_MATMUL;
@@ -353,8 +357,8 @@ import gemm_pkg::*;
             case (state_reg)
             ST_IDLE: begin
                 // Give cmd_fifo read enable when the cmd_fifo has data
-                // and no row's result FIFO is almost-full (backpressure)
-                if (!i_cmd_fifo_empty && !any_ce_result_fifo_afull) begin
+                // NOTE: Backpressure check removed - must allow READOUT to drain FIFOs
+                if (!i_cmd_fifo_empty) begin
                     cmd_fifo_ren_reg <= 1'b1;
                 end
             end

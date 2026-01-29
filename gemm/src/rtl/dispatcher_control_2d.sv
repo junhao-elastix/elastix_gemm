@@ -95,7 +95,8 @@ import gemm_pkg::*;
     output logic [3:0]                   o_dispatcher_state,
     output logic [15:0]                  o_fetcher_lines_received,
     output logic [15:0]                  o_dispatcher_lines_processed,
-    output logic [$clog2(FIFO_DEPTH):0]  o_fifo_count
+    output logic [$clog2(FIFO_DEPTH):0]  o_fifo_count,
+    output logic                         o_fifo_afull              // FIFO almost-full for debug
 );
 
     // ====================================================================
@@ -443,5 +444,6 @@ import gemm_pkg::*;
     assign o_fetcher_lines_received = fetcher_lines_received;
     assign o_dispatcher_lines_processed = dispatcher_lines_processed;
     assign o_fifo_count = fifo_count;
+    assign o_fifo_afull = fifo_afull;
 
 endmodule : dispatcher_control_2d

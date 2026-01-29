@@ -81,7 +81,8 @@ import gemm_pkg::*;
     // ====================================================================
     output logic [3:0]                   o_rc_state,
     output logic                         o_rc_busy,
-    output logic [7:0]                   o_rc_cmd_id          // Current command ID being processed
+    output logic [7:0]                   o_rc_cmd_id,         // Current command ID being processed
+    output logic                         o_output_fifo_afull  // Output FIFO almost-full for debug
 );
 
     // ===================================================================
@@ -234,6 +235,7 @@ import gemm_pkg::*;
     logic                         obuf_rd_en;
     logic                         obuf_empty;
     logic                         obuf_full;
+    logic                         obuf_afull;
     logic [OBUF_DATA_WIDTH-1:0]   obuf_wr_data;
     logic [OBUF_DATA_WIDTH-1:0]   obuf_rd_data;
 
@@ -247,7 +249,7 @@ import gemm_pkg::*;
         .i_wr_data  (obuf_wr_data),
         .i_wr_en    (obuf_wr_en),
         .o_full     (obuf_full),
-        .o_afull    (),
+        .o_afull    (obuf_afull),
 
         .o_rd_data  (obuf_rd_data),
         .i_rd_en    (obuf_rd_en),
@@ -267,42 +269,45 @@ import gemm_pkg::*;
     // - After 1 cycle, data is valid in rd_data_reg
     // - When consumer reads (i_output_ready && o_output_valid), initiate next read
     //
+    // CRITICAL: flex_fifo has 1-cycle read latency. Both pre-fetch AND consumer
+    // read paths must wait 1 cycle before asserting data_valid.
+    //
     logic obuf_data_valid;       // Data in obuf_rd_data is valid
     logic obuf_was_empty;        // Previous cycle empty state
-    logic obuf_prefetch;         // Pre-fetch in progress
+    logic obuf_read_pending;     // Waiting for FIFO read latency (1 cycle)
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (~i_reset_n) begin
-            obuf_data_valid <= 1'b0;
-            obuf_was_empty  <= 1'b1;
-            obuf_prefetch   <= 1'b0;
+            obuf_data_valid   <= 1'b0;
+            obuf_was_empty    <= 1'b1;
+            obuf_read_pending <= 1'b0;
         end else begin
             obuf_was_empty <= obuf_empty;
 
-            // Pre-fetch logic: when FIFO becomes non-empty, start read
-            if (obuf_was_empty && ~obuf_empty) begin
-                obuf_prefetch <= 1'b1;  // Start pre-fetch
-            end else if (obuf_prefetch) begin
-                obuf_data_valid <= 1'b1;  // Data arrives 1 cycle after rd_en
-                obuf_prefetch <= 1'b0;
+            // Read pending: data arrives 1 cycle after rd_en
+            if (obuf_read_pending) begin
+                obuf_data_valid   <= 1'b1;
+                obuf_read_pending <= 1'b0;
             end
-
-            // Handle consumer read
-            if (o_output_valid && i_output_ready) begin
+            // Pre-fetch: when FIFO becomes non-empty, start read
+            else if (obuf_was_empty && ~obuf_empty) begin
+                obuf_read_pending <= 1'b1;  // Wait 1 cycle for data
+                obuf_data_valid   <= 1'b0;
+            end
+            // Consumer read: when data consumed and more available
+            else if (o_output_valid && i_output_ready) begin
+                obuf_data_valid <= 1'b0;  // Data consumed, not valid yet
                 if (~obuf_empty) begin
-                    // More data available, will be valid next cycle
-                    obuf_data_valid <= 1'b1;
-                end else begin
-                    // FIFO is now empty
-                    obuf_data_valid <= 1'b0;
+                    obuf_read_pending <= 1'b1;  // Wait 1 cycle for next data
                 end
             end
         end
     end
 
     // Read enable: pre-fetch OR consumer read (when more data available)
+    // Both cases trigger a read, then wait 1 cycle for obuf_read_pending
     assign obuf_rd_en = (obuf_was_empty && ~obuf_empty) ||                  // Pre-fetch
-                        (o_output_valid && i_output_ready && ~obuf_empty);  // Next read
+                        (o_output_valid && i_output_ready && ~obuf_empty);  // Consumer read
 
     // Unpack output FIFO
     assign o_output_last = obuf_rd_data[OBUF_DATA_WIDTH-1];
@@ -534,10 +539,11 @@ import gemm_pkg::*;
     // ===================================================================
     // Status Outputs
     // ===================================================================
-    assign o_rc_ack_readout = ack_readout_reg;
-    assign o_rc_state       = state_reg;
-    assign o_rc_busy        = (state_reg != ST_IDLE);
-    assign o_rc_cmd_id      = completed_id_reg;
+    assign o_rc_ack_readout    = ack_readout_reg;
+    assign o_rc_state          = state_reg;
+    assign o_rc_busy           = (state_reg != ST_IDLE);
+    assign o_rc_cmd_id         = completed_id_reg;
+    assign o_output_fifo_afull = obuf_afull;
 
 endmodule : result_collector_2d
 

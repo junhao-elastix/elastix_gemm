@@ -50,14 +50,15 @@ import gemm_pkg::*;
     input  logic                     i_reset_n,
 
     // =========================================================================
-    // Master Control Interface (MATMUL command) - Packed Payload
+    // Master Control Interface (MATMUL command) - Raw Opcode with Internal Detection
+    // Consistent with dispatcher_control_2d and result_collector_2d
     // =========================================================================
-    input  logic                     i_matmul_en,            // Pulse to start MATMUL
+    input  logic [7:0]               i_mc_cmd_op,            // Raw opcode from MC (edge-detected internally)
     input  logic [7:0]               i_cmd_id,               // Command ID
     input  logic [31:0]              i_cmd_payload_word1,    // {left_addr[15:0], right_addr[15:0]}
     input  logic [31:0]              i_cmd_payload_word2,    // {B[15:0], C[15:0]}
     input  logic [31:0]              i_cmd_payload_word3,    // {V[15:0], flags[15:0]}
-    output logic                     o_matmul_ack,           // Immediate ACK
+    output logic                     o_ce_ack_matmul,        // Immediate ACK (renamed for consistency)
     output logic [7:0]               o_ce_id,                // Last completed cmd_id
     output logic                     o_matmul_done,          // Done pulse
 
@@ -100,6 +101,11 @@ import gemm_pkg::*;
 );
 
     // =========================================================================
+    // Opcode Constants (must match gemm_pkg)
+    // =========================================================================
+    localparam logic [7:0] OPC_MATMUL = 8'hF2;
+
+    // =========================================================================
     // State Machine - Simple 2-State Design
     // =========================================================================
     typedef enum logic [1:0] {
@@ -108,6 +114,23 @@ import gemm_pkg::*;
     } ce_state_t;
 
     ce_state_t state_reg, state_next;
+
+    // =========================================================================
+    // Internal Opcode Edge Detection (consistent with dispatcher_control_2d)
+    // =========================================================================
+    logic [7:0] cmd_op_prev;
+    logic       matmul_detected;
+
+    always_ff @(posedge i_clk or negedge i_reset_n) begin
+        if (!i_reset_n) begin
+            cmd_op_prev <= 8'h00;
+        end else begin
+            cmd_op_prev <= i_mc_cmd_op;
+        end
+    end
+
+    // Detect MATMUL opcode transition (rising edge)
+    assign matmul_detected = (i_mc_cmd_op == OPC_MATMUL) && (cmd_op_prev != OPC_MATMUL);
 
     // =========================================================================
     // Registered Command Parameters (depacked from payload words)
@@ -230,7 +253,7 @@ import gemm_pkg::*;
         state_next = state_reg;
         case (state_reg)
             CE_IDLE: begin
-                if (i_matmul_en)
+                if (matmul_detected)
                     state_next = CE_RUNNING;
             end
             CE_RUNNING: begin
@@ -331,7 +354,7 @@ import gemm_pkg::*;
 
             case (state_reg)
                 CE_IDLE: begin
-                    if (i_matmul_en) begin
+                    if (matmul_detected) begin
                         // Depack and register command parameters
                         // Per MULTI_ROW_REFERENCE.md MATMUL command encoding:
                         //   word1 = {left_addr[15:0], right_addr[15:0]}
@@ -411,17 +434,17 @@ import gemm_pkg::*;
     // ACK and ID Outputs
     // =========================================================================
     // Immediate ACK when command is accepted (IDLE -> RUNNING transition)
-    logic matmul_ack_reg;
+    logic ce_ack_matmul_reg;
     logic [7:0] ce_id_reg;
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
-            matmul_ack_reg <= 1'b0;
-            ce_id_reg      <= 8'd0;
+            ce_ack_matmul_reg <= 1'b0;
+            ce_id_reg         <= 8'd0;
         end else begin
-            matmul_ack_reg <= 1'b0;
-            if (state_reg == CE_IDLE && i_matmul_en) begin
-                matmul_ack_reg <= 1'b1;
+            ce_ack_matmul_reg <= 1'b0;
+            if (state_reg == CE_IDLE && matmul_detected) begin
+                ce_ack_matmul_reg <= 1'b1;
             end
             if (compute_done) begin
                 ce_id_reg <= cmd_id_reg;
@@ -429,7 +452,7 @@ import gemm_pkg::*;
         end
     end
 
-    assign o_matmul_ack  = matmul_ack_reg;
+    assign o_ce_ack_matmul = ce_ack_matmul_reg;
     assign o_ce_id       = ce_id_reg;
     assign o_matmul_done = compute_done;
     assign o_ce_state    = {2'b0, state_reg};

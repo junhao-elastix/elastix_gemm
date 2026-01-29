@@ -73,6 +73,15 @@ import gemm_pkg::*;
     output logic [31:0]                  o_bram_wr_strobe,
 
     // ====================================================================
+    // Circular Buffer Interface (Ring Buffer for Results)
+    // ====================================================================
+    input  logic [8:0]                   i_rd_ptr,        // Read pointer from host register
+    output logic [8:0]                   o_wr_ptr,        // Write pointer (for host to read)
+    output logic [9:0]                   o_used_entries,  // Valid lines in buffer (0-512)
+    output logic                         o_result_almost_full,  // Backpressure signal
+    output logic                         o_result_empty,  // Buffer empty flag
+
+    // ====================================================================
     // Status Outputs
     // ====================================================================
     output logic                         o_engine_busy,
@@ -87,7 +96,12 @@ import gemm_pkg::*;
     output logic                         o_dbg_cmd_valid,         // MC has valid command
     output logic                         o_dbg_matmul_en_pulse,   // MATMUL enable pulse
     output logic [3:0]                   o_dbg_ce_state_row0,     // CE state for row 0
-    output logic [3:0]                   o_dbg_dc_state_row0      // DC state for row 0
+    output logic [3:0]                   o_dbg_dc_state_row0,     // DC state for row 0
+
+    // FIFO Almost-Full Debug Signals (OR'd across all rows)
+    output logic                         o_dbg_dc_fifo_afull,     // Dispatcher FIFO almost-full (any row)
+    output logic                         o_dbg_ce_fifo_afull,     // CE result FIFO almost-full (any row)
+    output logic                         o_dbg_rc_fifo_afull      // Result collector output FIFO almost-full
 );
 
     // ===================================================================
@@ -166,6 +180,10 @@ import gemm_pkg::*;
     logic [255:0] rc_output_data;
     logic         rc_output_ready;
 
+    // FIFO Almost-Full Debug Wires (for o_dbg_*_fifo_afull outputs)
+    logic         dc_fifo_afull [NUM_ROWS-1:0];   // Per-row dispatcher FIFO afull
+    logic         rc_output_fifo_afull;           // Result collector output FIFO afull
+
     // ===================================================================
     // DC -> CE Data Paths (per row)
     // ===================================================================
@@ -200,11 +218,11 @@ import gemm_pkg::*;
     logic                dbg_cmd_valid;
 
     // ===================================================================
-    // MATMUL Enable Generation
+    // Debug: MATMUL Opcode Detection (for o_dbg_matmul_en_pulse)
     // ===================================================================
-    // Generate matmul_en pulse when MC issues MATMUL opcode
+    // CE now does internal edge detection, but we keep this for debug output
     logic [7:0] mc_cmd_op_prev;
-    logic       matmul_en_pulse;
+    logic       dbg_matmul_en_pulse;
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (!i_reset_n) begin
@@ -214,8 +232,7 @@ import gemm_pkg::*;
         end
     end
 
-    // Detect rising edge of MATMUL opcode
-    assign matmul_en_pulse = (mc_cmd_op == OPC_MATMUL) && (mc_cmd_op_prev != OPC_MATMUL);
+    assign dbg_matmul_en_pulse = (mc_cmd_op == OPC_MATMUL) && (mc_cmd_op_prev != OPC_MATMUL);
 
     // ===================================================================
     // Module Instantiations
@@ -374,7 +391,8 @@ import gemm_pkg::*;
                 .o_dispatcher_state (),
                 .o_fetcher_lines_received (),
                 .o_dispatcher_lines_processed (),
-                .o_fifo_count       ()
+                .o_fifo_count       (),
+                .o_fifo_afull       (dc_fifo_afull[r])
             );
 
             // =============================================================
@@ -436,18 +454,18 @@ import gemm_pkg::*;
                 .ADDR_WIDTH         (ADDR_WIDTH),
                 .NUM_MLPS           (NUM_MLPS),
                 .NUM_COLS           (NUM_COLS),
-                .RESULT_FIFO_DEPTH  (512)  // Increased for large batch support
+                .RESULT_FIFO_DEPTH  (1024)  // Increased for large batch support
             ) u_compute_engine (
                 .i_clk              (i_clk),
                 .i_reset_n          (i_reset_n),
 
-                // MATMUL Command Interface
-                .i_matmul_en        (matmul_en_pulse),
+                // MATMUL Command Interface (raw opcode, CE does internal edge detection)
+                .i_mc_cmd_op        (mc_cmd_op),
                 .i_cmd_id           (mc_cmd_id),
                 .i_cmd_payload_word1(mc_cmd_payload_word1[r]),
                 .i_cmd_payload_word2(mc_cmd_payload_word2[r]),
                 .i_cmd_payload_word3(mc_cmd_payload_word3[r]),
-                .o_matmul_ack       (ce_ack_matmul[r]),
+                .o_ce_ack_matmul    (ce_ack_matmul[r]),
                 .o_ce_id            (ce_id[r]),
                 .o_matmul_done      (ce_matmul_done[r]),
 
@@ -488,7 +506,7 @@ import gemm_pkg::*;
         .NUM_ROWS           (NUM_ROWS),
         .NUM_COLS           (NUM_COLS),
         .ADDER_SEG_LEN      (2),
-        .OUTPUT_FIFO_DEPTH  (512)  // Standardized FIFO depth
+        .OUTPUT_FIFO_DEPTH  (1024)  // Standardized FIFO depth
     ) u_result_collector (
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
@@ -516,7 +534,8 @@ import gemm_pkg::*;
         // Status
         .o_rc_state         (rc_state),
         .o_rc_busy          (rc_busy),
-        .o_rc_cmd_id        (rc_id)
+        .o_rc_cmd_id        (rc_id),
+        .o_output_fifo_afull(rc_output_fifo_afull)
     );
 
     // ===================================================================
@@ -524,7 +543,8 @@ import gemm_pkg::*;
     // ===================================================================
     result_to_dma #(
         .DATA_WIDTH (256),
-        .ADDR_WIDTH (9)
+        .ADDR_WIDTH (9),
+        .ALMOST_FULL_MARGIN (16)
     ) u_result_to_dma (
         .i_clk          (i_clk),
         .i_reset_n      (i_reset_n),
@@ -535,6 +555,15 @@ import gemm_pkg::*;
         .i_last         (rc_output_last),
         .i_valid        (rc_output_valid),
         .o_ready        (rc_output_ready),
+
+        // Circular Buffer Control (from host register)
+        .i_rd_ptr       (i_rd_ptr),
+
+        // Circular Buffer Status (to host registers)
+        .o_wr_ptr       (o_wr_ptr),
+        .o_used_entries (o_used_entries),
+        .o_almost_full  (o_result_almost_full),
+        .o_empty        (o_result_empty),
 
         // BRAM Write Output (to external DMA bridge)
         .o_bram_wr_en   (o_bram_wr_en),
@@ -562,8 +591,30 @@ import gemm_pkg::*;
     assign o_dbg_ce_ack_matmul   = dbg_ce_ack_matmul_reg;
     assign o_dbg_dc_ack_fetch    = dbg_dc_ack_fetch_reg;
     assign o_dbg_cmd_valid       = dbg_cmd_valid;
-    assign o_dbg_matmul_en_pulse = matmul_en_pulse;
+    assign o_dbg_matmul_en_pulse = dbg_matmul_en_pulse;
     assign o_dbg_ce_state_row0   = ce_state[0];
     assign o_dbg_dc_state_row0   = dc_state[0];
+
+    // ===================================================================
+    // FIFO Almost-Full Debug Outputs (OR'd across all rows)
+    // ===================================================================
+    // DC FIFO afull: any row's dispatcher FIFO almost full
+    always_comb begin
+        o_dbg_dc_fifo_afull = 1'b0;
+        for (int r = 0; r < NUM_ROWS; r++) begin
+            o_dbg_dc_fifo_afull |= dc_fifo_afull[r];
+        end
+    end
+
+    // CE result FIFO afull: any row's CE result FIFO almost full
+    always_comb begin
+        o_dbg_ce_fifo_afull = 1'b0;
+        for (int r = 0; r < NUM_ROWS; r++) begin
+            o_dbg_ce_fifo_afull |= ce_result_fifo_afull[r];
+        end
+    end
+
+    // RC output FIFO afull: single signal from result collector
+    assign o_dbg_rc_fifo_afull = rc_output_fifo_afull;
 
 endmodule : engine_top_2d

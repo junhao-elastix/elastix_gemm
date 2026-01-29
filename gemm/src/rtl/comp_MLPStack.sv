@@ -277,8 +277,8 @@ module comp_MLPStack #(
     // synthesis translate_off
     `ifdef DEBUG_MLPSTACK
     always @(posedge clk) begin
-        // Debug: Show first few weight writes with full detail
-        if (wt_loading && (i_wt_mlp_sel == 0) && (i_wt_wr_addr < 10)) begin
+        // Debug: Show first few weight writes with full detail for ALL MLPs
+        if (wt_loading && (i_wt_wr_addr < 10)) begin
             $display("[MLPSTACK_WR] @%0t mlp_sel=%0d i_wt_wr_addr=%0d mlp_wraddr=%0d wt_loading=%b",
                      $time, i_wt_mlp_sel, i_wt_wr_addr, mlp_wraddr, wt_loading);
         end
@@ -630,6 +630,22 @@ module comp_MLPStack #(
             end
         end
     endgenerate
+
+    // synthesis translate_off
+    `ifdef DEBUG_MLPSTACK
+    // Debug: Trace adder inputs for columns 2 and 3 (MLP 1)
+    always @(posedge clk) begin
+        if (rstn && adder_input_valid && NUM_MLPS >= 2) begin
+            $display("[ADDER_IN] @%0t MLP1: bank0[0]=0x%06x bank0[1]=0x%06x bank0[2]=0x%06x bank0[3]=0x%06x",
+                     $time, adder_input_bank0[1][0], adder_input_bank0[1][1],
+                     adder_input_bank0[1][2], adder_input_bank0[1][3]);
+            $display("[ADDER_IN] @%0t MLP1: bank1[0]=0x%06x bank1[1]=0x%06x bank1[2]=0x%06x bank1[3]=0x%06x",
+                     $time, adder_input_bank1[1][0], adder_input_bank1[1][1],
+                     adder_input_bank1[1][2], adder_input_bank1[1][3]);
+        end
+    end
+    `endif
+    // synthesis translate_on
 
     // =========================================================================
     // Adder Input Valid: Direct from capture pipeline
