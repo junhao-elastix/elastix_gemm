@@ -1,9 +1,9 @@
 # Result Buffer Circular Queue Reference Manual
 
-**Document Version**: 1.0
-**Date**: October 31, 2025
+**Document Version**: 2.0
+**Date**: January 28, 2026
 **Component**: Result BRAM Circular Buffer (Pseudo-FIFO)
-**Related Modules**: `result_fifo_to_simple_bram.sv`, `dma_bram_bridge.sv`, `elastix_gemm_top.sv`
+**Related Modules**: `result_to_dma.sv`, `dma_bram_bridge.sv`, `elastix_gemm_top.sv`, `engine_top_2d.sv`
 
 ---
 
@@ -13,12 +13,12 @@ The Result Buffer implements a **circular queue (ring buffer)** using random-acc
 
 ### 1.1 Key Characteristics
 
-- **Capacity**: 8192 FP16 results (512 BRAM lines × 16 FP16/line)
-- **Storage**: 2× ACX_BRAM72K_SDP instances (256-bit data width)
-- **Addressing**: 13-bit pointers in 2-byte (FP16) granularity
-- **Producer**: GEMM compute engine (writes results)
-- **Consumer**: Host via PCIe DMA (reads results)
-- **Backpressure**: Master control blocks commands when buffer almost full
+- **Capacity**: 8192 FP16 results (512 BRAM lines x 16 FP16/line)
+- **Storage**: 2x ACX_BRAM72K_SDP instances (256-bit data width) in `dma_bram_bridge.sv`
+- **Addressing**: 9-bit line addresses (512 locations), 13-bit FP16 pointers
+- **Producer**: `result_collector_2d` -> `result_to_dma` (writes 256-bit lines)
+- **Consumer**: Host via PCIe DMA (reads via AXI4 through `dma_bram_bridge`)
+- **Backpressure**: `almost_full` signal blocks `result_collector_2d` via `o_ready`
 
 ### 1.2 Design Rationale
 
@@ -32,449 +32,369 @@ This design combines the benefits of:
 
 ## 2. Architecture
 
-### 2.1 Buffer Organization
+### 2.1 Module Hierarchy
 
 ```
-Physical BRAM Layout (512 lines × 256 bits):
-┌────────────────────────────────────────────────────┐
-│ Line 0:   [FP16_15][FP16_14]...[FP16_1][FP16_0]   │ ← 16 FP16 results
-│ Line 1:   [FP16_31][FP16_30]...[FP16_17][FP16_16] │
-│ ...                                                 │
-│ Line 511: [...][FP16_8191]                         │
-└────────────────────────────────────────────────────┘
+elastix_gemm_top.sv
+    |
+    +-- engine_top_2d.sv
+    |       |
+    |       +-- result_collector_2d.sv   (produces 256-bit lines via ready-valid)
+    |       |
+    |       +-- result_to_dma.sv         (circular buffer logic, pointer management)
+    |               |
+    |               +-- (outputs: o_bram_wr_en, o_bram_wr_addr, o_bram_wr_data)
+    |
+    +-- dma_bram_bridge.sv               (BRAM storage with AXI4 interface)
+            |
+            +-- 2x ACX_BRAM72K_SDP       (512 x 256-bit physical storage)
+```
+
+### 2.2 Data Flow
+
+```
+result_collector_2d          result_to_dma              dma_bram_bridge
+      |                            |                          |
+      | (ready-valid)              |                          |
+      | i_data[255:0]       -----> | (circular buffer)        |
+      | i_keep[15:0]        -----> | wr_ptr management        |
+      | i_valid             -----> | backpressure logic       |
+      | o_ready             <----- |                          |
+      |                            |                          |
+      |                            | o_bram_wr_en      -----> | i_internal_wr_en
+      |                            | o_bram_wr_addr    -----> | i_internal_wr_addr
+      |                            | o_bram_wr_data    -----> | i_internal_wr_data
+      |                            | o_bram_wr_strobe  -----> | i_internal_wr_strobe
+      |                            |                          |
+      |                            |                          | <-- AXI4 (Host DMA Read)
+```
+
+### 2.3 Buffer Organization
+
+```
+Physical BRAM Layout (512 lines x 256 bits):
++----------------------------------------------------+
+| Line 0:   [FP16_15][FP16_14]...[FP16_1][FP16_0]    | <- 16 FP16 results
+| Line 1:   [FP16_31][FP16_30]...[FP16_17][FP16_16]  |
+| ...                                                 |
+| Line 511: [...][FP16_8191]                         |
++----------------------------------------------------+
 
 Logical Circular Buffer (8192 FP16 results):
-      ┌───────────────────────────┐
-      │   [rd_ptr]                │ ← Host reads here
-      │   ├─────────────────┤     │   (consumed space)
-      │   │ Valid Results   │     │
-      │   ├─────────────────┤     │
-      │   [wr_ptr]                │ ← Engine writes here
-      │   ├─────────────────┤     │   (free space)
-      │   │ Free Space      │     │
-      │   └─────────────────┘     │
-      └───────────────────────────┘
-         (wraps at 8192)
+      +---------------------------+
+      |   [rd_ptr]                | <- Host reads here
+      |   +---------------+       |   (consumed space)
+      |   | Valid Results |       |
+      |   +---------------+       |
+      |   [wr_ptr]                | <- Engine writes here
+      |   +---------------+       |   (free space)
+      |   | Free Space    |       |
+      |   +---------------+       |
+      +---------------------------+
+         (wraps at 512 lines)
 ```
-
-### 2.2 Pointer System
-
-#### Write Pointer (wr_ptr)
-- **Width**: 13 bits (0-8191)
-- **Management**: Hardware auto-increments
-- **Wrapping**: Automatic at 8192
-- **Update**: Every FP16 write from compute engine
-- **Exposure**: Read-only register for host monitoring
-
-#### Read Pointer (rd_ptr)
-- **Width**: 13 bits (0-8191)
-- **Management**: Host controlled via register write
-- **Wrapping**: Host responsibility (host computes wrap)
-- **Update**: After host consumes N results via DMA
-- **Exposure**: Read/write register
-
-### 2.3 Address Mapping
-
-**FP16 Pointer → BRAM Address Conversion:**
-
-```
-ptr[12:0] (13-bit FP16 address, 0-8191)
-    ↓
-BRAM Line Address    = ptr[12:4]  (upper 9 bits, 0-511 lines)
-Position within Line = ptr[3:0]   (lower 4 bits, 0-15 FP16s)
-Byte Address        = {ptr[12:0], 1'b0}  (2-byte aligned)
-```
-
-**Example:**
-- `ptr = 13'd145` (FP16 #145)
-  - BRAM line = `145 >> 4 = 9` (line 9)
-  - Position = `145 & 0xF = 1` (2nd FP16 in line)
-  - Byte address = `145 << 1 = 290` (byte 290)
 
 ---
 
-## 3. Flow Control and Backpressure
+## 3. Module Specifications
 
-### 3.1 Used Entries Calculation
+### 3.1 result_to_dma.sv
 
-**Circular Buffer Arithmetic:**
+**Purpose**: Converts ready-valid stream from `result_collector_2d` to BRAM write interface with circular buffer semantics.
+
+**Ports**:
+
+| Port | Direction | Width | Description |
+|------|-----------|-------|-------------|
+| `i_clk` | Input | 1 | System clock |
+| `i_reset_n` | Input | 1 | Active-low reset |
+| `i_data` | Input | 256 | Data from result_collector (16 FP16 packed) |
+| `i_keep` | Input | 16 | Valid FP16 mask (1 bit per FP16) |
+| `i_last` | Input | 1 | Last transfer in sequence |
+| `i_valid` | Input | 1 | Data valid |
+| `o_ready` | Output | 1 | Ready to accept (backpressure) |
+| `i_rd_ptr` | Input | 9 | Read pointer from host register |
+| `o_wr_ptr` | Output | 9 | Current write pointer |
+| `o_used_entries` | Output | 10 | Number of valid lines (0-512) |
+| `o_almost_full` | Output | 1 | Backpressure signal |
+| `o_empty` | Output | 1 | Buffer empty flag |
+| `o_bram_wr_en` | Output | 1 | BRAM write enable |
+| `o_bram_wr_addr` | Output | 9 | BRAM write address (line) |
+| `o_bram_wr_data` | Output | 256 | BRAM write data |
+| `o_bram_wr_strobe` | Output | 32 | BRAM byte enables |
+
+**Key Logic**:
 
 ```systemverilog
-used_entries[13:0] = (wr_ptr >= rd_ptr) ?
-                     (wr_ptr - rd_ptr) :              // Normal case
-                     (8192 - rd_ptr + wr_ptr);        // Wrapped case
+// Circular buffer calculations (line-based, 9-bit addresses)
+localparam BUFFER_DEPTH = 512;
+localparam ALMOST_FULL_THRESHOLD = BUFFER_DEPTH - 16;  // 496 lines margin
+
+// Used entries calculation
+always_comb begin
+    if (wr_ptr >= rd_ptr)
+        used_entries = wr_ptr - rd_ptr;
+    else
+        used_entries = (BUFFER_DEPTH - rd_ptr) + wr_ptr;
+end
+
+// Backpressure
+assign almost_full = (used_entries >= ALMOST_FULL_THRESHOLD);
+assign o_ready = ~almost_full;  // Block when almost full
+assign empty = (wr_ptr == rd_ptr);
+
+// Write pointer management with wrap
+always_ff @(posedge i_clk or negedge i_reset_n) begin
+    if (!i_reset_n)
+        wr_ptr <= 9'd0;
+    else if (i_valid && o_ready)
+        wr_ptr <= (wr_ptr == BUFFER_DEPTH - 1) ? 9'd0 : wr_ptr + 1;
+end
 ```
 
-**Examples:**
-- `wr_ptr=100, rd_ptr=50` → `used_entries=50` (normal)
-- `wr_ptr=10, rd_ptr=8190` → `used_entries=8192-8190+10=12` (wrapped)
+### 3.2 dma_bram_bridge.sv
 
-### 3.2 Buffer State Flags
+**Purpose**: Dual-port BRAM responder with internal write port for engine and AXI4 read interface for host DMA.
 
-#### Almost Full Flag
+**Key Features**:
+- 512 locations x 256 bits (using 2x ACX_BRAM72K_SDP)
+- Internal write port has priority over DMA access
+- AXI4 interface supports burst reads up to 16 beats
+- 2-cycle read latency (output register enabled)
+
+**BRAM Configuration**:
+
 ```systemverilog
-THRESHOLD = 8192 - MARGIN
-almost_full = (used_entries >= THRESHOLD)
+// Lower 144 bits
+ACX_BRAM72K_SDP xact_mem_lo (
+    .din      (actual_wr_data[143:0]),
+    .we       (actual_wstrb[17:0]),
+    .wren     (actual_wr_en),
+    .wraddr   ({actual_wr_addr, 5'h00}),  // 9-bit line address
+    .dout     (xact_r_dout[143:0]),
+    ...
+);
+
+// Upper 112 bits (with 32-bit padding)
+ACX_BRAM72K_SDP xact_mem_hi (
+    .din      ({32'h0, actual_wr_data[255:144]}),
+    .we       ({4'h0, actual_wstrb[31:18]}),
+    ...
+);
 ```
-- **Threshold**: THRESHOLD FP16 results
-- **Purpose**: Trigger backpressure before buffer completely fills
-- **Action**: Master control blocks command FIFO
-- **Margin**: MARGIN FP16 safety margin allows in-flight results to drain before threshold is reached
 
-#### Empty Flag
+---
+
+## 4. Register Interface
+
+### 4.1 Register Definitions
+
+| Register | Address | Type | Width | Description |
+|----------|---------|------|-------|-------------|
+| `REG_RD_PTR` | 0x230 | RW | [8:0] | Host-controlled read pointer (line address) |
+| `REG_WR_PTR` | 0x234 | RO | [8:0] | Current write pointer (line address) |
+| `REG_USED_ENTRIES` | 0x238 | RO | [9:0] | Number of valid lines (0-512) |
+| `REG_RESULT_EMPTY` | 0x23C | RO | [0:0] | Buffer empty flag (1=empty) |
+| `ENGINE_WRITE_TOP` | 0x22C | RO | [8:0] | Legacy: same as REG_WR_PTR |
+
+### 4.2 Pointer Semantics
+
+**Line-Based Addressing**:
+- Pointers are 9-bit line addresses (0-511)
+- Each line holds 16 FP16 results (256 bits)
+- Total capacity: 512 lines = 8192 FP16 results
+
+**Write Pointer (Hardware)**:
+- Auto-increments on each valid write
+- Wraps automatically at 512
+- Read-only from host perspective
+
+**Read Pointer (Software)**:
+- Host updates after consuming data
+- Host handles wrap calculation: `new_rd_ptr = (rd_ptr + lines_read) % 512`
+- Must not advance past write pointer
+
+### 4.3 Register Access in elastix_gemm_top.sv
+
 ```systemverilog
-empty = (wr_ptr == rd_ptr)
+// Current implementation (to be connected to result_to_dma outputs)
+assign user_regs_read[REG_RD_PTR] = user_regs_write[REG_RD_PTR];  // Host-controlled
+assign user_regs_read[REG_WR_PTR] = {23'h0, circular_wr_ptr};     // From result_to_dma
+assign user_regs_read[REG_USED_ENTRIES] = {22'h0, used_entries};  // From result_to_dma
+assign user_regs_read[REG_RESULT_EMPTY] = {31'h0, buffer_empty};  // From result_to_dma
 ```
-- **Meaning**: No valid results available
-- **Purpose**: Host can check before reading
-- **Note**: Software responsibility (hardware doesn't enforce)
 
-### 3.3 Backpressure Mechanism
+---
 
-**Flow:**
-1. Engine writes results → `wr_ptr` increments → `used_entries` increases
-2. When `used_entries >= THRESHOLD` → `almost_full` asserts
-3. Master control sees `almost_full` → blocks `cmd_fifo` reads
-4. No new commands issued → engine starves → stops producing results
-5. Host reads results via DMA → updates `rd_ptr` → `used_entries` decreases
-6. When `used_entries < THRESHOLD` → `almost_full` deasserts
-7. Master control resumes → new commands issued → engine continues
+## 5. Flow Control and Backpressure
 
-**Master Control Integration** (`master_control.sv:163-164`):
+### 5.1 Used Entries Calculation
+
 ```systemverilog
-if (!i_cmd_fifo_empty && !i_result_fifo_afull) begin
-    state_next = ST_READ_HDR;  // Accept command
+// Line-based (9-bit pointers, 512 lines)
+used_entries[9:0] = (wr_ptr >= rd_ptr) ?
+                    (wr_ptr - rd_ptr) :              // Normal case
+                    (512 - rd_ptr + wr_ptr);         // Wrapped case
+```
+
+**Examples**:
+- `wr_ptr=100, rd_ptr=50` -> `used_entries=50` (normal)
+- `wr_ptr=10, rd_ptr=500` -> `used_entries=512-500+10=22` (wrapped)
+
+### 5.2 Backpressure Mechanism
+
+```
+1. Engine writes results -> wr_ptr increments -> used_entries increases
+2. When used_entries >= 496 (THRESHOLD) -> almost_full asserts
+3. result_to_dma.o_ready = 0 -> result_collector_2d stalls
+4. Engine pipeline naturally drains (no new MATMUL commands)
+5. Host reads via DMA -> updates rd_ptr -> used_entries decreases
+6. When used_entries < 496 -> almost_full deasserts
+7. o_ready = 1 -> result_collector_2d resumes
+```
+
+### 5.3 Integration with Master Control
+
+The `almost_full` signal should be connected to master_control_2d to block new READOUT commands when buffer is full:
+
+```systemverilog
+// In master_control_2d.sv state machine
+ST_EXEC_READOUT: begin
+    if (!i_result_almost_full) begin
+        // Issue READOUT command
+        state_next = ST_WAIT_READOUT;
+    end else begin
+        // Wait for buffer to drain
+        state_next = ST_EXEC_READOUT;
+    end
 end
 ```
 
 ---
 
-## 4. Operation Modes
+## 6. Host Software Interface
 
-### 4.1 Producer (Engine Write)
+### 6.1 Polling and Reading
 
-**Hardware Automatic Operation:**
-
-```
-For each compute result:
-  1. Write FP16 to BRAM[wr_ptr[12:4]] at position wr_ptr[3:0]
-  2. wr_ptr = (wr_ptr == 8191) ? 0 : wr_ptr + 1
-  3. Update used_entries and almost_full
-```
-
-**Packing Behavior** (from `result_fifo_to_simple_bram.sv`):
-- Engine produces 1 FP16 result at a time
-- Module packs 16 FP16s into 256-bit BRAM line before writing
-- Write occurs when 16th FP16 in line is ready
-- Partial line flushed on reset
-
-### 4.2 Consumer (Host Read)
-
-**Software-Controlled Operation:**
-
-```
-Host DMA Read Procedure:
-  1. Check empty flag: if (REG_RESULT_EMPTY) → no data available
-  2. Read used_entries: N = REG_USED_ENTRIES
-  3. Determine read count: read_count = min(N, desired_batch_size)
-  4. DMA read from BRAM starting at REG_RD_PTR:
-     - Convert rd_ptr to BRAM line address: line = rd_ptr >> 4
-     - Read (read_count + 15) / 16 lines (round up)
-  5. Extract FP16 results from read data
-  6. Update rd_ptr: new_rd_ptr = (rd_ptr + read_count) % 8192
-  7. Write REG_RD_PTR = new_rd_ptr
-```
-
-**Host Wrapping Responsibility:**
-- Hardware does NOT auto-wrap rd_ptr
-- Host must compute: `new_rd_ptr = (old_rd_ptr + N) % 8192`
-- If read crosses 8192 boundary, host must handle as 2 separate DMA reads
-
----
-
-## 5. Register Interface
-
-### 5.1 Register Definitions
-
-| Register Name | Address | Type | Width | Description |
-|---------------|---------|------|-------|-------------|
-| `REG_RD_PTR` | TBD | RW | [12:0] | Read pointer (host updates after consumption) |
-| `REG_WR_PTR` | TBD | RO | [12:0] | Write pointer (current engine position) |
-| `REG_USED_ENTRIES` | TBD | RO | [13:0] | Number of valid FP16 results (0-8192) |
-| `REG_RESULT_EMPTY` | TBD | RO | [0:0] | Buffer empty flag (1=empty) |
-
-### 5.2 Register Access Patterns
-
-**Host Read Sequence:**
 ```c
 // Check if data available
-if (read_reg(REG_RESULT_EMPTY) == 1) {
-    return NO_DATA;  // Buffer empty
-}
-
-// Determine how many results to read
-uint32_t used = read_reg(REG_USED_ENTRIES);
-uint32_t rd_ptr = read_reg(REG_RD_PTR);
-uint32_t read_count = min(used, MAX_BATCH_SIZE);
-
-// Perform DMA read from BRAM at rd_ptr
-uint32_t line_addr = rd_ptr >> 4;
-uint32_t lines_to_read = (read_count + 15) / 16;
-dma_read(BRAM_BASE + line_addr * 32, lines_to_read * 32, dest_buffer);
-
-// Update read pointer (host handles wrapping)
-uint32_t new_rd_ptr = (rd_ptr + read_count) % 8192;
-write_reg(REG_RD_PTR, new_rd_ptr);
-```
-
-**Host Monitoring:**
-```c
-// Monitor buffer fullness for performance analysis
-uint32_t used = read_reg(REG_USED_ENTRIES);
-uint32_t utilization = (used * 100) / 8192;  // Percentage
-```
-
----
-
-## 6. Edge Cases and Special Conditions
-
-### 6.1 Buffer Full Condition
-
-**Scenario**: `used_entries = 8192` (all slots occupied)
-
-**Handling:**
-- `almost_full` asserts at 7936 (before full)
-- Master control blocks commands → engine stops → no overflow
-- 256-entry safety margin allows in-flight results to drain
-- True full condition (8192) should never occur in normal operation
-
-### 6.2 Buffer Empty Condition
-
-**Scenario**: `wr_ptr == rd_ptr` (no valid data)
-
-**Handling:**
-- `empty` flag asserts
-- Host checks flag before reading (software responsibility)
-- Reading from empty buffer returns stale data (no hardware protection)
-- Host must validate `used_entries > 0` before DMA read
-
-### 6.3 Pointer Wrap Cases
-
-**Write Pointer Wrap** (hardware):
-```
-wr_ptr = 8191 → next write → wr_ptr = 0 (automatic)
-```
-
-**Read Pointer Wrap** (software):
-```c
-// Host reading 100 results from rd_ptr=8150
-uint32_t rd_ptr = 8150;
-uint32_t read_count = 100;
-uint32_t new_rd_ptr = (8150 + 100) % 8192;  // = 58 (wrapped)
-
-// Must handle as two DMA reads:
-// Read 1: lines 509-511 (8150→8191, 42 results)
-// Read 2: lines 0-3 (0→57, 58 results)
-```
-
-### 6.4 Concurrent Access
-
-**Scenario**: Engine writes while host updates rd_ptr
-
-**Handling:**
-- Both operations occur in same clock domain (`i_clk`)
-- Hardware updates `wr_ptr` → combinational `used_entries` update
-- Host writes `rd_ptr` register → combinational `used_entries` update
-- No race condition: pointers update atomically within clock cycle
-- `used_entries` reflects most recent pointer values
-
-### 6.5 Reset Behavior
-
-**Hardware Reset** (`i_reset_n = 0`):
-```
-wr_ptr <= 13'd0
-rd_ptr <= 13'd0  (via register reset)
-used_entries = 0
-almost_full = 0
-empty = 1
-```
-
-**Software Reset** (`i_write_top_reset = 1`):
-```
-wr_ptr <= 13'd0  (preserves rd_ptr)
-Partial packed line flushed to BRAM
-Note: Host should write rd_ptr=0 for full reset
-```
-
----
-
-## 7. Performance Characteristics
-
-### 7.1 Latency
-
-| Operation | Latency | Notes |
-|-----------|---------|-------|
-| Engine Write | 1 cycle | Write to BRAM when line complete |
-| Pointer Update | 0 cycles | Combinational logic |
-| Flag Update | 1 cycle | Registered outputs |
-| Host Read | ~2 cycles | BRAM read latency (outreg enabled) |
-| DMA Burst | N cycles | Depends on AXI burst length |
-
-### 7.2 Throughput
-
-- **Engine Write**: 1 FP16/cycle (after packing)
-- **Host Read**: Limited by PCIe/DMA bandwidth
-- **Backpressure Latency**: ~10-20 cycles (command pipeline depth)
-
-### 7.3 Buffer Sizing Rationale
-
-**Why 8192 FP16s (512 lines)?**
-- Matches BRAM depth (512 entries)
-- Large enough to absorb bursts from compute engine
-- 256-entry margin allows in-flight operations to complete
-- Power-of-2 size simplifies modulo arithmetic
-
----
-
-## 8. Integration Points
-
-### 8.1 Module Connections
-
-```
-result_fifo_to_simple_bram:
-  Inputs:  i_fifo_rdata (from compute_engine)
-           i_rd_ptr (from register file)
-  Outputs: o_wr_ptr, o_used_entries, o_empty (to registers)
-           o_bram_wr_addr, o_bram_wr_data, o_bram_wr_en (to dma_bram_bridge)
-           o_almost_full (to master_control)
-
-master_control:
-  Input:   i_result_fifo_afull (from result_fifo_to_simple_bram)
-  Logic:   Block cmd_fifo reads when i_result_fifo_afull = 1
-
-dma_bram_bridge:
-  Inputs:  i_internal_wr_addr, i_internal_wr_data, i_internal_wr_en
-           (from result_fifo_to_simple_bram via top-level)
-  Storage: 2× ACX_BRAM72K_SDP (256-bit data, 512-deep)
-  Outputs: AXI4 read interface for host DMA access
-```
-
-### 8.2 Clock Domain
-
-- **All operations**: Single clock domain (`i_clk`)
-- **No CDC required**: Host register writes synchronous to `i_clk`
-- **Assumption**: PCIe register interface is synchronous or properly synchronized
-
----
-
-## 9. Debug and Monitoring
-
-### 9.1 Real-Time Monitoring
-
-**Registers for debugging:**
-```c
-uint32_t wr_ptr = read_reg(REG_WR_PTR);
-uint32_t rd_ptr = read_reg(REG_RD_PTR);
-uint32_t used = read_reg(REG_USED_ENTRIES);
 uint32_t empty = read_reg(REG_RESULT_EMPTY);
+if (empty) return NO_DATA;
 
-printf("Buffer: wr=%d rd=%d used=%d empty=%d\n",
-       wr_ptr, rd_ptr, used, empty);
+// Get available count
+uint32_t used = read_reg(REG_USED_ENTRIES);
+uint32_t rd_ptr = read_reg(REG_RD_PTR);
+uint32_t lines_to_read = min(used, MAX_BATCH_LINES);
+
+// Calculate DMA parameters
+uint32_t byte_addr = rd_ptr * 32;  // Each line is 32 bytes (256 bits)
+uint32_t bytes_to_read = lines_to_read * 32;
+
+// Handle wrap-around case
+if (rd_ptr + lines_to_read > 512) {
+    // Split into two DMA reads
+    uint32_t first_chunk = 512 - rd_ptr;
+    uint32_t second_chunk = lines_to_read - first_chunk;
+    
+    dma_read(RESULT_BRAM_BASE + rd_ptr * 32, first_chunk * 32, dest);
+    dma_read(RESULT_BRAM_BASE, second_chunk * 32, dest + first_chunk * 32);
+    
+    write_reg(REG_RD_PTR, second_chunk);
+} else {
+    dma_read(RESULT_BRAM_BASE + byte_addr, bytes_to_read, dest);
+    write_reg(REG_RD_PTR, rd_ptr + lines_to_read);
+}
 ```
 
-### 9.2 Common Issues
-
-| Symptom | Possible Cause | Solution |
-|---------|----------------|----------|
-| Commands stall | Buffer full | Check host is reading results |
-| Empty flag never clears | Engine not running | Verify compute engine active |
-| used_entries wraps | Pointer arithmetic error | Check rd_ptr update logic |
-| Stale data read | Reading from empty | Check empty flag before read |
-
----
-
-## 10. Software Example
-
-### 10.1 Initialization
+### 6.2 Initialization
 
 ```c
 void result_buffer_init(void) {
-    // Reset both pointers
+    // Reset read pointer to 0
     write_reg(REG_RD_PTR, 0);
-    // Wait for wr_ptr to also reset (hardware reset)
-    while (read_reg(REG_WR_PTR) != 0);
-}
-```
-
-### 10.2 Read Results
-
-```c
-int result_buffer_read(fp16_t *dest, uint32_t max_count) {
-    // Check if data available
-    if (read_reg(REG_RESULT_EMPTY)) {
-        return 0;  // No data
-    }
-
-    uint32_t used = read_reg(REG_USED_ENTRIES);
-    uint32_t rd_ptr = read_reg(REG_RD_PTR);
-    uint32_t read_count = (used < max_count) ? used : max_count;
-
-    // Handle wrap-around case
-    if (rd_ptr + read_count > 8192) {
-        // Split into two DMA reads
-        uint32_t first_chunk = 8192 - rd_ptr;
-        uint32_t second_chunk = read_count - first_chunk;
-
-        dma_read_fp16(rd_ptr, first_chunk, dest);
-        dma_read_fp16(0, second_chunk, dest + first_chunk);
-
-        write_reg(REG_RD_PTR, second_chunk);
-    } else {
-        // Single DMA read
-        dma_read_fp16(rd_ptr, read_count, dest);
-        write_reg(REG_RD_PTR, rd_ptr + read_count);
-    }
-
-    return read_count;
+    
+    // Wait for engine to reset write pointer (via engine soft reset)
+    write_reg(CONTROL_REG, 0x2);  // Assert soft reset
+    usleep(1000);
+    write_reg(CONTROL_REG, 0x0);  // Release soft reset
+    
+    // Verify both pointers at 0
+    while (read_reg(REG_WR_PTR) != 0 || read_reg(REG_RD_PTR) != 0);
 }
 ```
 
 ---
 
-## 11. Verification Checklist
+## 7. Implementation Checklist
 
-### 11.1 Unit Tests (Simulation)
+### 7.1 result_to_dma.sv Modifications
 
-- [ ] Verify `used_entries` calculation (normal case: wr > rd)
-- [ ] Verify `used_entries` calculation (wrapped case: wr < rd)
-- [ ] Verify `almost_full` triggers at 7936
-- [ ] Verify `empty` flag when `wr_ptr == rd_ptr`
-- [ ] Verify `wr_ptr` wraps at 8192
-- [ ] Verify backpressure blocks master_control
+- [ ] Add `i_rd_ptr` input port (from host register)
+- [ ] Change `addr_counter` to `wr_ptr` with wrap-around
+- [ ] Add `used_entries` combinational calculation
+- [ ] Add `almost_full` threshold comparison
+- [ ] Change `o_ready` from `1'b1` to `~almost_full`
+- [ ] Add `o_wr_ptr`, `o_used_entries`, `o_empty`, `o_almost_full` outputs
 
-### 11.2 Integration Tests (Hardware)
+### 7.2 engine_top_2d.sv Modifications
 
-- [ ] Run GEMM operation, verify `wr_ptr` increments
-- [ ] Fill buffer to almost_full, verify commands block
-- [ ] Host reads results, verify `rd_ptr` updates
-- [ ] Verify `used_entries` decreases after read
-- [ ] Verify commands resume after draining
+- [ ] Add `i_rd_ptr` input port (from top-level)
+- [ ] Add `o_wr_ptr`, `o_used_entries`, `o_empty`, `o_almost_full` outputs
+- [ ] Connect new ports to `result_to_dma` instance
+
+### 7.3 elastix_gemm_top.sv Modifications
+
+- [ ] Connect `user_regs_write[REG_RD_PTR]` to engine `i_rd_ptr`
+- [ ] Connect engine outputs to `user_regs_read[REG_WR_PTR]`, etc.
+- [ ] (Optional) Connect `almost_full` to master_control_2d
+
+### 7.4 Simulation Verification
+
+- [ ] Verify `used_entries` normal case (wr > rd)
+- [ ] Verify `used_entries` wrapped case (wr < rd)
+- [ ] Verify `almost_full` triggers at threshold
+- [ ] Verify `empty` when wr_ptr == rd_ptr
+- [ ] Verify `wr_ptr` wraps at 512
+- [ ] Verify backpressure blocks result_collector_2d
 - [ ] Stress test: continuous write/read cycles
 
 ---
 
-## 12. Revision History
+## 8. Performance Characteristics
 
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | 2025-10-31 | Claude | Initial release |
+### 8.1 Latency
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| Engine Write | 1 cycle | Registered output from result_to_dma |
+| Pointer Update | 0 cycles | Combinational in result_to_dma |
+| Flag Update | 0-1 cycles | Combinational or registered |
+| Host Read | 2 cycles | BRAM output register enabled |
+| DMA Burst | N cycles | Depends on AXI burst length |
+
+### 8.2 Buffer Sizing
+
+**Why 512 lines (8192 FP16)?**
+- Matches single BRAM72K depth (512 entries)
+- Large enough to absorb compute bursts
+- 16-line margin (256 FP16) for backpressure latency
+- Power-of-2 simplifies modulo arithmetic
 
 ---
 
-## 13. References
+## 9. Revision History
 
-- **SINGLE_ROW_REFERENCE.md**: Command structure and execution flow
-- **STATE_TRANSITIONS_REFERENCE.md**: Master control FSM behavior
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2025-10-31 | Claude | Initial legacy design |
+| 2.0 | 2026-01-28 | Claude | Rewritten for result_to_dma + dma_bram_bridge architecture |
+
+---
+
+## 10. References
+
+- **MULTI_ROW_REFERENCE.md**: 2D engine command structure and execution flow
 - **Component Library UG086**: ACX_BRAM72K primitives
-- **result_fifo_to_simple_bram.sv**: Implementation source
-- **master_control.sv**: Backpressure integration
+- **result_to_dma.sv**: Implementation source (circular buffer adapter)
+- **dma_bram_bridge.sv**: BRAM storage with AXI4 interface
+- **engine_top_2d.sv**: Engine integration point

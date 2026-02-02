@@ -15,7 +15,14 @@
       "Bash(make clean:*)",
       "Bash(make run:*)",
       "Bash(./test_registers)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(ls:*)",
+      "Bash(for dir in /home/dev/Dev/elastix_gemm/gemm/sim/*/)",
+      "Bash(do if [[ \"$dir\" != *\"archived\"* ]])",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(make test_gemm_2d_multi_iter:*)",
+      "Bash(./test_gemm_2d_multi_iter:*)"
     ]
   },
   "outputStyle": "concise-technical"

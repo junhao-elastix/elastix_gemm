@@ -179,23 +179,25 @@ import gemm_pkg::*;
         all_dc_idle = 1'b1;
         all_ce_idle = 1'b1;
         for (int r = 0; r < NUM_ROWS; r++) begin
-            // Row is complete if its cmd_id >= wait_id
-            all_dc_wait_complete = all_dc_wait_complete & (i_dc_id[r] >= wait_disp_id_reg);
-            all_ce_wait_complete = all_ce_wait_complete & (i_ce_id[r] >= wait_matmul_id_reg);
+            // Row is complete if its cmd_id has reached or passed wait_id
+            // Use wrap-around safe comparison: (current - wait) < 128
+            // This correctly handles 8-bit counter wrap (e.g., 1 vs 254)
+            all_dc_wait_complete = all_dc_wait_complete & ((i_dc_id[r] - wait_disp_id_reg) < 8'd128);
+            all_ce_wait_complete = all_ce_wait_complete & ((i_ce_id[r] - wait_matmul_id_reg) < 8'd128);
             // Row is idle if state == 0
             all_dc_idle = all_dc_idle & (i_dc_state[r] == 4'd0);
             all_ce_idle = all_ce_idle & (i_ce_state[r] == 4'd0);
         end
     end
     
-    // Backpressure: any row's result FIFO almost-full
-    logic any_ce_result_fifo_afull;
-    always_comb begin
-        any_ce_result_fifo_afull = 1'b0;
-        for (int r = 0; r < NUM_ROWS; r++) begin
-            any_ce_result_fifo_afull = any_ce_result_fifo_afull | i_ce_result_fifo_afull[r];
-        end
-    end
+    // // Backpressure: any row's result FIFO almost-full
+    // logic any_ce_result_fifo_afull;
+    // always_comb begin
+    //     any_ce_result_fifo_afull = 1'b0;
+    //     for (int r = 0; r < NUM_ROWS; r++) begin
+    //         any_ce_result_fifo_afull = any_ce_result_fifo_afull | i_ce_result_fifo_afull[r];
+    //     end
+    // end
 
     // ===================================================================
     // State Transition Logic
@@ -280,7 +282,7 @@ import gemm_pkg::*;
             ST_WAIT_DISP: begin
                 // Wait for ALL rows' DC to complete up to wait_id
                 // Release conditions (either one):
-                //   1. dc_id >= wait_id for all rows (ID-based completion)
+                //   1. (dc_id - wait_id) < 128 for all rows (wrap-safe completion check)
                 //   2. All DCs are IDLE (state=0) - they finished their work
                 if (all_dc_wait_complete || all_dc_idle) begin
                     state_next = ST_CMD_COMPLETE;
@@ -298,7 +300,8 @@ import gemm_pkg::*;
                 // - wait_matmul_id_reg = READOUT cmd_id from WAIT_MATMUL command
                 // - RC sets completed_id_reg = cmd_id when finishing READOUT
                 //
-                if ((i_rc_state == 4'd0) || (i_rc_id >= wait_matmul_id_reg)) begin
+                // Use wrap-around safe comparison: (current - wait) < 128
+                if ((i_rc_state == 4'd0) || ((i_rc_id - wait_matmul_id_reg) < 8'd128)) begin
                     state_next = ST_CMD_COMPLETE;
                 end else begin
                     state_next = ST_WAIT_MATMUL;
@@ -306,11 +309,12 @@ import gemm_pkg::*;
             end
 
             ST_EXEC_READOUT: begin
-                if (rc_ack_readout_reg) begin
-                    state_next = ST_CMD_COMPLETE;
-                end else begin
-                    state_next = ST_EXEC_READOUT;
-                end
+                state_next = ST_CMD_COMPLETE;
+                // if (rc_ack_readout_reg) begin
+                //     state_next = ST_CMD_COMPLETE;
+                // end else begin
+                //     state_next = ST_EXEC_READOUT;
+                // end
             end
 
             ST_CMD_COMPLETE: begin
@@ -542,7 +546,7 @@ import gemm_pkg::*;
 
             ST_EXEC_READOUT: begin
                 // RC is global - single acknowledge
-                rc_ack_readout_reg <= i_rc_ack_readout;
+                // rc_ack_readout_reg <= i_rc_ack_readout;
             end
 
             ST_CMD_COMPLETE: begin

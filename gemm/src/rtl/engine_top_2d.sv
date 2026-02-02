@@ -101,7 +101,9 @@ import gemm_pkg::*;
     // FIFO Almost-Full Debug Signals (OR'd across all rows)
     output logic                         o_dbg_dc_fifo_afull,     // Dispatcher FIFO almost-full (any row)
     output logic                         o_dbg_ce_fifo_afull,     // CE result FIFO almost-full (any row)
-    output logic                         o_dbg_rc_fifo_afull      // Result collector output FIFO almost-full
+    output logic                         o_dbg_rc_fifo_afull,     // Result collector output FIFO almost-full
+    output logic                         o_dbg_ce_read_empty_sticky, // CE result FIFO read-while-empty (any row)
+    output logic                         o_ce_results_ready       // Any CE has results ready for draining
 );
 
     // ===================================================================
@@ -165,6 +167,8 @@ import gemm_pkg::*;
     logic         ce_ack_matmul  [NUM_ROWS-1:0];
     logic [7:0]   ce_id          [NUM_ROWS-1:0];
     logic         ce_result_fifo_afull [NUM_ROWS-1:0];
+    logic         ce_read_empty_sticky [NUM_ROWS-1:0];  // Per-row read-while-empty sticky
+    logic         ce_results_ready [NUM_ROWS-1:0];       // Per-row results ready flag
     logic         ce_matmul_done [NUM_ROWS-1:0];
 
     // Result Collector Interface
@@ -493,14 +497,16 @@ import gemm_pkg::*;
 
                 // Debug
                 .o_ce_state         (ce_state[r]),
-                .o_result_count     ()
+                .o_result_count     (),
+                .o_read_empty_sticky(ce_read_empty_sticky[r]),
+                .o_results_ready    (ce_results_ready[r])
             );
 
         end
     endgenerate
 
     // ------------------------------------------------------------------
-    // Result Collector - Global reduction across all rows (READOUT command)
+    // Result Collector - Auto-drain mode (no READOUT command needed)
     // ------------------------------------------------------------------
     result_collector_2d #(
         .NUM_ROWS           (NUM_ROWS),
@@ -511,7 +517,10 @@ import gemm_pkg::*;
         .i_clk              (i_clk),
         .i_reset_n          (i_reset_n),
 
-        // Command Interface (snoops MC command bus)
+        // Results Ready Signal (OR'd from all CEs)
+        .i_ce_results_ready (o_ce_results_ready),
+
+        // Command Interface (kept for compatibility, not used for flow control)
         .i_mc_cmd_op        (mc_cmd_op),
         .i_mc_cmd_id        (mc_cmd_id),
         .i_cmd_payload_word1(mc_cmd_payload_word1[0]),
@@ -614,7 +623,23 @@ import gemm_pkg::*;
         end
     end
 
+    // CE result FIFO read-while-empty sticky: any row detected read-while-empty
+    always_comb begin
+        o_dbg_ce_read_empty_sticky = 1'b0;
+        for (int r = 0; r < NUM_ROWS; r++) begin
+            o_dbg_ce_read_empty_sticky |= ce_read_empty_sticky[r];
+        end
+    end
+
     // RC output FIFO afull: single signal from result collector
     assign o_dbg_rc_fifo_afull = rc_output_fifo_afull;
+
+    // CE results ready: any row has results ready for draining
+    always_comb begin
+        o_ce_results_ready = 1'b0;
+        for (int r = 0; r < NUM_ROWS; r++) begin
+            o_ce_results_ready |= ce_results_ready[r];
+        end
+    end
 
 endmodule : engine_top_2d

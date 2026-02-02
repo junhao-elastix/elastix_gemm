@@ -610,6 +610,8 @@ module elastix_gemm_top
     logic        dbg_dc_fifo_afull;      // Dispatcher FIFO almost-full (any row)
     logic        dbg_ce_fifo_afull;      // CE result FIFO almost-full (any row)
     logic        dbg_rc_fifo_afull;      // Result collector output FIFO almost-full
+    logic        dbg_ce_read_empty_sticky; // CE result FIFO read-while-empty (any row)
+    logic        ce_results_ready;        // Any CE has results ready for draining
 
     // Soft-reset for engine
     logic engine_soft_reset;
@@ -715,7 +717,9 @@ module elastix_gemm_top
         .o_dbg_dc_state_row0    (dbg_dc_state_row0),
         .o_dbg_dc_fifo_afull    (dbg_dc_fifo_afull),
         .o_dbg_ce_fifo_afull    (dbg_ce_fifo_afull),
-        .o_dbg_rc_fifo_afull    (dbg_rc_fifo_afull)
+        .o_dbg_rc_fifo_afull    (dbg_rc_fifo_afull),
+        .o_dbg_ce_read_empty_sticky (dbg_ce_read_empty_sticky),
+        .o_ce_results_ready     (ce_results_ready)
     );
 
     // Connect engine BRAM writer to module-level signals
@@ -739,17 +743,18 @@ module elastix_gemm_top
     // Engine status: {reserved[12], reserved[4], mc_state[4], rc_state[4], reserved[4], busy[1]}
     assign user_regs_read[ENGINE_STATUS] = {12'h0, 4'h0, mc_state_2d, rc_state_2d, 3'b0, engine_busy};
     assign user_regs_read[ENGINE_RESULT_COUNT] = 32'h0;  // TODO: Add result counter to engine_top_2d
-    // ENGINE_DEBUG: {bridge_busy[31], dc_afull[30], ce_afull[29], rc_afull[28],
-    //                 FIFO_empty[27], rc_state[26:23], mc_state[22:19], FIFO_count[18:6], 6'b0}
-    assign user_regs_read[ENGINE_DEBUG] = {cmd_bram_bridge_busy,     // [31] Bridge busy
-                                           dbg_dc_fifo_afull,        // [30] Dispatcher FIFO almost-full
-                                           dbg_ce_fifo_afull,        // [29] CE result FIFO almost-full
-                                           dbg_rc_fifo_afull,        // [28] RC output FIFO almost-full
-                                           cmd_fifo_count == 13'd0,  // [27] FIFO empty
-                                           rc_state_2d,              // [26:23] RC state
-                                           mc_state_2d,              // [22:19] MC state
-                                           cmd_fifo_count,           // [18:6] FIFO count
-                                           6'b0};                    // [5:0] Reserved
+    // ENGINE_DEBUG: {bridge_busy[27], dc_afull[26], ce_afull[25], rc_afull[24],
+    //                 reserved[23:22], mc_state[21:18], FIFO_count[17:5],
+    //                 ce_read_empty_sticky[5], ce_results_ready[4], 4'b0}
+    assign user_regs_read[ENGINE_DEBUG] = {cmd_bram_bridge_busy,     // [27] Bridge busy
+                                           dbg_dc_fifo_afull,        // [26] Dispatcher FIFO almost-full
+                                           dbg_ce_fifo_afull,        // [25] CE result FIFO almost-full
+                                           dbg_rc_fifo_afull,        // [24] RC output FIFO almost-full
+                                           2'b0,
+                                           dbg_ce_read_empty_sticky, // [21] CE read-while-empty sticky (OR'd all rows/cols)
+                                           ce_results_ready,         // [20] Any CE has results ready for draining
+                                           mc_state_2d,              // [19:16] MC state
+                                           3'b0, cmd_fifo_count};    // [15:13] Reserved, [12:0] FIFO count
 
     // Circular buffer interface registers (from engine_top_2d result_to_dma)
     // Ring buffer: 512 lines (9-bit address), wr_ptr from HW, rd_ptr from SW

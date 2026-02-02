@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
@@ -342,7 +343,6 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config,
 
     // Wait for engine to become idle with extended timeout and debug
     cout << "  Waiting for engine..." << endl;
-    auto wait_start = chrono::high_resolution_clock::now();
     int wait_iter = 0;
     while (wait_iter < 50) {  // 50 * 100ms = 5 seconds total
         uint32_t status = gemm_device.mmio_read32(0, 0x50);
@@ -483,11 +483,12 @@ bool run_2d_gemm_test(VP815GemmDevice& gemm_device, const TestConfig& config,
     vector<float> golden_sum(expected_results, 0.0f);
 
     for (int r = 0; r < NUM_ROWS; r++) {
-        stringstream golden_path;
-        golden_path << config.hex_dir << "/golden_B" << B << "_C" << C << "_V" << V_per_row << "_" << r << ".hex";
+        // Try multi-block layout first (golden_{r}_0.hex), then legacy (golden_{r}.hex)
+        string multi_path = config.hex_dir + "/golden_B" + to_string(B) + "_C" + to_string(C) + "_V" + to_string(V_per_row) + "_" + to_string(r) + "_0.hex";
+        string legacy_path = config.hex_dir + "/golden_B" + to_string(B) + "_C" + to_string(C) + "_V" + to_string(V_per_row) + "_" + to_string(r) + ".hex";
 
         vector<uint16_t> row_golden;
-        if (!loadGoldenHex(golden_path.str(), row_golden)) {
+        if (!loadGoldenHex(multi_path, row_golden) && !loadGoldenHex(legacy_path, row_golden)) {
             cerr << "ERROR: Failed to load golden for row " << r << endl;
             return false;
         }
@@ -687,8 +688,10 @@ int main(int argc, char* argv[]) {
                     cerr << "ERROR: Failed to load left_" << r << ".hex for " << config.name << endl;
                     return 1;
                 }
-                if (!loadHexFile(right_path.str(), right_data[r])) {
-                    cerr << "ERROR: Failed to load right_" << r << ".hex for " << config.name << endl;
+                // Try multi-block layout first (right_{r}_0.hex), then legacy (right_{r}.hex)
+                if (!loadHexFile(config.hex_dir + "/right_" + to_string(r) + "_0.hex", right_data[r]) &&
+                    !loadHexFile(right_path.str(), right_data[r])) {
+                    cerr << "ERROR: Failed to load right_" << r << "_0.hex or right_" << r << ".hex for " << config.name << endl;
                     return 1;
                 }
             }

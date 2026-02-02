@@ -125,13 +125,16 @@ public:
     // ---------------------- Soft Reset --------------------------------------
     void soft_reset() {
         mmio_write32(0, 0x0, 0x2);  // Assert reset (bit 1 of control register)
-        usleep(100);                 // Hold reset for 100us (>> 5 clock cycles at 400MHz)
+        // usleep(100);                 // Hold reset for 100us (>> 5 clock cycles at 400MHz)
         mmio_write32(0, 0x0, 0x0);  // Deassert reset
-        usleep(100);                 // Wait for state to settle
+        // usleep(100);                 // Wait for state to settle
         // Note: wr_ptr auto-resets via engine_rstn (async reset)
         // Register 0x234 is READ-ONLY (hardware wr_ptr status)
+        mmio_write32(0, 0x230, 0);  // Reset rd_ptr to 0
+        // Reset cmd_id counter to match hardware reset state
+        current_id_ = 0;
         // Clear command buffer on reset
-        begin_command_batch();
+        // begin_command_batch();
     }
 
     // ---------------------- Wait for Engine Idle ----------------------------
@@ -167,9 +170,11 @@ public:
     // Command Batch Management (DMA-BRAM Interface)
     // =========================================================================
     // Start a new command batch (clears buffer)
+    // NOTE: Does NOT reset cmd_id - let it increment naturally for RTL wrap-around handling
     void begin_command_batch() {
         cmd_buffer_.clear();
         cmd_count_ = 0;
+        // Don't reset current_id_ here - RTL handles wrap-around with signed comparison
     }
 
     // Submit command batch to hardware via DMA-BRAM interface

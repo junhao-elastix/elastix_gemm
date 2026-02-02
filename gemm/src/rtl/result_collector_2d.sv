@@ -1,8 +1,8 @@
 // ------------------------------------------------------------------
-// 2-D Multi-Row GEMM Result Collector (Auto-Drain Version)
+// 2-D Multi-Row GEMM Result Collector (Auto-Drain, Always-Ready Downstream)
 //
 // Purpose: Collects and reduces partial results from all compute engine rows
-// Refactored for auto-drain: drains FIFOs automatically when data available
+// Refactored for auto-drain with always-ready downstream (result_to_dma)
 //
 // Architecture:
 //  - Receives FP16 results from NUM_ROWS x NUM_COLS CE FIFOs
@@ -11,19 +11,20 @@
 //  - Serializes reduced results into 256-bit output lines (16 x FP16)
 //
 // Auto-Drain Behavior:
-//  - Drains automatically when: col_fifos_ready && ~obuf_afull
-//  - No READOUT command needed to start draining
+//  - Drains CE FIFOs when col_fifos_ready (all rows have data for column)
+//  - Output FIFO drained continuously (downstream always ready)
+//  - No READOUT command needed, no backpressure from downstream
 //  - Completion detected via i_ce_results_ready signal from CEs
 //  - Packs partial line when results_ready_seen AND all FIFOs empty
 //
-// Output Order:
-//  - Outputs packed FP16 lines as data becomes available
+// Output Interface:
+//  - Simplified: downstream always accepts (i_output_ready = 1)
 //  - Each line = 16 FP16 values (256 bits)
 //  - Keep mask indicates valid positions in partial last line
 //  - Last signal asserts on final partial line
 //
 // Author: Junhao Pan
-// Date: 01/29/2026
+// Date: 01/29/2026 (Simplified for always-ready downstream)
 // ------------------------------------------------------------------
 
 `timescale 1ps / 1ps
@@ -239,39 +240,23 @@ import gemm_pkg::*;
     );
 
     // ===================================================================
-    // First-Word-Fall-Through (FWFT) Logic for Output FIFO
+    // Simplified Output FIFO Read Logic (Always-Drain Mode)
     // ===================================================================
+    // Downstream (result_to_dma) is always ready, so we continuously
+    // drain the output FIFO whenever it has data. No FWFT complexity needed.
     logic obuf_data_valid;
-    logic obuf_was_empty;
-    logic obuf_read_pending;
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (~i_reset_n) begin
-            obuf_data_valid   <= 1'b0;
-            obuf_was_empty    <= 1'b1;
-            obuf_read_pending <= 1'b0;
+            obuf_data_valid <= 1'b0;
         end else begin
-            obuf_was_empty <= obuf_empty;
-
-            if (obuf_read_pending) begin
-                obuf_data_valid   <= 1'b1;
-                obuf_read_pending <= 1'b0;
-            end
-            else if (obuf_was_empty && ~obuf_empty) begin
-                obuf_read_pending <= 1'b1;
-                obuf_data_valid   <= 1'b0;
-            end
-            else if (o_output_valid && i_output_ready) begin
-                obuf_data_valid <= 1'b0;
-                if (~obuf_empty) begin
-                    obuf_read_pending <= 1'b1;
-                end
-            end
+            // Data valid 1 cycle after read (FIFO read latency)
+            obuf_data_valid <= obuf_rd_en;
         end
     end
 
-    assign obuf_rd_en = (obuf_was_empty && ~obuf_empty) ||
-                        (o_output_valid && i_output_ready && ~obuf_empty);
+    // Always read when FIFO has data (downstream always ready)
+    assign obuf_rd_en = ~obuf_empty;
 
     // Unpack output FIFO
     assign o_output_last = obuf_rd_data[OBUF_DATA_WIDTH-1];

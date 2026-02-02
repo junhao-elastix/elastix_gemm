@@ -81,6 +81,7 @@ You should also run bram and ddr basic tests to sanity check the implementation 
 
 - **Tests (MANDATORY)**
 NEVER hardcode reference results. You should either generate golden output from some reference model or compare the results with a golden output file. 
+You are NEVER allowed to temper with the golden hex files without my explicit permission.
 Before you create new C tests, please always check the existing tests. You can either extend the existing tests or replace the ones that are obsolete. Don't add new tests unless necessary.
 Always compile from Makefile. 
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-cd /home/dev/Dev/elastix_gemm/gemm/demo/11030039
-# cd /home/dev/Dev/elastix_gemm/gemm/demo/bitstream/
-echo "Copying flash.tcl to build directory"
+# cd /home/dev/Dev/elastix_gemm/gemm/
+cd /home/dev/Dev/elastix_gemm/gemm/demo/bitstream/
+# echo "Copying flash.tcl to build directory"
 pwd
 
 if [ ! -f ./elastix_gemm_top.VP815.1.1.hex ]; then
@@ -10,7 +10,8 @@ if [ ! -f ./elastix_gemm_top.VP815.1.1.hex ]; then
 fi
 
 cp /home/dev/Dev/elastix_gemm/gemm/hex.tcl .
-/opt/achronix/ACE_10_3_1/Achronix-linux/ace -b -lab_mode -script_file hex.tcl
+/opt/achronix/ACE_10_4_1/Achronix-linux/ace -b -lab_mode -script_file hex.tcl
+# /opt/achronix/ACE_10_3_1/Achronix-linux/ace -b -lab_mode -script_file reset.tcl
 
 echo "=== Checking PCIe device visibility (MANDATORY safety check) ==="
 if ! sudo lspci -d 1b59: | grep -q "1b59"; then
@@ -32,8 +33,8 @@ fi
 echo "✅ Device still visible - proceeding with rescan"
 
 sleep 10
-Safe to rescan now
 source /home/dev/rescan
-
+#
 # Test device status
-# /home/dev/Dev/elastix_gemm/gemm/sw_test/test_registers
+/home/dev/Dev/elastix_gemm/gemm/sw_test/test_registers
+/home/dev/Dev/elastix_gemm/gemm/sw_test/reset_and_check

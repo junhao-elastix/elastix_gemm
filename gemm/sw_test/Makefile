@@ -1,7 +1,7 @@
 # Makefile for Elastix GEMM Software Tests
 # 128-register configuration test suite for AC7t1500 Speedster7t
 
-DEV_ROOT = /home/dev/Dev
+DEV_ROOT = /home/workstation
 
 CXX = g++
 CXXFLAGS = -std=c++14 -O2 -Wall -Wextra -DDRIVER_ACX
@@ -93,9 +93,9 @@ test_gemm_2d_single_cmd: test_gemm_2d_single_cmd.cpp
 reset_and_check: reset_and_check.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(VP815_API) $(LIBS) -o $@
 
-# Clean targets
+# Clean targets (do not remove test_registers)
 clean:
-	rm -f $(ESSENTIAL_BINS) $(ALL_BINS)
+	rm -f $(filter-out test_registers,$(ESSENTIAL_BINS) $(ALL_BINS))
 
 cleanall: clean
 	rm -rf obsolete_debug_tests/*.o obsolete_debug_tests/*.out
@@ -155,7 +155,7 @@ help:
 	@echo "  test_linear        - Linear layer test with 16 right dispatches (B4 C64 V32)"
 	@echo "  test_gemm_2d       - 2D multi-row GEMM test (16 rows with row-reduction)"
 	@echo "  test_gemm_2d_multi_iter - Multi-iteration weight persistence test"
-	@echo "  test_gemm_2d_single_cmd - Single command mode (debug: status after each cmd)"
+	@echo "  test_gemm_2d_single_cmd - Grouped: fetch+dispatch together, matmul+readout together"
 	@echo ""
 
 .PHONY: all clean clean_all test_basic test_memory test_scan test_all validate help

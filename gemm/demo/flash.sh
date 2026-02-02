@@ -8,3 +8,4 @@ cp -f ../flash.tcl .
 /opt/achronix/ACE_10_3_1/Achronix-linux/ace -lab_mode -b -script_file flash.tcl
 
 # sudo reboot
+# sudo reboot

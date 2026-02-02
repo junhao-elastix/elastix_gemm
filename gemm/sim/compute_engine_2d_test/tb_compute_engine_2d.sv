@@ -46,6 +46,7 @@ module tb_compute_engine_2d;
     // Configurable NUM_MLPS - override via Makefile +define+NUM_MLPS=N
     `ifndef NUM_MLPS
     `define NUM_MLPS 2
+    `define NUM_MLPS 2
     `endif
     localparam int NUM_MLPS         = `NUM_MLPS;
     localparam int NUM_COLS         = 2 * NUM_MLPS;  // 2 columns per MLP
@@ -64,7 +65,7 @@ module tb_compute_engine_2d;
     // =========================================================================
     // Hex File Paths
     // =========================================================================
-    localparam string HEX_PATH = "/home/dev/Dev/elastix_gemm/hex/";
+    localparam string HEX_PATH = "/home/workstation/elastix_gemm/hex/";
 
     // =========================================================================
     // Test Configuration
@@ -73,7 +74,9 @@ module tb_compute_engine_2d;
         int         C;              // Number of columns (weight NVs)
         int         V;              // NVs per column (V-loop depth for accumulation)
         int         B;              // Number of batches (activation NVs per dot product)
-        string      name;           // Golden file name (without .hex)
+        string      name;           // Test directory name and golden file prefix
+        bit         multi_file;     // 1=load from subdirectory with multiple files
+        int         row_id;         // Row ID for multi-file tests (0-15)
     } test_config_t;
 
     // Test suite - uses available golden files
@@ -158,11 +161,13 @@ module tb_compute_engine_2d;
     // Raw Hex Data Storage
     // =========================================================================
     logic [7:0] left_exp_data  [0:EXP_LINES-1][0:31];
-    logic [7:0] right_exp_data [0:EXP_LINES-1][0:31];
+    // For multi-file mode: one memory block per physical column (NUM_COLS=4)
+    logic [7:0] right_exp_data [0:NUM_COLS-1][0:EXP_LINES-1][0:31];
     logic [7:0] left_man_data  [0:511][0:31];
-    logic [7:0] right_man_data [0:511][0:31];
+    logic [7:0] right_man_data [0:NUM_COLS-1][0:511][0:31];
 
-    int left_lines_loaded, right_lines_loaded;
+    int left_lines_loaded;
+    int right_lines_loaded [0:NUM_COLS-1];
 
     // =========================================================================
     // DUT Instantiation - Raw Opcode Interface
@@ -313,7 +318,7 @@ module tb_compute_engine_2d;
     endtask
 
     // =========================================================================
-    // Get Exponent for NV chunk
+    // Get Exponent for NV chunk (with optional column index for right data)
     // =========================================================================
     function automatic logic [7:0] get_exponent(
         input logic [7:0] exp_data [0:EXP_LINES-1][0:31],
@@ -333,8 +338,27 @@ module tb_compute_engine_2d;
         return convert_exp(raw_exp);
     endfunction
 
+    function automatic logic [7:0] get_exponent_col(
+        input logic [7:0] exp_data [0:NUM_COLS-1][0:EXP_LINES-1][0:31],
+        input int col_idx,
+        input int nv_idx,
+        input int chunk_idx
+    );
+        int exp_idx;
+        int exp_line;
+        int exp_byte;
+        logic [7:0] raw_exp;
+
+        exp_idx = nv_idx * 4 + chunk_idx;
+        exp_line = exp_idx / 32;
+        exp_byte = exp_idx % 32;
+
+        raw_exp = exp_data[col_idx][exp_line][exp_byte];
+        return convert_exp(raw_exp);
+    endfunction
+
     // =========================================================================
-    // Get 256-bit Mantissa Chunk
+    // Get 256-bit Mantissa Chunk (with optional column index for right data)
     // =========================================================================
     function automatic logic [255:0] get_mantissa_chunk(
         input logic [7:0] man_data [0:511][0:31],
@@ -348,6 +372,23 @@ module tb_compute_engine_2d;
         chunk = '0;
         for (int i = 0; i < 32; i++) begin
             chunk[i*8 +: 8] = man_data[man_line][i];
+        end
+        return chunk;
+    endfunction
+
+    function automatic logic [255:0] get_mantissa_chunk_col(
+        input logic [7:0] man_data [0:NUM_COLS-1][0:511][0:31],
+        input int col_idx,
+        input int nv_idx,
+        input int chunk_idx
+    );
+        int man_line;
+        logic [255:0] chunk;
+
+        man_line = nv_idx * 4 + chunk_idx;
+        chunk = '0;
+        for (int i = 0; i < 32; i++) begin
+            chunk[i*8 +: 8] = man_data[col_idx][man_line][i];
         end
         return chunk;
     endfunction
@@ -386,17 +427,66 @@ module tb_compute_engine_2d;
     // Note: compute_engine_2d applies E5->E8 bias conversion internally
     //       so we pass RAW exponents here
     //
+    // For multi-file mode (C > NUM_COLS):
+    //   - Each physical column has its own memory block file
+    //   - right_data[col_idx] contains all logical columns that map to col_idx
+    //   - Data is pre-organized in column-major, round-robin order
+    //   - Each file contains num_col_groups = C/NUM_COLS column groups
+    //   - wraddr pattern: wraddr = cg * V * 8 + v * 8 + chunk * 2 + bank
+    //
     // Address scheme for asymmetric BRAM (rdaddr N reads wraddrs 2N and 2N+1):
     //   - bank0 (even columns) chunks go to EVEN wraddrs
     //   - bank1 (odd columns) chunks go to ODD wraddrs
-    // Pattern: wraddr = wraddr_base + v * 8 + chunk * 2 + bank
-    //
-    // Column Group Wrapping (for C > NUM_COLS):
-    //   - col_sel cycles 0 to NUM_COLS-1
-    //   - When col_sel wraps, wraddr_base advances by V * 8
-    //   - This matches RTL: rd_base_addr_eff = base + cg_cnt * V * 8
     // =========================================================================
-    task automatic write_weights(int C, int V);
+    task automatic write_weights_multifile(int C, int V);
+        int num_col_groups;
+        int mlp_idx, bank, col_idx;
+        int src_nv_idx;
+        int direct_wraddr;
+
+        num_col_groups = C / NUM_COLS;  // Number of column groups
+        $display("[TB] Writing weights (multi-file) for %0d columns x %0d NVs (NUM_COLS=%0d, groups=%0d)",
+                 C, V, NUM_COLS, num_col_groups);
+
+        // Iterate through each physical column
+        for (col_idx = 0; col_idx < NUM_COLS; col_idx++) begin
+            mlp_idx = col_idx / 2;  // Which MLP (0 to NUM_MLPS-1)
+            bank = col_idx % 2;     // Which bank within MLP (0 or 1)
+
+            $display("[TB]   Loading column %0d (MLP %0d bank %0d)", col_idx, mlp_idx, bank);
+
+            // Each file contains num_col_groups logical columns × V NVs
+            // Layout: cg0_v0, cg0_v1, ..., cg0_v(V-1), cg1_v0, ..., cg(num_col_groups-1)_v(V-1)
+            for (int cg = 0; cg < num_col_groups; cg++) begin
+                for (int v = 0; v < V; v++) begin
+                    src_nv_idx = cg * V + v;  // NV index in this column's memory block
+
+                    // Write 4 chunks with interleaved wraddrs
+                    for (int chunk = 0; chunk < 4; chunk++) begin
+                        // wraddr = cg * (V * 8) + v * 8 + chunk * 2 + bank
+                        direct_wraddr = cg * V * 8 + v * 8 + chunk * 2 + bank;
+
+                        wt_mlp_sel = mlp_idx[2:0];
+                        wt_nv_idx = direct_wraddr[9:0];
+                        wt_wr_man = get_mantissa_chunk_col(right_man_data, col_idx, src_nv_idx, chunk);
+                        wt_wr_exp = get_raw_exponent(right_exp_data[col_idx], src_nv_idx, chunk);
+                        wt_wr_en = 1'b1;
+                        @(posedge clk);
+                        @(negedge clk);  // Hold write enable for full cycle
+                        wt_wr_en = 1'b0;
+                    end
+                end
+            end
+
+            $display("[TB]   Column %0d complete (loaded %0d column groups × %0d V = %0d NVs)",
+                     col_idx, num_col_groups, V, num_col_groups * V);
+        end
+
+        $display("[TB] Weight write complete");
+    endtask
+
+    // Legacy single-file weight write (keep for backward compatibility)
+    task automatic write_weights_singlefile(int C, int V);
         int mlp_idx;
         int bank;
         int src_nv;
@@ -404,7 +494,7 @@ module tb_compute_engine_2d;
         int col_sel;         // Current logical column (0 to NUM_COLS-1)
         int wraddr_base;     // Base address, advances on column wrap
 
-        $display("[TB] Writing weights for %0d columns x %0d NVs (NUM_COLS=%0d)", C, V, NUM_COLS);
+        $display("[TB] Writing weights (single-file) for %0d columns x %0d NVs (NUM_COLS=%0d)", C, V, NUM_COLS);
 
         col_sel = 0;         // Start at column 0
         wraddr_base = 0;     // Start at base address 0
@@ -419,14 +509,12 @@ module tb_compute_engine_2d;
 
                 // Write 4 chunks with interleaved wraddrs
                 for (int chunk = 0; chunk < 4; chunk++) begin
-                    // wraddr = wraddr_base + v * 8 + chunk * 2 + bank
-                    // This interleaves bank0 at even and bank1 at odd addresses
                     direct_wraddr = wraddr_base + v * 8 + chunk * 2 + bank;
 
                     wt_mlp_sel = mlp_idx[2:0];
                     wt_nv_idx = direct_wraddr[9:0];
-                    wt_wr_man = get_mantissa_chunk(right_man_data, src_nv, chunk);
-                    wt_wr_exp = get_raw_exponent(right_exp_data, src_nv, chunk);  // RAW exponent
+                    wt_wr_man = get_mantissa_chunk_col(right_man_data, 0, src_nv, chunk);
+                    wt_wr_exp = get_raw_exponent(right_exp_data[0], src_nv, chunk);
                     wt_wr_en = 1'b1;
                     @(posedge clk);
                     @(negedge clk);  // Hold write enable for full cycle
@@ -434,24 +522,14 @@ module tb_compute_engine_2d;
                 end
             end
 
-            $display("[TB]   Column %0d loaded to MLP %0d bank %0d (col_sel=%0d, wraddr_base=%0d)",
-                     c, mlp_idx, bank, col_sel, wraddr_base);
-
             // Advance col_sel, wrap at NUM_COLS
             if (col_sel == NUM_COLS - 1) begin
-                // Wrapped around: reset col_sel, advance wraddr_base
                 col_sel = 0;
-                wraddr_base = wraddr_base + V * 8;  // V NVs * 8 addresses per NV
-                $display("[TB]   Column wrap: col_sel->0, wraddr_base->%0d", wraddr_base);
+                wraddr_base = wraddr_base + V * 8;
             end else begin
                 col_sel = col_sel + 1;
             end
         end
-
-        // NOTE: Do NOT initialize unused columns to zero.
-        // Writing zeros with a converted exponent (exp=118) can affect
-        // the group exponent computation in BFP mode.
-        // MLPStack_test leaves unused banks as X, which is treated as don't-care.
 
         $display("[TB] Weight write complete");
     endtask
@@ -621,6 +699,33 @@ module tb_compute_engine_2d;
         $display("[TB] Loaded %0d golden values from %s", golden_count, filename);
     endtask
 
+    task automatic load_golden_block(string filename, output logic [15:0] golden_data [0:255], output int count);
+        integer fd;
+        string line_str;
+        logic [15:0] value;
+        int idx;
+
+        fd = $fopen(filename, "r");
+        if (fd == 0) begin
+            $display("[TB] ERROR: Cannot open golden block file %s", filename);
+            count = 0;
+            return;
+        end
+
+        idx = 0;
+        while (!$feof(fd) && idx < 256) begin
+            if ($fgets(line_str, fd)) begin
+                if ($sscanf(line_str, "%h", value) == 1) begin
+                    golden_data[idx] = value;
+                    idx++;
+                end
+            end
+        end
+        $fclose(fd);
+        count = idx;
+        $display("[TB] Loaded %0d golden values from block file", count);
+    endtask
+
     // =========================================================================
     // Compare Results
     // =========================================================================
@@ -668,12 +773,16 @@ module tb_compute_engine_2d;
     // =========================================================================
     task automatic run_test(test_config_t cfg);
         string golden_file;
+        string left_file, right_file;
         int expected_results;
         logic pass;
+        logic [15:0] golden_block [0:NUM_COLS-1][0:255];  // Store golden for each block
+        int golden_block_count [0:NUM_COLS-1];
 
         $display("");
         $display("======================================================================");
-        $display("  Test: %s (B=%0d, C=%0d, V=%0d)", cfg.name, cfg.B, cfg.C, cfg.V);
+        $display("  Test: %s (B=%0d, C=%0d, V=%0d, multi=%0d, row=%0d)",
+                 cfg.name, cfg.B, cfg.C, cfg.V, cfg.multi_file, cfg.row_id);
         $display("======================================================================");
 
         // Calculate expected results
@@ -691,15 +800,53 @@ module tb_compute_engine_2d;
         rstn = 1'b1;
         repeat(5) @(posedge clk);
 
+        // Load data files based on mode
+        if (cfg.multi_file) begin
+            // Multi-file mode: load from subdirectory
+            $display("[TB] Loading multi-file test data from %s/", cfg.name);
+
+            // Load left (activations)
+            left_file = {HEX_PATH, cfg.name, "/left_", $sformatf("%0d", cfg.row_id), ".hex"};
+            $display("[TB] Loading left file: %s", left_file);
+            load_memory_block_hex(left_file, left_exp_data, left_man_data, left_lines_loaded);
+            $display("[TB] Loaded %0d lines from left file", left_lines_loaded);
+
+            // Load right (weights) - one file per physical column
+            for (int col = 0; col < NUM_COLS; col++) begin
+                right_file = {HEX_PATH, cfg.name, "/right_", $sformatf("%0d_%0d", cfg.row_id, col), ".hex"};
+                $display("[TB] Loading right file %0d: %s", col, right_file);
+                load_memory_block_hex(right_file, right_exp_data[col], right_man_data[col], right_lines_loaded[col]);
+                $display("[TB] Loaded %0d lines from right file %0d", right_lines_loaded[col], col);
+            end
+
+            // Load golden files - one per physical column block
+            for (int col = 0; col < NUM_COLS; col++) begin
+                golden_file = {HEX_PATH, cfg.name, "/golden_", cfg.name, "_",
+                              $sformatf("%0d_%0d", cfg.row_id, col), ".hex"};
+                $display("[TB] Loading golden file %0d: %s", col, golden_file);
+                load_golden_block(golden_file, golden_block[col], golden_block_count[col]);
+            end
+        end else begin
+            // Single-file mode (legacy)
+            left_file = {HEX_PATH, "left.hex"};
+            load_memory_block_hex(left_file, left_exp_data, left_man_data, left_lines_loaded);
+
+            right_file = {HEX_PATH, "right.hex"};
+            load_memory_block_hex(right_file, right_exp_data[0], right_man_data[0], right_lines_loaded[0]);
+
+            golden_file = {HEX_PATH, cfg.name, ".hex"};
+            load_golden_file(golden_file);
+        end
+
         // Write activations
         write_activations(cfg.B, cfg.V);
 
         // Write weights
-        write_weights(cfg.C, cfg.V);
-
-        // Load golden file
-        golden_file = {HEX_PATH, cfg.name, ".hex"};
-        load_golden_file(golden_file);
+        if (cfg.multi_file) begin
+            write_weights_multifile(cfg.C, cfg.V);
+        end else begin
+            write_weights_singlefile(cfg.C, cfg.V);
+        end
 
         // Issue MATMUL
         issue_matmul(cfg.B, cfg.C, cfg.V);
@@ -790,8 +937,27 @@ module tb_compute_engine_2d;
             end
         end
 
-        // Compare
-        compare_results(expected_results, pass);
+        // Compare results
+        if (cfg.multi_file) begin
+            // Multi-file mode: reorganize golden data from per-column to sequential
+            // Collected results are in order: [cg0_col0, cg0_col1, cg0_col2, cg0_col3, cg1_col0, ...]
+            // Golden blocks are: [cg0_col0, cg1_col0, cg2_col0, ...], [cg0_col1, cg1_col1, ...]
+            // Reorganize golden to match collected order
+            int num_col_groups = cfg.C / NUM_COLS;
+            int golden_idx = 0;
+
+            for (int cg = 0; cg < num_col_groups; cg++) begin
+                for (int col = 0; col < NUM_COLS; col++) begin
+                    golden_results[golden_idx] = golden_block[col][cg];
+                    golden_idx++;
+                end
+            end
+            golden_count = golden_idx;
+
+            compare_results(expected_results, pass);
+        end else begin
+            compare_results(expected_results, pass);
+        end
 
         tests_run++;
         if (pass) begin
@@ -838,16 +1004,7 @@ module tb_compute_engine_2d;
         rstn = 1'b1;
         repeat(10) @(posedge clk);
 
-        // Load hex files
-        $display("[TB] Loading left.hex (activations)...");
-        load_memory_block_hex({HEX_PATH, "left.hex"}, left_exp_data, left_man_data, left_lines_loaded);
-        $display("[TB] Loaded %0d lines from left.hex", left_lines_loaded);
-
-        $display("[TB] Loading right.hex (weights)...");
-        load_memory_block_hex({HEX_PATH, "right.hex"}, right_exp_data, right_man_data, right_lines_loaded);
-        $display("[TB] Loaded %0d lines from right.hex", right_lines_loaded);
-
-        // Run test suite
+        // Run test suite (each test loads its own data files)
         foreach (test_suite[i]) begin
             run_test(test_suite[i]);
         end

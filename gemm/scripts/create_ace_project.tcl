@@ -310,14 +310,14 @@ if { ($generate_ioring == "only") || ($generate_ioring == "all") } {
 
 # set_project_option -project {elastix_gemm_top} -- "check_final_timing" {1}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_fanout_limit" {256}
-set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_default_frequency" {300}
+set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_default_frequency" {200}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "clock_skew_opt" {12}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "fanout_limit" {256}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "synthesis_remap" {off}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "push_flops_into_pads" {15}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "sync_timing_num_worst" {2}
 set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "report_power" {1}
-set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_retiming" {1}
+# set_impl_option -project {elastix_gemm_top} -impl {impl_1} -- "syn_retiming" {1}
 set_project_option -project {elastix_gemm_top} -- "bitstream_id_type" {1}
 report_impl_options -project $projectName -impl $implName -outputfile "impl_options.txt" -text -show_standard -diff_options
 

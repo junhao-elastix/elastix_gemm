@@ -1,17 +1,19 @@
 // ------------------------------------------------------------------
-// Result to DMA BRAM Adapter Module (Circular Buffer)
+// Result to DMA BRAM Adapter Module (Circular Buffer, Always-Drain)
 //
 // Purpose: Converts ready-valid stream from result_collector_2d to
 //          BRAM write interface with circular buffer semantics.
 //
-// Design: Circular buffer adapter with backpressure
+// Design: Circular buffer adapter WITHOUT backpressure (always drain)
 //  - wr_ptr managed by hardware, rd_ptr from host register
-//  - Backpressure via almost_full when buffer nears capacity
+//  - ALWAYS accepts data from result_collector (o_ready = 1)
+//  - Host must consume data fast enough or risk overwrite
+//  - almost_full signal kept for monitoring only, not flow control
 //  - Used entries calculated for host polling
 //  - 16-bit keep mask expanded to 32-bit byte strobe
 //
 // Author: Junhao Pan
-// Date: Jan 28, 2026
+// Date: Jan 28, 2026 (Updated Jan 29: always-drain mode)
 // ------------------------------------------------------------------
 
 module result_to_dma #(
@@ -84,8 +86,9 @@ module result_to_dma #(
     assign almost_full_comb = (used_entries_comb >= ALMOST_FULL_THRESHOLD);
     assign empty_comb = (wr_ptr_reg == i_rd_ptr);
 
-    // Ready signal: accept data when not almost full
-    assign o_ready = ~almost_full_comb;
+    // Ready signal: ALWAYS ready to drain result_collector's output FIFO
+    // Host must consume data fast enough or risk overwrite
+    assign o_ready = 1'b1;
 
     // ===================================================================
     // Registered Outputs

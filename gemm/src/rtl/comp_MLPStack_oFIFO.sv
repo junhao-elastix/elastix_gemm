@@ -44,8 +44,10 @@ module comp_MLPStack_oFIFO #(
     // =========================================================================
     output logic [15:0] o_result_data [NUM_COLS-1:0],   // FP16 per column
     input  logic        i_result_rd_en [NUM_COLS-1:0],  // Per-column read enable
+    output logic [15:0] o_result_count [NUM_COLS-1:0],    // Per-column count
     output logic        o_result_empty [NUM_COLS-1:0],  // Per-column empty flag
-    output logic        o_result_afull                     // OR of all FIFO afull flags
+    output logic        o_result_afull,                    // OR of all FIFO afull flags
+    output logic        o_read_empty_sticky               // Sticky: read-while-empty detected
 );
 
     // =========================================================================
@@ -53,6 +55,20 @@ module comp_MLPStack_oFIFO #(
     // =========================================================================
     logic [NUM_COLS-1:0] fifo_full;
     logic [NUM_COLS-1:0] fifo_afull;
+    logic [NUM_COLS-1:0] fifo_read_empty;
+    
+    // Capture read-while-empty condition per column
+    always_ff @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            fifo_read_empty <= '0;
+        end else begin
+            for (int c = 0; c < NUM_COLS; c++) begin
+                if (o_result_empty[c] && i_result_rd_en[c]) begin
+                    fifo_read_empty[c] <= 1'b1;
+                end
+            end
+        end
+    end
 
     // =========================================================================
     // Generate 16 flex_fifos
@@ -79,7 +95,7 @@ module comp_MLPStack_oFIFO #(
                 .o_empty(o_result_empty[c]),
 
                 // Status (unused)
-                .o_count()
+                .o_count(o_result_count[c])
             );
         end
     endgenerate
@@ -89,6 +105,8 @@ module comp_MLPStack_oFIFO #(
     // =========================================================================
     assign o_result_fifo_full = |fifo_full;
     assign o_result_afull     = |fifo_afull;
+    assign o_read_empty_sticky = |fifo_read_empty;
+
 
     // =========================================================================
     // Debug Output

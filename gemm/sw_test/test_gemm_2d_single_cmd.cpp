@@ -1,23 +1,17 @@
 // 2D Multi-Row GEMM Engine Test - Single Command Mode
 //
-// This test submits commands ONE AT A TIME to observe engine status
-// after each command. Useful for debugging command sequencing issues.
+// Submits commands in three groups (not truly one-at-a-time) to observe
+// engine status after each group. Useful for debugging command sequencing.
 //
-// Command sequence (submitted individually):
-// 1. FETCH RIGHT       - load weights from GDDR6 to FIFO
-// 2. DISPATCH RIGHT    - move from FIFO to mlp_bram
-// 3. WAIT_DISP         - wait for DISPATCH RIGHT
-// 4. FETCH LEFT        - load activations from GDDR6 to FIFO
-// 5. DISPATCH LEFT     - move from FIFO to row_bram
-// 6. WAIT_DISP         - wait for DISPATCH LEFT
-// 7. MATMUL            - compute B*C outputs
-// 8. READOUT           - trigger result collection
-// 9. WAIT_MATMUL       - wait for completion
+// Group 1: FETCH RIGHT + DISPATCH RIGHT + WAIT_DISP (submit, wait for idle)
+// Group 2: FETCH LEFT  + DISPATCH LEFT  + WAIT_DISP (submit, wait for idle)
+// Group 3: MATMUL + READOUT + WAIT_MATMUL          (submit, wait for idle)
 
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
@@ -239,7 +233,6 @@ int main(int argc, char* argv[]) {
 
     // Parse command line
     int device_id = 0;
-    bool verbose = true;  // Always verbose for this debug test
     int B = 8, C = 8, V_per_row = 16;
     string hex_dir = "../../hex/B8_C8_V16";
 
@@ -309,16 +302,18 @@ int main(int argc, char* argv[]) {
         array<vector<uint8_t>, NUM_ROWS> right_data;
 
         for (int r = 0; r < NUM_ROWS; r++) {
-            stringstream left_path, right_path;
+            stringstream left_path;
             left_path << hex_dir << "/left_" << r << ".hex";
-            right_path << hex_dir << "/right_" << r << ".hex";
 
             if (!loadHexFile(left_path.str(), left_data[r])) {
                 cerr << "ERROR: Failed to load left_" << r << ".hex" << endl;
                 return 1;
             }
-            if (!loadHexFile(right_path.str(), right_data[r])) {
-                cerr << "ERROR: Failed to load right_" << r << ".hex" << endl;
+            // Try multi-block layout first (right_{r}_0.hex), then legacy (right_{r}.hex)
+            string right_multi = hex_dir + "/right_" + to_string(r) + "_0.hex";
+            string right_legacy = hex_dir + "/right_" + to_string(r) + ".hex";
+            if (!loadHexFile(right_multi, right_data[r]) && !loadHexFile(right_legacy, right_data[r])) {
+                cerr << "ERROR: Failed to load right_" << r << "_0.hex or right_" << r << ".hex" << endl;
                 return 1;
             }
         }
@@ -362,105 +357,42 @@ int main(int argc, char* argv[]) {
         print_engine_status(gemm_device, "RESET");
 
         // =====================================================================
-        // Step 3: Submit commands in groups
+        // Step 3: Submit commands in three groups (fetch+dispatch together, matmul+readout together)
         // =====================================================================
         cout << "\n========================================" << endl;
         cout << "Step 3: Submitting commands in groups" << endl;
         cout << "========================================" << endl;
 
-        // --- GROUP 1: FETCH + DISPATCH RIGHT + WAIT ---
-        cout << "\n[GROUP 1] FETCH + DISPATCH RIGHT + WAIT" << endl;
+        // --- GROUP 1: FETCH + DISPATCH RIGHT + WAIT (submit, then wait for idle) ---
+        cout << "\n[GROUP 1] FETCH + DISPATCH RIGHT + WAIT_DISP" << endl;
         gemm_device.begin_command_batch();
-
-        // FETCH RIGHT
         uint8_t fetch_right_id = gemm_device.fetch(LINE_ADDR_RIGHT, V_TOTAL, LINES_PER_BLOCK, true);
-        cout << "  [CMD 0] FETCH RIGHT: start_addr=" << LINE_ADDR_RIGHT
-             << ", ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
-
-        // DISPATCH RIGHT
         uint8_t disp_right_id = gemm_device.dispatch(C, V_TOTAL, 0, 0, true, false);
-        cout << "  [CMD 1] DISPATCH RIGHT: nv_cnt=" << C << ", ugd_len=" << V_TOTAL << endl;
+        gemm_device.waitDispatch(disp_right_id);
+        cout << "  FETCH RIGHT, DISPATCH RIGHT, WAIT_DISP (id=" << (int)disp_right_id << ")" << endl;
+        if (!submit_group(gemm_device, "FETCH+DISPATCH RIGHT", true)) return 1;
 
-        // WAIT_DISPATCH RIGHT
-        uint8_t wait_disp_right_id = gemm_device.waitDispatch(disp_right_id);
-        cout << "  [CMD 2] WAIT_DISP RIGHT: wait_for=" << (int)disp_right_id << endl;
-
-        // if (!submit_group(gemm_device, "FETCH+DISPATCH RIGHT", true)) return 1;
-
-        // --- GROUP 2: FETCH + DISPATCH LEFT + WAIT ---
-        cout << "\n[GROUP 2] FETCH + DISPATCH LEFT + WAIT" << endl;
-        // gemm_device.begin_command_batch();
-
-        // FETCH LEFT
+        // --- GROUP 2: FETCH + DISPATCH LEFT + WAIT (submit, then wait for idle) ---
+        cout << "\n[GROUP 2] FETCH + DISPATCH LEFT + WAIT_DISP" << endl;
+        gemm_device.begin_command_batch();
         uint8_t fetch_left_id = gemm_device.fetch(LINE_ADDR_LEFT, V_TOTAL, LINES_PER_BLOCK, false);
-        cout << "  [CMD 3] FETCH LEFT: start_addr=" << LINE_ADDR_LEFT
-             << ", ugd_len=" << V_TOTAL << ", len=" << LINES_PER_BLOCK << endl;
-
-        // DISPATCH LEFT
         uint8_t disp_left_id = gemm_device.dispatch(B, V_TOTAL, 0, 0, false, false);
-        cout << "  [CMD 4] DISPATCH LEFT: nv_cnt=" << B << ", ugd_len=" << V_TOTAL << endl;
+        gemm_device.waitDispatch(disp_left_id);
+        cout << "  FETCH LEFT, DISPATCH LEFT, WAIT_DISP (id=" << (int)disp_left_id << ")" << endl;
+        if (!submit_group(gemm_device, "FETCH+DISPATCH LEFT", true)) return 1;
 
-
-        uint8_t wait_disp_left_id = gemm_device.waitDispatch(disp_left_id);
-        cout << "  [CMD 5] WAIT_DISP LEFT: wait_for=" << (int)disp_left_id << endl;
-
-        // if (!submit_group(gemm_device, "FETCH+DISPATCH LEFT", true)) return 1;
-
-        // --- GROUP 3: MATMUL + READOUT ---
-        cout << "\n[GROUP 3] MATMUL + READOUT" << endl;
-        // gemm_device.begin_command_batch();
-
+        // --- GROUP 3: MATMUL + READOUT + WAIT_MATMUL (submit, then wait for idle) ---
+        cout << "\n[GROUP 3] MATMUL + READOUT + WAIT_MATMUL" << endl;
+        gemm_device.begin_command_batch();
         uint8_t matmul_id = gemm_device.matmul(0, 0, B, C, V_TOTAL, false, false, false);
-        cout << "  [CMD 6] MATMUL: B=" << B << ", C=" << C << ", V=" << V_TOTAL << endl;
-
         uint8_t readout_id = gemm_device.readout(B, C, V_TOTAL);
-        cout << "  [CMD 7] READOUT: B=" << B << ", C=" << C << endl;
+        gemm_device.waitMatmul(readout_id);
+        cout << "  MATMUL, READOUT, WAIT_MATMUL (readout_id=" << (int)readout_id << ")" << endl;
+        if (!submit_group(gemm_device, "MATMUL+READOUT", true)) return 1;
 
-        // if (!submit_group(gemm_device, "MATMUL+READOUT", true)) return 1;
-
-        // --- GROUP 4: WAIT_MATMUL ---
-        cout << "\n[GROUP 4] WAIT_MATMUL" << endl;
-        // gemm_device.begin_command_batch();
-
-        uint8_t wait_matmul_id = gemm_device.waitMatmul(readout_id);
-        cout << "  [CMD 8] WAIT_MATMUL: wait_for=" << (int)readout_id << " (READOUT id)" << endl;
-
-        if (!submit_group(gemm_device, "WAIT_MATMUL", true)) return 1;
-
-        // Suppress unused variable warnings
         (void)fetch_right_id;
         (void)fetch_left_id;
-        (void)wait_disp_right_id;
-        (void)wait_disp_left_id;
         (void)matmul_id;
-        (void)wait_matmul_id;
-
-        // =====================================================================
-        // Step 4: Wait for engine idle
-        // =====================================================================
-        cout << "\n========================================" << endl;
-        cout << "Step 4: Waiting for engine idle" << endl;
-        cout << "========================================" << endl;
-
-        int wait_iter = 0;
-        while (wait_iter < 50) {
-            uint32_t status = gemm_device.mmio_read32(0, 0x50);
-            if ((status & 0x1) == 0) {
-                cout << "Engine idle after " << wait_iter << " iterations" << endl;
-                break;
-            }
-            if (wait_iter % 10 == 0) {
-                print_engine_status(gemm_device, "WAITING");
-            }
-            usleep(100000);  // 100ms
-            wait_iter++;
-        }
-
-        if (wait_iter >= 50) {
-            cerr << "ERROR: Engine timeout" << endl;
-            print_engine_status(gemm_device, "TIMEOUT");
-            return 1;
-        }
 
         print_engine_status(gemm_device, "COMPLETE");
 
@@ -572,11 +504,12 @@ int main(int argc, char* argv[]) {
         vector<float> golden_sum(expected_results, 0.0f);
 
         for (int r = 0; r < NUM_ROWS; r++) {
-            stringstream golden_path;
-            golden_path << hex_dir << "/golden_B" << B << "_C" << C << "_V" << V_per_row << "_" << r << ".hex";
+            // Try multi-block layout first (golden_{r}_0.hex), then legacy (golden_{r}.hex)
+            string golden_multi = hex_dir + "/golden_B" + to_string(B) + "_C" + to_string(C) + "_V" + to_string(V_per_row) + "_" + to_string(r) + "_0.hex";
+            string golden_legacy = hex_dir + "/golden_B" + to_string(B) + "_C" + to_string(C) + "_V" + to_string(V_per_row) + "_" + to_string(r) + ".hex";
 
             vector<uint16_t> row_golden;
-            if (!loadGoldenHex(golden_path.str(), row_golden)) {
+            if (!loadGoldenHex(golden_multi, row_golden) && !loadGoldenHex(golden_legacy, row_golden)) {
                 cerr << "WARNING: Failed to load golden for row " << r << endl;
                 continue;
             }
