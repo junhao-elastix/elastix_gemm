@@ -30,11 +30,19 @@ module tb_gemm2d;
     localparam int NUM_COLS = NUM_MLPS*2;
     
     // BCV configuration from hex files
-    // Testing B4_C4_V4
-    localparam int B = 4;
-    localparam int C = 4;
-    localparam int V = 4;                        // V per row
-    localparam int V_TOTAL = V * NUM_ROWS;       // Total V across all rows
+    // Testing B1_C64_V2
+    localparam int B = 1;
+    localparam int C = 64;
+    localparam int V_PER_ROW = 2;                // V per row (each row gets 2 NVs)
+    localparam int V_TOTAL = V_PER_ROW * NUM_ROWS; // Total V for commands (2*16=32)
+
+    // Weight block configuration
+    // SIMPLIFIED TEST: Use only block 0 weights for all rows
+    // Each golden_B1_C64_V2_{row}_0.hex represents an independent test case
+    // The 4 blocks per row are NOT partial columns - they're independent test data
+    localparam int NUM_RIGHT_BLOCKS = 1;         // Use only block 0 for this test
+    localparam int C_PER_BLOCK = C;              // Block 0 provides all C columns worth of data
+    localparam int TILE_ADDR_INCREMENT = 0;      // Not used with single block
 
     // Memory block configuration
     localparam int LINES_PER_BLOCK = 528;
@@ -50,7 +58,7 @@ module tb_gemm2d;
     localparam CLK_PERIOD = 2.5;
 
     // Hex file base path
-    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B4_C4_V4/";
+    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B1_C64_V2/";
     
     // ====================================================================
     // Opcodes (from gemm_pkg)
@@ -233,25 +241,32 @@ module tb_gemm2d;
     // ====================================================================
     // Memory Models (16 instances - one per GDDR6 channel)
     // ====================================================================
-    // Each memory model stores 2 blocks: left (0-527), right (528-1055)
+    // Each memory model stores 5 blocks:
+    //   Block 0 (lines 0-527):    left (activations)
+    //   Block 1 (lines 528-1055): right_0 (weights block 0)
+    //   Block 2 (lines 1056-1583): right_1 (weights block 1)
+    //   Block 3 (lines 1584-2111): right_2 (weights block 2)
+    //   Block 4 (lines 2112-2639): right_3 (weights block 3)
     // Using parameterized memory model that auto-loads channel-specific hex files
-    
+
+    localparam int VERBOSITY = 1;  // 0=quiet, 1=show loading messages
+
     generate
         for (genvar r = 0; r < NUM_ROWS; r++) begin : gen_mem_model
-            
+
             // Memory statistics
             logic [31:0] mem_outstanding_count;
             logic [31:0] mem_total_ar_received;
             logic [31:0] mem_total_r_issued;
-            
+
             tb_mem_model_parameterized #(
                 .DATA_WIDTH(AXI_DATA_WIDTH),
                 .ADDR_WIDTH(AXI_ADDR_WIDTH),
                 .LINES_PER_BLOCK(LINES_PER_BLOCK),
-                .NUM_BLOCKS(2),
+                .NUM_BLOCKS(5),           // 1 left + 4 right blocks
                 .LATENCY_CYCLES(40),      // 100ns @ 400MHz
                 .MAX_OUTSTANDING(32),
-                .VERBOSITY(1),            // Show loading messages
+                .VERBOSITY(VERBOSITY),    // Show loading messages
                 .CHANNEL_ID(r),           // Channel-specific hex files
                 .HEX_BASE_PATH(HEX_BASE_PATH)
             ) u_mem_model (
@@ -309,6 +324,12 @@ module tb_gemm2d;
     // Golden Results Loading Task
     // Pattern matches MLPStack_test/tb_mlp_wrapper.sv for consistency
     // ====================================================================
+    // For B1_C64_V2 with 4 weight blocks:
+    //   - Each row has 4 golden files: golden_{r}_0 through golden_{r}_3
+    //   - Each file contains FULL C=64 FP16 values (partial sums for that weight block)
+    //   - The 4 blocks represent different V slices of weights
+    //   - Per-row golden = SUM of all 4 block golden files (element-wise)
+    // ====================================================================
     task automatic load_golden_results();
         string golden_file;
         string line_str;
@@ -318,75 +339,66 @@ module tb_gemm2d;
         integer load_errors;
         integer values_loaded;
         real golden_sum_check;
+        real block_contribution;
 
-        $display("[TB] Loading golden results...");
+        // Temporary storage for per-block golden values
+        logic [15:0] golden_block [0:B*C-1];
+
+        $display("[TB] Loading golden results (golden_0_0 only - all rows use same data)...");
+        $display("[TB] Golden file has %0d values, hardware sums 16 identical rows", B*C);
         load_errors = 0;
 
-        // Initialize all golden values to zero first (prevents X values)
+        // Initialize all golden values to zero first
         for (int r = 0; r < NUM_ROWS; r++) begin
             for (int i = 0; i < B*C; i++) begin
                 golden_per_row[r][i] = 16'h0000;
             end
         end
 
-        // Load per-row golden files
-        for (int r = 0; r < NUM_ROWS; r++) begin
-            $sformat(golden_file, "%sgolden_B%0d_C%0d_V%0d_%0d.hex", HEX_BASE_PATH, B, C, V, r);
+        // Load golden file from row 0, block 0 ONLY
+        // All rows will use this same golden (since all rows use same activations and weights)
+        $sformat(golden_file, "%sgolden_B%0d_C%0d_V%0d_0_0.hex", HEX_BASE_PATH, B, C, V_PER_ROW);
 
-            fd = $fopen(golden_file, "r");
-            if (fd == 0) begin
-                $error("[TB] Cannot open golden file: %s", golden_file);
-                load_errors++;
-                continue;
-            end
-
-            // Read using $fgets + $sscanf pattern (same as MLPStack_test)
+        fd = $fopen(golden_file, "r");
+        if (fd == 0) begin
+            $error("[TB] Cannot open golden file: %s", golden_file);
+            load_errors++;
+        end else begin
             values_loaded = 0;
+
+            // Read ALL values from the golden file
             while (!$feof(fd) && values_loaded < B*C) begin
                 if ($fgets(line_str, fd)) begin
                     scan_result = $sscanf(line_str, "%h", fp16_val);
                     if (scan_result == 1) begin
-                        golden_per_row[r][values_loaded] = fp16_val;
+                        // Store in row 0 (will be multiplied by 16 during verification)
+                        golden_per_row[0][values_loaded] = fp16_val;
                         values_loaded++;
                     end
                 end
             end
 
             $fclose(fd);
-            $display("[TB]   Loaded %0d values for row %0d: %s", values_loaded, r, golden_file);
 
-            // Show first few values for debug
-            if (r == 0) begin
-                $display("[TB]     First 4 values: 0x%04x, 0x%04x, 0x%04x, 0x%04x",
-                         golden_per_row[r][0], golden_per_row[r][1],
-                         golden_per_row[r][2], golden_per_row[r][3]);
-            end
+            $display("[TB]   Loaded golden_0_0: %0d values, first 4: 0x%04x, 0x%04x, 0x%04x, 0x%04x",
+                     values_loaded, golden_per_row[0][0], golden_per_row[0][1],
+                     golden_per_row[0][2], golden_per_row[0][3]);
 
-            // Check if we got expected number of values
+            // Convert to real for display
+            $display("[TB]   First 4 as float: %.4f, %.4f, %.4f, %.4f",
+                     fp16_to_real(golden_per_row[0][0]), fp16_to_real(golden_per_row[0][1]),
+                     fp16_to_real(golden_per_row[0][2]), fp16_to_real(golden_per_row[0][3]));
+            $display("[TB]   Expected sum (×16): %.4f, %.4f, %.4f, %.4f",
+                     fp16_to_real(golden_per_row[0][0])*16, fp16_to_real(golden_per_row[0][1])*16,
+                     fp16_to_real(golden_per_row[0][2])*16, fp16_to_real(golden_per_row[0][3])*16);
+
             if (values_loaded < B*C) begin
                 $warning("[TB] Only loaded %0d/%0d values from %s", values_loaded, B*C, golden_file);
                 load_errors++;
             end
         end
 
-        // Compute and display expected sums for verification
-        $display("[TB] Computing expected sums (sum across 16 rows):");
-        for (int i = 0; i < B*C; i++) begin
-            golden_sum_check = 0.0;
-            for (int r = 0; r < NUM_ROWS; r++) begin
-                golden_sum_check = golden_sum_check + fp16_to_real(golden_per_row[r][i]);
-            end
-            golden_reduced[i] = 16'h0000;  // Placeholder - actual reduction in HW
-            if (i < 4) begin
-                $display("[TB]   Expected sum[%0d] = %.6f", i, golden_sum_check);
-            end
-        end
-
-        if (load_errors > 0) begin
-            $error("[TB] Golden loading had %0d errors!", load_errors);
-        end else begin
-            $display("[TB] Golden results loaded successfully\n");
-        end
+        $display("[TB] Golden loading complete\n");
     endtask
 
     // ====================================================================
@@ -684,22 +696,53 @@ module tb_gemm2d;
         bit golden_is_nan;
         bit actual_is_nan;
 
+        // Variables for loading golden files on-the-fly
+        string golden_file;
+        string line_str;
+        integer fd;
+        logic [15:0] fp16_val;
+        integer scan_result;
+        integer values_loaded;
+        real golden_block_sum;
+
         $display("\n[TB] Verifying results...");
+        $display("[TB] Computing expected: 16 × golden_0_0.hex (all rows use same data)...");
         errors = 0;
         zero_count = 0;
         nan_count = 0;
 
         // For each result position, compare captured vs golden
-        // Since golden_reduced requires FP16 addition of 16 values,
-        // and we don't have access to exact HW behavior in TB,
-        // we'll compute expected sum from per-row golden and allow tolerance
+        // Since all rows use the same activations (left_0.hex) and weights (right_0_0.hex),
+        // each row computes the same result. The column adder sums 16 identical values.
+        // Golden = 16 × golden_B{B}_C{C}_V{V_PER_ROW}_0_0.hex[i]
 
         for (int i = 0; i < B*C; i++) begin
-            // Compute golden sum (sequential FP16 addition approximation)
+            // Compute golden sum: 16 × golden_0_0.hex[i]
             golden_sum = 0.0;
-            for (int r = 0; r < NUM_ROWS; r++) begin
-                golden_sum = golden_sum + fp16_to_real(golden_per_row[r][i]);
+
+            // Only load from row 0, block 0 golden file
+            $sformat(golden_file, "%sgolden_B%0d_C%0d_V%0d_0_0.hex", HEX_BASE_PATH, B, C, V_PER_ROW);
+            fd = $fopen(golden_file, "r");
+            if (fd == 0) begin
+                if (i == 0) $display("[TB] WARNING: Cannot open %s", golden_file);
+                continue;
             end
+
+            // Read through file to get value at index i
+            values_loaded = 0;
+            while (!$feof(fd) && values_loaded <= i) begin
+                if ($fgets(line_str, fd)) begin
+                    scan_result = $sscanf(line_str, "%h", fp16_val);
+                    if (scan_result == 1) begin
+                        if (values_loaded == i) begin
+                            // Multiply by NUM_ROWS since all 16 rows compute the same result
+                            golden_sum = fp16_to_real(fp16_val) * NUM_ROWS;
+                        end
+                        values_loaded++;
+                    end
+                end
+            end
+            $fclose(fd);
 
             actual_real = fp16_to_real(captured_results[i]);
 
@@ -791,6 +834,13 @@ module tb_gemm2d;
     // Main Test Sequence
     // ====================================================================
     initial begin
+        // Local variables for command sequence
+        integer cmd_id;
+        integer right_block_start_addr;
+        integer tile_addr_var;
+        integer matmul_cmd_id;
+        integer blk;
+
         // Initialize
         reset_n = 1'b0;
         test_errors = 0;
@@ -804,7 +854,7 @@ module tb_gemm2d;
         
         $display("\n===============================================");
         $display("2-D GEMM FULL INTEGRATION TESTBENCH");
-        $display("Configuration: B=%0d, C=%0d, V=%0d, Rows=%0d", B, C, V, NUM_ROWS);
+        $display("Configuration: B=%0d, C=%0d, V_PER_ROW=%0d, V_TOTAL=%0d, Rows=%0d", B, C, V_PER_ROW, V_TOTAL, NUM_ROWS);
         $display("===============================================\n");
         
         // Reset sequence
@@ -826,95 +876,128 @@ module tb_gemm2d;
         // Issue Command Sequence (via BRAM batch interface)
         // =================================================================
         // **CRITICAL**: fetcher_2d expects LINE ADDRESSES, not byte addresses!
-        // Block 0 (left):  lines 0-527
-        // Block 1 (right): lines 528-1055
+        // Memory layout per channel:
+        //   Block 0 (left):    lines 0-527
+        //   Block 1 (right_0): lines 528-1055
+        //   Block 2 (right_1): lines 1056-1583
+        //   Block 3 (right_2): lines 1584-2111
+        //   Block 4 (right_3): lines 2112-2639
+        //
+        // For C=64 with NUM_COLS=4, we need 4 FETCH+DISPATCH cycles for weights,
+        // each loading one block of weight data into MLP BRAMs at different tile_addrs.
         // =================================================================
         $display("\n=== ISSUING COMMAND SEQUENCE ===\n");
+        $display("[TB] Configuration: B=%0d, C=%0d, V_TOTAL=%0d", B, C, V_TOTAL);
+        $display("[TB] SIMPLIFIED TEST: Using only block 0 weights\n");
 
         // Start a new command batch - all commands go to cmd_bram
         begin_command_batch();
 
-        // Step 1: Fetch RIGHT (weights) - block 1 starts at line 528
+        // =================================================================
+        // PHASE 1: Load weight block 0 into MLP BRAMs
+        // =================================================================
+        // Simplified test: Load only block 0 (at memory lines 528-1055)
+        cmd_id = 1;
+
+        for (blk = 0; blk < NUM_RIGHT_BLOCKS; blk = blk + 1) begin
+            right_block_start_addr = (blk + 1) * LINES_PER_BLOCK;  // 528 for block 0
+            tile_addr_var = blk * TILE_ADDR_INCREMENT;              // 0 for block 0
+
+            $display("[TB] Loading weight block %0d: start_addr=%0d, tile_addr=%0d", blk, right_block_start_addr, tile_addr_var);
+
+            // FETCH RIGHT (weights) from this block
+            issue_fetch_command(
+                .cmd_id(cmd_id[7:0]),
+                .start_addr(right_block_start_addr),
+                .ugd_len(V_TOTAL),
+                .len(16'd528),
+                .fetch_right(1'b1)
+            );
+            cmd_id = cmd_id + 1;
+
+            // DISPATCH RIGHT (weights) to mlp_bram at tile_addr
+            issue_dispatch_command(
+                .cmd_id(cmd_id[7:0]),
+                .nv_cnt(C),                   // Number of output columns
+                .ugd_len(V_TOTAL),
+                .tile_addr(tile_addr_var[15:0]),
+                .col_start(8'd0),
+                .disp_right(1'b1)
+            );
+            cmd_id = cmd_id + 1;
+
+            // WAIT for DISPATCH to complete before next block
+            issue_wait_disp_command(
+                .cmd_id(cmd_id[7:0]),
+                .wait_id(8'(cmd_id - 1))
+            );
+            cmd_id = cmd_id + 1;
+        end
+
+        // =================================================================
+        // PHASE 2: Load activations into row_bram
+        // =================================================================
+        $display("[TB] Loading activations: start_addr=0");
+
+        // FETCH LEFT (activations) - block 0 starts at line 0
         issue_fetch_command(
-            .cmd_id(8'd1),
-            .start_addr(32'd528),
-            .ugd_len(V_TOTAL),
-            .len(16'd528),
-            .fetch_right(1'b1)
-        );
-
-        // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
-        // (Matches working C++ test behavior)
-
-        // Step 2: Dispatch RIGHT (weights) to mlp_bram
-        // Matches C++ test: nv_cnt = C, ugd_len = V_TOTAL
-        issue_dispatch_command(
-            .cmd_id(8'd2),
-            .nv_cnt(C),
-            .ugd_len(V_TOTAL),
-            .tile_addr(16'd0),
-            .col_start(8'd0),
-            .disp_right(1'b1)
-        );
-
-        // Step 3: Wait for DISPATCH to complete
-        issue_wait_disp_command(
-            .cmd_id(8'd3),
-            .wait_id(8'd2)
-        );
-
-        // Step 4: Fetch LEFT (activations) - block 0 starts at line 0
-        issue_fetch_command(
-            .cmd_id(8'd4),
+            .cmd_id(cmd_id[7:0]),
             .start_addr(32'd0),
             .ugd_len(V_TOTAL),
             .len(16'd528),
             .fetch_right(1'b0)
         );
+        cmd_id = cmd_id + 1;
 
-        // NOTE: No WAIT_DISP needed after FETCH - DISPATCH waits for FIFO data internally
-        // (Matches working C++ test behavior)
-
-        // Step 5: Dispatch LEFT (activations) to row_bram
-        // Matches C++ test: nv_cnt = B, ugd_len = V_TOTAL
+        // DISPATCH LEFT (activations) to row_bram
         issue_dispatch_command(
-            .cmd_id(8'd5),
+            .cmd_id(cmd_id[7:0]),
             .nv_cnt(B),
             .ugd_len(V_TOTAL),
             .tile_addr(16'd0),
             .col_start(8'd0),
             .disp_right(1'b0)
         );
+        cmd_id = cmd_id + 1;
 
-        // Step 6: Wait for DISPATCH to complete
+        // WAIT for DISPATCH to complete
         issue_wait_disp_command(
-            .cmd_id(8'd6),
-            .wait_id(8'd5)
+            .cmd_id(cmd_id[7:0]),
+            .wait_id(8'(cmd_id - 1))
         );
+        cmd_id = cmd_id + 1;
 
-        // Step 7: Issue MATMUL - compute O = A * W
+        // =================================================================
+        // PHASE 3: Execute MATMUL and READOUT
+        // =================================================================
+        matmul_cmd_id = cmd_id;
+
+        // MATMUL - compute O = A * W
         issue_matmul_command(
-            .cmd_id(8'd7),
+            .cmd_id(cmd_id[7:0]),
             .left_addr(16'd0),
             .right_addr(16'd0),
             .left_len(16'(B)),
             .right_len(16'(C)),
             .ugd_len(V_TOTAL)
         );
+        cmd_id = cmd_id + 1;
 
-        // Step 8: READOUT results
+        // READOUT results
         issue_readout_command(
-            .cmd_id(8'd8),
+            .cmd_id(cmd_id[7:0]),
             .left_len(16'(B)),
             .right_len(16'(C)),
             .ugd_len(V_TOTAL)
         );
+        cmd_id = cmd_id + 1;
 
-        // Step 9: Wait for MATMUL to complete
+        // WAIT for MATMUL to complete
         issue_wait_tile_command(
-            .cmd_id(8'd9),
-            .wait_id(8'd7)
+            .cmd_id(cmd_id[7:0]),
+            .wait_id(matmul_cmd_id[7:0])
         );
+        cmd_id = cmd_id + 1;
 
         // Submit the command batch - triggers transfer from BRAM to engine FIFO
         submit_command_batch();

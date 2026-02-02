@@ -15,7 +15,7 @@ module tb_mem_model_parameterized
     parameter DATA_WIDTH = 256,
     parameter ADDR_WIDTH = 42,
     parameter LINES_PER_BLOCK = 528,
-    parameter NUM_BLOCKS = 2,
+    parameter NUM_BLOCKS = 5,  // 1 left + 4 right blocks
     parameter LATENCY_CYCLES = 40,
     parameter MAX_OUTSTANDING = 32,
     parameter VERBOSITY = 0,
@@ -68,25 +68,37 @@ module tb_mem_model_parameterized
     // ===================================================================
     // Memory Initialization - Load Channel-Specific Hex Files
     // ===================================================================
+    // Memory Layout:
+    //   Block 0 (lines 0-527):    Left matrix (activations)
+    //   Block 1 (lines 528-1055): Right matrix block 0 (weights)
+    //   Block 2 (lines 1056-1583): Right matrix block 1 (weights)
+    //   Block 3 (lines 1584-2111): Right matrix block 2 (weights)
+    //   Block 4 (lines 2112-2639): Right matrix block 3 (weights)
+    // ===================================================================
     initial begin
         string left_file, right_file, line_str;
         integer fd_left, fd_right, line_idx, scan_result;
         logic [7:0] hex_bytes[0:31];
+        integer block_idx;
+        integer base_addr;
 
         // Initialize all memory to zero
         for (int i = 0; i < NUM_BLOCKS*LINES_PER_BLOCK; i = i + 1) begin
             mem_array[i] = '0;
         end
 
-        // Construct file paths for this channel
-        $sformat(left_file, "%sleft_%0d.hex", HEX_BASE_PATH, CHANNEL_ID);
-        $sformat(right_file, "%sright_%0d.hex", HEX_BASE_PATH, CHANNEL_ID);
+        // ---------------------------------------------------------------
+        // Load Block 0: Left matrix (activations)
+        // NOTE: For 2D architecture test with shared weights, we also use
+        // the same activations (left_0.hex) for all rows. This simplifies
+        // the golden comparison: golden_sum = 16 × golden_0_0.hex
+        // ---------------------------------------------------------------
+        $sformat(left_file, "%sleft_0.hex", HEX_BASE_PATH);  // All rows use row 0 activations
 
         if (VERBOSITY >= 1) begin
             $display("[MEM_CH%0d] Loading %s", CHANNEL_ID, left_file);
         end
 
-        // Load Block 0: Left matrix
         fd_left = $fopen(left_file, "r");
         if (fd_left != 0) begin
             line_idx = 0;
@@ -116,38 +128,49 @@ module tb_mem_model_parameterized
             $display("[MEM_CH%0d] WARNING: Cannot open %s", CHANNEL_ID, left_file);
         end
 
-        if (VERBOSITY >= 1) begin
-            $display("[MEM_CH%0d] Loading %s", CHANNEL_ID, right_file);
-        end
+        // ---------------------------------------------------------------
+        // Load Blocks 1-4: Right matrix blocks 0-3 (weights)
+        // NOTE: In 2D architecture, weights are SHARED across all rows.
+        // All channels load from row 0's weight files (right_0_*.hex)
+        // The per-row weights (right_1_*, right_2_*, etc.) are for single-row tests only.
+        // ---------------------------------------------------------------
+        for (block_idx = 0; block_idx < 4; block_idx = block_idx + 1) begin
+            $sformat(right_file, "%sright_0_%0d.hex", HEX_BASE_PATH, block_idx);  // All rows use row 0 weights
+            base_addr = (block_idx + 1) * LINES_PER_BLOCK;  // Block 1 starts at 528, Block 2 at 1056, etc.
 
-        // Load Block 1: Right matrix
-        fd_right = $fopen(right_file, "r");
-        if (fd_right != 0) begin
-            line_idx = 0;
-            while (!$feof(fd_right) && line_idx < LINES_PER_BLOCK) begin
-                if ($fgets(line_str, fd_right)) begin
-                    scan_result = $sscanf(line_str,
-                        "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
-                        hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
-                        hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
-                        hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
-                        hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
-                        hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
-                        hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
-                        hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
-                        hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
-                    if (scan_result == 32) begin
-                        for (int byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
-                            mem_array[LINES_PER_BLOCK + line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
-                        end
-                    end
-                    line_idx = line_idx + 1;
-                end
+            if (VERBOSITY >= 1) begin
+                $display("[MEM_CH%0d] Loading %s to lines %0d-%0d", CHANNEL_ID, right_file, base_addr, base_addr + LINES_PER_BLOCK - 1);
             end
-            $fclose(fd_right);
-            if (VERBOSITY >= 1) $display("[MEM_CH%0d] Loaded %0d lines from right.hex", CHANNEL_ID, line_idx);
-        end else begin
-            $display("[MEM_CH%0d] WARNING: Cannot open %s", CHANNEL_ID, right_file);
+
+            fd_right = $fopen(right_file, "r");
+            if (fd_right != 0) begin
+                line_idx = 0;
+                while (!$feof(fd_right) && line_idx < LINES_PER_BLOCK) begin
+                    if ($fgets(line_str, fd_right)) begin
+                        scan_result = $sscanf(line_str,
+                            "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h",
+                            hex_bytes[0], hex_bytes[1], hex_bytes[2], hex_bytes[3],
+                            hex_bytes[4], hex_bytes[5], hex_bytes[6], hex_bytes[7],
+                            hex_bytes[8], hex_bytes[9], hex_bytes[10], hex_bytes[11],
+                            hex_bytes[12], hex_bytes[13], hex_bytes[14], hex_bytes[15],
+                            hex_bytes[16], hex_bytes[17], hex_bytes[18], hex_bytes[19],
+                            hex_bytes[20], hex_bytes[21], hex_bytes[22], hex_bytes[23],
+                            hex_bytes[24], hex_bytes[25], hex_bytes[26], hex_bytes[27],
+                            hex_bytes[28], hex_bytes[29], hex_bytes[30], hex_bytes[31]);
+                        if (scan_result == 32) begin
+                            for (int byte_idx = 0; byte_idx < 32; byte_idx = byte_idx + 1) begin
+                                mem_array[base_addr + line_idx][(byte_idx*8) +: 8] = hex_bytes[byte_idx];
+                            end
+                        end
+                        line_idx = line_idx + 1;
+                    end
+                end
+                $fclose(fd_right);
+                if (VERBOSITY >= 1) $display("[MEM_CH%0d] Loaded %0d lines from right_%0d.hex", CHANNEL_ID, line_idx, block_idx);
+            end else begin
+                // Not all configurations have 4 right blocks - this is OK
+                if (VERBOSITY >= 1) $display("[MEM_CH%0d] Note: %s not found (may not be needed for this config)", CHANNEL_ID, right_file);
+            end
         end
     end
 

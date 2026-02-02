@@ -2,8 +2,8 @@
 """
 Generate hex files for all compute_engine_2d test configurations.
 
-Creates per-row hex files (left_r.hex, right_r.hex) and golden files
-for each configuration needed by tb_compute_engine_2d.sv.
+Per config, per row (r): one left_r.hex, four right_r_b.hex (b=0..3),
+and four golden files golden_B{B}_C{C}_V{V}_{r}_{b}.hex.
 
 Configurations from tb_compute_engine_2d.sv:
 - B1_C1_V1   - Minimal smoke test
@@ -30,28 +30,33 @@ sys.path.insert(0, emulator_path)
 
 # Test configurations from tb_compute_engine_2d.sv
 TEST_CONFIGS = [
-    {'B': 1,  'C': 1,  'V': 1,  'name': 'B1_C1_V1'},
-    {'B': 2,  'C': 2,  'V': 2,  'name': 'B2_C2_V2'},
-    {'B': 4,  'C': 4,  'V': 4,  'name': 'B4_C4_V4'},
-    {'B': 4,  'C': 8,  'V': 4,  'name': 'B4_C8_V4'},
-    # {'B': 4,  'C': 13, 'V': 9,  'name': 'B4_C13_V9'},  # Already exists
-    {'B': 4,  'C': 16, 'V': 8,  'name': 'B4_C16_V8'},
-    {'B': 8,  'C': 8,  'V': 16, 'name': 'B8_C8_V16'},
-    {'B': 16, 'C': 16, 'V': 4,  'name': 'B16_C16_V4'},
-    {'B': 16, 'C': 16, 'V': 8,  'name': 'B16_C16_V8'},
+    # {'B': 1,  'C': 1,  'V': 1,  'name': 'B1_C1_V1'},
+    # {'B': 2,  'C': 2,  'V': 2,  'name': 'B2_C2_V2'},
+    # {'B': 4,  'C': 4,  'V': 4,  'name': 'B4_C4_V4'},
+    # {'B': 4,  'C': 8,  'V': 4,  'name': 'B4_C8_V4'},
+    # {'B': 4,  'C': 13, 'V': 9,  'name': 'B4_C13_V9'},
+    # {'B': 4,  'C': 16, 'V': 8,  'name': 'B4_C16_V8'},
+    # {'B': 8,  'C': 8,  'V': 16, 'name': 'B8_C8_V16'},
+    # {'B': 16, 'C': 16, 'V': 4,  'name': 'B16_C16_V4'},
+    # {'B': 16, 'C': 16, 'V': 8,  'name': 'B16_C16_V8'},
+    {'B': 1, 'C': 64, 'V': 2,  'name': 'B1_C64_V2'},
+    # {'B': 8, 'C': 64, 'V': 2, 'name': 'B8_C64_V2'},
+    # {'B': 1, 'C': 32, 'V': 4, 'name': 'B1_C32_V4'},    
 ]
 
-NUM_ROWS = 16  # 16 parallel rows in 2D GEMM
+NUM_ROWS = 16   # 16 parallel rows in 2D GEMM
+NUM_RIGHT = 4   # 4 right matrices per row (b=0..3)
 
 
 def generate_config(B, C, V, name, force=False):
     """
     Generate hex files for a single configuration.
-    
-    Creates directory and generates:
-    - 16 per-row files: left_r.hex, right_r.hex (r=0..15)
-    - 16 golden files: golden_B{B}_C{C}_V{V}_{r}.hex
-    - regenerate_golden.sh script
+
+    Per row r (0..15):
+    - One left: left_{r}.hex
+    - Four right: right_{r}_0.hex .. right_{r}_3.hex
+    - Four golden: golden_B{B}_C{C}_V{V}_{r}_0.hex .. golden_B{B}_C{C}_V{V}_{r}_3.hex
+    Also creates regenerate_golden.sh.
     """
     config_dir = os.path.join(script_dir, name)
     
@@ -84,68 +89,87 @@ def generate_config(B, C, V, name, force=False):
     ref_script = os.path.join(script_dir, 'hardware_gfp_reference.py')
     
     for row in range(NUM_ROWS):
-        # Use different seed for each row to get different data
-        seed = 42 + row * 1000
-        
-        print(f"\n  Row {row}: seed={seed}")
-        
-        # Generate left and right matrices
+        # Base seed for this row; vary per right block
+        seed_base = 42 + row * 1000
+        print(f"\n  Row {row}: seeds {seed_base}..{seed_base + (NUM_RIGHT - 1) * 100}")
+
+        # First run: left_{row}.hex and right_{row}_0.hex
         cmd = [
             'python', gen_script,
             '--B', str(B),
             '--C', str(C),
             '--V', str(V),
-            '--seed', str(seed),
+            '--seed', str(seed_base),
             '--output-dir', config_dir
         ]
-        
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"    ERROR generating matrices: {result.stderr}")
             return False
-        
-        # Rename generated files to per-row names
+
+        left_dst = os.path.join(config_dir, f'left_{row}.hex')
+        right_0_dst = os.path.join(config_dir, f'right_{row}_0.hex')
         left_src = os.path.join(config_dir, 'left.hex')
         right_src = os.path.join(config_dir, 'right.hex')
-        left_dst = os.path.join(config_dir, f'left_{row}.hex')
-        right_dst = os.path.join(config_dir, f'right_{row}.hex')
-        
         if os.path.exists(left_src):
             os.rename(left_src, left_dst)
         if os.path.exists(right_src):
-            os.rename(right_src, right_dst)
-        
-        # Clean up float files
+            os.rename(right_src, right_0_dst)
         for f in ['left_float.txt', 'right_float.txt']:
             fpath = os.path.join(config_dir, f)
             if os.path.exists(fpath):
                 os.remove(fpath)
-        
-        # Generate golden reference for this row
-        golden_dst = os.path.join(config_dir, f'golden_B{B}_C{C}_V{V}_{row}.hex')
-        
-        cmd = [
-            'python', ref_script,
-            '--B', str(B),
-            '--C', str(C),
-            '--V', str(V),
-            '--left', left_dst,
-            '--right', right_dst,
-            '--output', golden_dst
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"    ERROR generating golden: {result.stderr}")
-            # Continue anyway - golden can be regenerated later
-        else:
-            print(f"    Generated: left_{row}.hex, right_{row}.hex, golden_{row}.hex")
+
+        # Runs 2..NUM_RIGHT: only keep right -> right_{row}_1.hex .. right_{row}_3.hex
+        for b in range(1, NUM_RIGHT):
+            seed = seed_base + b * 100
+            cmd = [
+                'python', gen_script,
+                '--B', str(B),
+                '--C', str(C),
+                '--V', str(V),
+                '--seed', str(seed),
+                '--output-dir', config_dir
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"    ERROR generating right_{row}_{b}: {result.stderr}")
+                return False
+            right_b_dst = os.path.join(config_dir, f'right_{row}_{b}.hex')
+            if os.path.exists(right_src):
+                os.rename(right_src, right_b_dst)
+            if os.path.exists(left_src):
+                os.remove(left_src)
+            for f in ['left_float.txt', 'right_float.txt']:
+                fpath = os.path.join(config_dir, f)
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+
+        # Golden for each (row, b): left_{row}.hex x right_{row}_{b}.hex
+        for b in range(NUM_RIGHT):
+            right_b_path = os.path.join(config_dir, f'right_{row}_{b}.hex')
+            golden_dst = os.path.join(config_dir, f'golden_B{B}_C{C}_V{V}_{row}_{b}.hex')
+            cmd = [
+                'python', ref_script,
+                '--B', str(B),
+                '--C', str(C),
+                '--V', str(V),
+                '--left', left_dst,
+                '--right', right_b_path,
+                '--output', golden_dst
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"    ERROR generating golden_{row}_{b}: {result.stderr}")
+            else:
+                print(f"    Golden {row}_{b}: {os.path.basename(golden_dst)}")
     
-    # Create regenerate_golden.sh script
+    # Create regenerate_golden.sh script (per row r: left_r.hex x right_r_b.hex -> golden_*_r_b.hex)
     regen_script = os.path.join(config_dir, 'regenerate_golden.sh')
     with open(regen_script, 'w') as f:
         f.write(f'''#!/bin/bash
-# Regenerate all golden files from corresponding left/right pairs
+# Regenerate all golden files: for each row r and b in 0..3,
+# golden_B{B}_C{C}_V{V}_r_b.hex from left_r.hex and right_r_b.hex
 
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 HEX_DIR="$SCRIPT_DIR"
@@ -161,42 +185,36 @@ fi
 eval "$(conda shell.bash hook)"
 conda activate elastix
 
-echo "Regenerating golden files for B={B}, C={C}, V={V}"
+echo "Regenerating golden files for B={B}, C={C}, V={V} (16 rows x 4 right blocks)"
 echo "=============================================="
 echo ""
 
-# Loop through all 16 tiles
 for i in {{0..15}}; do
     LEFT_FILE="$HEX_DIR/left_${{i}}.hex"
-    RIGHT_FILE="$HEX_DIR/right_${{i}}.hex"
-    GOLDEN_FILE="$HEX_DIR/golden_B{B}_C{C}_V{V}_${{i}}.hex"
-
-    # Check if input files exist
     if [ ! -f "$LEFT_FILE" ]; then
-        echo "ERROR: $LEFT_FILE not found, skipping tile $i"
+        echo "ERROR: $LEFT_FILE not found, skipping row $i"
         continue
     fi
-    if [ ! -f "$RIGHT_FILE" ]; then
-        echo "ERROR: $RIGHT_FILE not found, skipping tile $i"
-        continue
-    fi
-
-    echo "Generating tile $i: $GOLDEN_FILE"
-    echo "  from $LEFT_FILE and $RIGHT_FILE"
-
-    # Run the reference script
-    python "$REF_SCRIPT" \\
-        --B {B} --C {C} --V {V} \\
-        --left "$LEFT_FILE" \\
-        --right "$RIGHT_FILE" \\
-        --output "$GOLDEN_FILE" \\
-        2>&1 | grep -E "(Writing|Wrote|ERROR|Configuration)" || true
-
-    if [ $? -eq 0 ]; then
-        echo "  [OK] Successfully generated tile $i"
-    else
-        echo "  [FAIL] Failed to generate tile $i"
-    fi
+    for b in {{0..3}}; do
+        RIGHT_FILE="$HEX_DIR/right_${{i}}_${{b}}.hex"
+        GOLDEN_FILE="$HEX_DIR/golden_B{B}_C{C}_V{V}_${{i}}_${{b}}.hex"
+        if [ ! -f "$RIGHT_FILE" ]; then
+            echo "ERROR: $RIGHT_FILE not found, skipping row $i block $b"
+            continue
+        fi
+        echo "Generating row $i block $b: $GOLDEN_FILE"
+        python "$REF_SCRIPT" \\
+            --B {B} --C {C} --V {V} \\
+            --left "$LEFT_FILE" \\
+            --right "$RIGHT_FILE" \\
+            --output "$GOLDEN_FILE" \\
+            2>&1 | grep -E "(Writing|Wrote|ERROR|Configuration)" || true
+        if [ $? -eq 0 ]; then
+            echo "  [OK] golden_${{i}}_${{b}}.hex"
+        else
+            echo "  [FAIL] golden_${{i}}_${{b}}.hex"
+        fi
+    done
     echo ""
 done
 

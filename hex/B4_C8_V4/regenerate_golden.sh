@@ -1,5 +1,6 @@
 #!/bin/bash
-# Regenerate all golden files from corresponding left/right pairs
+# Regenerate all golden files: for each row r and b in 0..3,
+# golden_B4_C8_V4_r_b.hex from left_r.hex and right_r_b.hex
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEX_DIR="$SCRIPT_DIR"
@@ -15,42 +16,36 @@ fi
 eval "$(conda shell.bash hook)"
 conda activate elastix
 
-echo "Regenerating golden files for B=4, C=8, V=4"
+echo "Regenerating golden files for B=4, C=8, V=4 (16 rows x 4 right blocks)"
 echo "=============================================="
 echo ""
 
-# Loop through all 16 tiles
 for i in {0..15}; do
     LEFT_FILE="$HEX_DIR/left_${i}.hex"
-    RIGHT_FILE="$HEX_DIR/right_${i}.hex"
-    GOLDEN_FILE="$HEX_DIR/golden_B4_C8_V4_${i}.hex"
-
-    # Check if input files exist
     if [ ! -f "$LEFT_FILE" ]; then
-        echo "ERROR: $LEFT_FILE not found, skipping tile $i"
+        echo "ERROR: $LEFT_FILE not found, skipping row $i"
         continue
     fi
-    if [ ! -f "$RIGHT_FILE" ]; then
-        echo "ERROR: $RIGHT_FILE not found, skipping tile $i"
-        continue
-    fi
-
-    echo "Generating tile $i: $GOLDEN_FILE"
-    echo "  from $LEFT_FILE and $RIGHT_FILE"
-
-    # Run the reference script
-    python "$REF_SCRIPT" \
-        --B 4 --C 8 --V 4 \
-        --left "$LEFT_FILE" \
-        --right "$RIGHT_FILE" \
-        --output "$GOLDEN_FILE" \
-        2>&1 | grep -E "(Writing|Wrote|ERROR|Configuration)" || true
-
-    if [ $? -eq 0 ]; then
-        echo "  [OK] Successfully generated tile $i"
-    else
-        echo "  [FAIL] Failed to generate tile $i"
-    fi
+    for b in {0..3}; do
+        RIGHT_FILE="$HEX_DIR/right_${i}_${b}.hex"
+        GOLDEN_FILE="$HEX_DIR/golden_B4_C8_V4_${i}_${b}.hex"
+        if [ ! -f "$RIGHT_FILE" ]; then
+            echo "ERROR: $RIGHT_FILE not found, skipping row $i block $b"
+            continue
+        fi
+        echo "Generating row $i block $b: $GOLDEN_FILE"
+        python "$REF_SCRIPT" \
+            --B 4 --C 8 --V 4 \
+            --left "$LEFT_FILE" \
+            --right "$RIGHT_FILE" \
+            --output "$GOLDEN_FILE" \
+            2>&1 | grep -E "(Writing|Wrote|ERROR|Configuration)" || true
+        if [ $? -eq 0 ]; then
+            echo "  [OK] golden_${i}_${b}.hex"
+        else
+            echo "  [FAIL] golden_${i}_${b}.hex"
+        fi
+    done
     echo ""
 done
 

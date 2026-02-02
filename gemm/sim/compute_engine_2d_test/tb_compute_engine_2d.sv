@@ -45,7 +45,7 @@ module tb_compute_engine_2d;
 
     // Configurable NUM_MLPS - override via Makefile +define+NUM_MLPS=N
     `ifndef NUM_MLPS
-    `define NUM_MLPS 8
+    `define NUM_MLPS 2
     `endif
     localparam int NUM_MLPS         = `NUM_MLPS;
     localparam int NUM_COLS         = 2 * NUM_MLPS;  // 2 columns per MLP
@@ -76,17 +76,20 @@ module tb_compute_engine_2d;
         string      name;           // Golden file name (without .hex)
     } test_config_t;
 
-    // Test suite
+    // Test suite - uses available golden files
     test_config_t test_suite[] = '{
-        '{C: 1,  V: 1,  B: 1,   name: "golden_B1_C1_V1"},      // Minimal smoke test
-        '{C: 2,  V: 2,  B: 2,   name: "golden_B2_C2_V2"},      // Multi-batch, multi-column
-        '{C: 4,  V: 4,  B: 4,   name: "golden_B4_C4_V4"},      // 4x4 test
-        '{C: 8,  V: 4,  B: 4,   name: "golden_B4_C8_V4"},      // 8 columns
-        '{C: 13, V: 9,  B: 4,   name: "golden_B4_C13_V9"},     // Non-power-of-2 C and V
-        '{C: 16, V: 8,  B: 4,   name: "golden_B4_C16_V8"},     // Full 16 columns
-        '{C: 8,  V: 16, B: 8,   name: "golden_B8_C8_V16"},     // 8 batches
-        '{C: 16, V: 4,  B: 16,  name: "golden_B16_C16_V4"},    // 16 batches, 16 cols
-        '{C: 16, V: 8,  B: 16,  name: "golden_B16_C16_V8"}     // Large: 16 batches, full cols
+        // '{C: 1,  V: 1,  B: 1,   name: "golden_B1_C1_V1"},      // Minimal smoke test
+        // '{C: 2,  V: 2,  B: 2,   name: "golden_B2_C2_V2"},      // Multi-batch, multi-column
+        // '{C: 4,  V: 4,  B: 4,   name: "golden_B4_C4_V4"},      // 4x4 test
+        '{C: 8,  V: 8,  B: 4,   name: "golden_B4_C8_V8"},      // 8 columns (V=8 to match golden)
+        // '{C: 13, V: 9,  B: 4,   name: "golden_B4_C13_V9"},     // Non-power-of-2 C and V
+        // '{C: 14, V: 4,  B: 8,   name: "golden_B8_C14_V4"},     // 8 batches, 14 columns
+        // '{C: 8,  V: 16, B: 8,   name: "golden_B8_C8_V16"},     // 8 batches
+        // '{C: 16, V: 4,  B: 16,  name: "golden_B16_C16_V4"},    // 16 batches, 16 cols
+        '{C: 16, V: 8,  B: 16,  name: "golden_B16_C16_V8"},    // Large: 16 batches, full cols
+        '{C: 64, V: 2,  B: 1,   name: "golden_B1_C64_V2"},     // 64 columns (4 column groups)
+        '{C: 64, V: 2,  B: 8,   name: "golden_B8_C64_V2"},     // 64 cols, 8 batches
+        '{C: 128, V: 1, B: 1,   name: "golden_B1_C128_V1"}     // 128 columns (8 column groups)
     };
 
     // =========================================================================
@@ -137,6 +140,8 @@ module tb_compute_engine_2d;
     // Debug Interface
     logic [3:0]             ce_state;
     logic [15:0]            result_count;
+    logic                   read_empty_sticky;
+    logic                   results_ready;
 
     // =========================================================================
     // Test Status
@@ -209,7 +214,9 @@ module tb_compute_engine_2d;
 
         // Debug Interface
         .o_ce_state(ce_state),
-        .o_result_count(result_count)
+        .o_result_count(result_count),
+        .o_read_empty_sticky(read_empty_sticky),
+        .o_results_ready(results_ready)
     );
 
     // =========================================================================

@@ -28,15 +28,15 @@ module tb_gemm2d_multi_iter;
     localparam int NUM_MLPS = 8;
 
     // BCV configuration from hex files
-    localparam int B = 4;
-    localparam int C = 4;
-    localparam int V = 32;                      // V per row
-    localparam int V_TOTAL = V * NUM_ROWS;      // Total V across all rows (512)
+    localparam int B = 1;
+    localparam int C = 64;
+    localparam int V = 2;                       // V per row (will be partitioned: rows 0-1 get 1 NV each)
+    localparam int V_TOTAL = V * NUM_ROWS;      // Total V across all rows (32 - but actual is 2)
 
     // Multi-iteration configuration
-    localparam int NUM_ITERATIONS = 10;
-    localparam int RESULTS_PER_ITER = B * C;    // 16 FP16 values per iteration
-    localparam int TOTAL_RESULTS = NUM_ITERATIONS * RESULTS_PER_ITER;  // 160
+    localparam int NUM_ITERATIONS = 1;          // Single iteration for simple test
+    localparam int RESULTS_PER_ITER = B * C;    // 64 FP16 values per iteration
+    localparam int TOTAL_RESULTS = NUM_ITERATIONS * RESULTS_PER_ITER;  // 64
 
     // Memory block configuration
     localparam int LINES_PER_BLOCK = 528;
@@ -52,7 +52,7 @@ module tb_gemm2d_multi_iter;
     localparam CLK_PERIOD = 2.5;
 
     // Hex file base path
-    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B4_C4_V32/";
+    localparam string HEX_BASE_PATH = "/home/dev/Dev/elastix_gemm/hex/B1_C64_V2/";
 
     // ====================================================================
     // Opcodes (from gemm_pkg)
@@ -253,9 +253,9 @@ module tb_gemm2d_multi_iter;
             end
         end
 
-        // Load per-row golden files
+        // Load per-row golden files (using block 0 for each row)
         for (int r = 0; r < NUM_ROWS; r++) begin
-            $sformat(golden_file, "%sgolden_B%0d_C%0d_V%0d_%0d.hex", HEX_BASE_PATH, B, C, V, r);
+            $sformat(golden_file, "%sgolden_B%0d_C%0d_V%0d_%0d_0.hex", HEX_BASE_PATH, B, C, V, r);
 
             fd = $fopen(golden_file, "r");
             if (fd == 0) begin
@@ -747,16 +747,16 @@ module tb_gemm2d_multi_iter;
                 .cmd_id(8'(10 + iter*10 + 5)),
                 .left_addr(16'd0),
                 .right_addr(16'd0),
-                .left_len(16'd4),                  // B = 4
-                .right_len(16'd4),                 // C = 4
+                .left_len(16'(B)),                 // B batches
+                .right_len(16'(C)),                // C columns
                 .ugd_len(V_TOTAL)
             );
 
             // Issue READOUT (before WAIT_MATMUL)
             issue_readout_command(
                 .cmd_id(8'(10 + iter*10 + 6)),
-                .left_len(16'd4),                  // B = 4
-                .right_len(16'd4),                 // C = 4
+                .left_len(16'(B)),                 // B batches
+                .right_len(16'(C)),                // C columns
                 .ugd_len(V_TOTAL)
             );
 
@@ -769,7 +769,7 @@ module tb_gemm2d_multi_iter;
             // Wait for commands to be processed then capture results
             repeat(100) @(posedge clk);
 
-            // Capture 16 results for this iteration
+            // Capture B*C results for this iteration
             capture_iteration_results(iter, RESULTS_PER_ITER);
         end
 

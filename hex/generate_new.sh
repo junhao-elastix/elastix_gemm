@@ -9,6 +9,8 @@ test_configs=(
     "4 4 4"
     "2 2 64"
     "4 4 32"
+    "1 64 2"
+    "8 64 2"
     "8 8 16"
     "16 16 8"
     "1 128 1"
@@ -19,6 +21,7 @@ test_configs=(
     "8 14 4"
     "8 32 2"
     "16 16 4"
+    "4 13 9"
 )
 
 # Generate reference matrices ONCE (full 128 NVs each)

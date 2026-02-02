@@ -1,14 +1,19 @@
 # ---------------------------------------------------------------------
-# Makefile for result_collector_2d Simulation
+# Makefile for result_collector_2d + result_to_dma Simulation
 #
-# Purpose: Validate the result collector with:
+# Purpose: Validate the complete result data path:
+#   CE FIFOs -> result_collector_2d -> result_to_dma -> Result BRAM
+#
+# Features:
 #   - Mock CE FIFO interface
-#   - READOUT command processing
+#   - Auto-drain without READOUT command
+#   - result_to_dma always-drain circular buffer
+#   - Circular buffer with wr_ptr/rd_ptr verification
 #   - FP16 row reduction via comp_fp_adder_pipeline
 #   - 256-bit output packing
 #
-# Author: Result Collector 2D Testing
-# Date: Jan 22, 2026
+# Author: Result Collector 2D + Result to DMA Testing
+# Date: Jan 29, 2026 (Integrated with result_to_dma)
 # ---------------------------------------------------------------------
 
 # Simulation settings
@@ -73,7 +78,8 @@ compile: create_library
 		$(GEMM_RTL)/int_to_fp.sv \
 		$(GEMM_RTL)/int_adder_tree.sv \
 		$(GEMM_RTL)/comp_fp_adder_pipeline.sv \
-		$(GEMM_RTL)/result_collector_2d.sv >> $(LOG_FILE) 2>&1 || \
+		$(GEMM_RTL)/result_collector_2d.sv \
+		$(GEMM_RTL)/result_to_dma.sv >> $(LOG_FILE) 2>&1 || \
 		(echo "ERROR: RTL compilation failed. See $(LOG_FILE)" && exit 1)
 	@echo "Compiling testbench..." | tee -a $(LOG_FILE)
 	@export LD_LIBRARY_PATH="" && \
@@ -146,14 +152,19 @@ clean:
 # Help
 help:
 	@echo "========================================================================"
-	@echo "  Makefile for result_collector_2d Simulation"
+	@echo "  Makefile for result_collector_2d + result_to_dma Simulation"
 	@echo "========================================================================"
 	@echo ""
-	@echo "Purpose: Test result_collector_2d.sv with:"
-	@echo "  - Mock CE FIFO interface"
-	@echo "  - READOUT command processing"
+	@echo "Purpose: Test complete result data path:"
+	@echo "  CE FIFOs -> result_collector_2d -> result_to_dma -> Result BRAM"
+	@echo ""
+	@echo "Features:"
+	@echo "  - Mock CE FIFO interface with random FP16 data"
+	@echo "  - Auto-drain without READOUT command"
+	@echo "  - result_to_dma always-drain circular buffer"
+	@echo "  - wr_ptr/rd_ptr circular buffer verification"
 	@echo "  - FP16 row reduction via comp_fp_adder_pipeline"
-	@echo "  - 256-bit output packing"
+	@echo "  - 256-bit output packing with keep masks"
 	@echo ""
 	@echo "Targets:"
 	@echo "  make             - Compile and run simulation (outputs to $(LOG_FILE))"
