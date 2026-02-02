@@ -1,29 +1,29 @@
 // ------------------------------------------------------------------
-// 2-D Multi-Row GEMM Result Collector
+// 2-D Multi-Row GEMM Result Collector (Auto-Drain Version)
 //
 // Purpose: Collects and reduces partial results from all compute engine rows
-// Refactored to use FP16 FIFO interface from compute_engine_2d
+// Refactored for auto-drain: drains FIFOs automatically when data available
 //
 // Architecture:
 //  - Receives FP16 results from NUM_ROWS x NUM_COLS CE FIFOs
 //  - Processes column-by-column: for each column, read from all rows and reduce
 //  - Uses comp_fp_adder_pipeline for FP16 row reduction (16 inputs -> 1 output)
 //  - Serializes reduced results into 256-bit output lines (16 x FP16)
-//  - Flexible NUM_COLS support via serialization buffer
 //
-// Data Flow:
-//  1. On READOUT, drain CE FIFOs column-by-column (all rows for col c)
-//  2. FP16 adder pipeline reduces 16 row values to 1 FP16
-//  3. Serialize reduced results into 16-slot buffer
-//  4. Pack buffer to 256-bit output when full (or partial on last)
+// Auto-Drain Behavior:
+//  - Drains automatically when: col_fifos_ready && ~obuf_afull
+//  - No READOUT command needed to start draining
+//  - Completion detected via i_ce_results_ready signal from CEs
+//  - Packs partial line when results_ready_seen AND all FIFOs empty
 //
 // Output Order:
-//  - For B batches, C columns: output packed FP16 lines
+//  - Outputs packed FP16 lines as data becomes available
 //  - Each line = 16 FP16 values (256 bits)
 //  - Keep mask indicates valid positions in partial last line
+//  - Last signal asserts on final partial line
 //
 // Author: Junhao Pan
-// Date: 01/22/2026
+// Date: 01/29/2026
 // ------------------------------------------------------------------
 
 `timescale 1ps / 1ps
@@ -42,8 +42,13 @@ import gemm_pkg::*;
     input  logic                         i_reset_n,
 
     // ====================================================================
-    // Command Interface (snoops MC command bus)
-    // RC watches for READOUT opcode and self-triggers
+    // Results Ready Signal (from CEs via engine_top_2d)
+    // Indicates CEs have completed computation and FIFOs have expected data
+    // ====================================================================
+    input  logic                         i_ce_results_ready,
+
+    // ====================================================================
+    // Command Interface (kept for compatibility, not used for flow control)
     // ====================================================================
     input  logic [7:0]                   i_mc_cmd_op,          // Opcode from MC
     input  logic [7:0]                   i_mc_cmd_id,          // Command ID from MC
@@ -51,19 +56,15 @@ import gemm_pkg::*;
     input  logic [31:0]                  i_cmd_payload_word2,  // Reserved
     input  logic [31:0]                  i_cmd_payload_word3,  // Reserved
 
-    // Acknowledge: asserts after RC sees READOUT and registers payload
+    // Acknowledge: kept for compatibility
     output logic                         o_rc_ack_readout,
 
     // ====================================================================
     // Compute Engine FIFO Interface (from all CEs)
     // Each CE has NUM_COLS FIFOs outputting FP16 results
-    // Using unpacked arrays to match compute_engine_2d ports
     // ====================================================================
-    // ce_result_data[row][col] = FP16 data from CE FIFO
     input  logic [15:0] i_ce_result_data [NUM_ROWS-1:0][NUM_COLS-1:0],
-    // ce_result_empty[row][col] = 1 when CE FIFO is empty
     input  logic        i_ce_result_empty [NUM_ROWS-1:0][NUM_COLS-1:0],
-    // ce_result_rd_en[row][col] = 1 to read from CE FIFO
     output logic        o_ce_result_rd_en [NUM_ROWS-1:0][NUM_COLS-1:0],
 
     // ====================================================================
@@ -88,75 +89,56 @@ import gemm_pkg::*;
     // ===================================================================
     // Local Parameters
     // ===================================================================
-    localparam int COL_IDX_WIDTH = $clog2(NUM_COLS) + 1;
+    localparam int COL_IDX_WIDTH = $clog2(NUM_COLS);
     localparam int SERIAL_IDX_WIDTH = 4;  // For 16-slot serialization buffer
 
-    // Adder pipeline latency: 1 (fp_to_int) + ceil(log2(16)/2) (adder) + 2 (int_to_fp) = ~7 cycles
+    // Adder pipeline latency
     localparam int ADDER_STAGES = $clog2(NUM_ROWS);
     localparam int ADDER_LATENCY = 1 + ((ADDER_STAGES + ADDER_SEG_LEN - 1) / ADDER_SEG_LEN) + 2;
 
-    // READOUT opcode constant
-    localparam logic [7:0] OPC_READOUT = 8'hF5;
-
     // ===================================================================
-    // FSM States
+    // FSM States (Simplified for auto-drain)
     // ===================================================================
     typedef enum logic [3:0] {
-        ST_IDLE         = 4'd0,
-        ST_LATCH_CMD    = 4'd1,    // Latch command and acknowledge
-        ST_DRAIN_COL    = 4'd2,    // Assert FIFO read enable
-        ST_FIFO_LATENCY = 4'd3,    // Wait 1 cycle for FIFO data (flex_fifo has 1-cycle latency)
-        ST_WAIT_REDUCE  = 4'd4,    // Wait for adder pipeline
-        ST_SERIALIZE    = 4'd5,    // Collect reduced result
-        ST_PACK_OUTPUT  = 4'd6,    // Write 256-bit line to output FIFO
-        ST_COMPLETE     = 4'd7
+        ST_IDLE         = 4'd0,    // Wait for data in any FIFO
+        ST_DRAIN_COL    = 4'd1,    // Assert FIFO read enable when ready
+        ST_FIFO_LATENCY = 4'd2,    // Wait 1 cycle for FIFO data
+        ST_WAIT_REDUCE  = 4'd3,    // Wait for adder pipeline
+        ST_SERIALIZE    = 4'd4,    // Collect reduced result
+        ST_PACK_OUTPUT  = 4'd5,    // Write 256-bit line to output FIFO
+        ST_FLUSH_PARTIAL= 4'd6     // Flush partial buffer on completion
     } state_t;
 
     state_t state_reg, state_next;
 
     // ===================================================================
-    // Command Detection and Registration
+    // Column Index and Serialization
     // ===================================================================
-    logic readout_detected;
-    assign readout_detected = (state_reg == ST_IDLE) && (i_mc_cmd_op == OPC_READOUT);
+    logic [COL_IDX_WIDTH-1:0] col_idx;       // Current column being drained
+    logic [SERIAL_IDX_WIDTH-1:0] serial_idx; // Current position in buffer (0..15)
+    logic [15:0] serial_keep;                // Valid mask
+    logic [15:0] serial_buffer [0:15];       // 16 FP16 values
 
     // ===================================================================
-    // Command Registers
+    // Completion Detection
     // ===================================================================
-    logic [7:0]  cmd_id_reg;
-    logic [15:0] left_len_reg;       // B: batch dimension
-    logic [15:0] right_len_reg;      // C: total columns to process
+    logic results_ready_seen;    // Sticky: i_ce_results_ready was seen
+    logic all_fifos_empty;       // All row/col FIFOs are empty
+    logic any_fifo_has_data;     // At least one FIFO has data
 
-    // Command unpacking
-    logic [15:0] cmd_left_len;
-    logic [15:0] cmd_right_len;
-    assign cmd_left_len  = i_cmd_payload_word1[31:16];
-    assign cmd_right_len = i_cmd_payload_word1[15:0];
-
-    // ===================================================================
-    // Iteration Counters
-    // ===================================================================
-    logic [15:0] batch_cnt;          // Current batch (0..B-1)
-    logic [COL_IDX_WIDTH-1:0] col_idx;  // Current column being drained (0..NUM_COLS-1)
-    logic [15:0] col_remaining;      // Columns remaining in current batch
-
-    // ===================================================================
-    // Adder Pipeline Latency Counter
-    // ===================================================================
-    logic [3:0] latency_cnt;
-
-    // ===================================================================
-    // Serialization Buffer (16 x FP16)
-    // ===================================================================
-    logic [15:0] serial_buffer [0:15];   // 16 FP16 values
-    logic [SERIAL_IDX_WIDTH-1:0] serial_idx;  // Current position (0..15)
-    logic [15:0] serial_keep;            // Valid mask
-
-    // ===================================================================
-    // Acknowledge Register
-    // ===================================================================
-    logic ack_readout_reg;
-    logic [7:0] completed_id_reg;
+    // Check if ALL FIFOs across all rows and columns are empty
+    always_comb begin
+        all_fifos_empty = 1'b1;
+        any_fifo_has_data = 1'b0;
+        for (int r = 0; r < NUM_ROWS; r++) begin
+            for (int c = 0; c < NUM_COLS; c++) begin
+                if (!i_ce_result_empty[r][c]) begin
+                    all_fifos_empty = 1'b0;
+                    any_fifo_has_data = 1'b1;
+                end
+            end
+        end
+    end
 
     // ===================================================================
     // Column FIFO Ready Check
@@ -171,47 +153,49 @@ import gemm_pkg::*;
     end
 
     // ===================================================================
+    // Drain Condition
+    // ===================================================================
+    // Can drain when: in drain state, column ready, output not backpressured
+    logic drain_enable;
+    logic can_start_drain;
+
+    assign drain_enable = (state_reg == ST_DRAIN_COL) && col_fifos_ready && !obuf_afull;
+    assign can_start_drain = any_fifo_has_data && !obuf_afull;
+
+    // ===================================================================
     // CE FIFO Read Enable Generation
     // ===================================================================
-    // Read from column col_idx across all rows when draining
-    // Note: flex_fifo has 1-cycle read latency, so we assert rd_en in ST_DRAIN_COL
-    // and capture data in ST_FIFO_LATENCY
-    logic drain_enable;
-    assign drain_enable = (state_reg == ST_DRAIN_COL) && col_fifos_ready;
-
     always_comb begin
         for (int r = 0; r < NUM_ROWS; r++) begin
             for (int c = 0; c < NUM_COLS; c++) begin
-                o_ce_result_rd_en[r][c] = drain_enable && (c == col_idx);
+                o_ce_result_rd_en[r][c] = drain_enable && (c[COL_IDX_WIDTH-1:0] == col_idx);
             end
         end
     end
 
     // ===================================================================
-    // FP16 Adder Pipeline - Reduces 16 rows to 1 FP16
+    // FP16 Adder Pipeline - Reduces NUM_ROWS to 1 FP16
     // ===================================================================
-    // Collect FP16 values from all rows for current column
     logic [NUM_ROWS-1:0][15:0] adder_inputs;
     logic                      adder_valid_in;
     logic [15:0]               adder_result;
     logic                      adder_valid_out;
 
     // Transpose: extract column col_idx from all rows
-    // Data is valid in ST_FIFO_LATENCY (1 cycle after rd_en was asserted)
     always_comb begin
         for (int r = 0; r < NUM_ROWS; r++) begin
             adder_inputs[r] = i_ce_result_data[r][col_idx];
         end
     end
 
-    // Valid input when FIFO data is ready (in ST_FIFO_LATENCY)
+    // Valid input when FIFO data is ready
     assign adder_valid_in = (state_reg == ST_FIFO_LATENCY);
 
     // Instantiate FP16 adder pipeline
     comp_fp_adder_pipeline #(
-        .NUM_INPUTS   (NUM_ROWS),     // 16 rows
-        .FP_IN_WIDTH  (16),           // FP16 input
-        .FP_OUT_WIDTH (16),           // FP16 output
+        .NUM_INPUTS   (NUM_ROWS),
+        .FP_IN_WIDTH  (16),
+        .FP_OUT_WIDTH (16),
         .INT_WIDTH    (128),
         .FRAC_BITS    (48),
         .SEG_LEN      (ADDER_SEG_LEN)
@@ -228,8 +212,7 @@ import gemm_pkg::*;
     // ===================================================================
     // Output Buffer FIFO
     // ===================================================================
-    // Entry format: {last[1], keep[16], data[256]}
-    localparam OBUF_DATA_WIDTH = 1 + 16 + 256;
+    localparam OBUF_DATA_WIDTH = 1 + 16 + 256;  // {last, keep, data}
 
     logic                         obuf_wr_en;
     logic                         obuf_rd_en;
@@ -245,36 +228,22 @@ import gemm_pkg::*;
     ) u_output_fifo (
         .i_clk      (i_clk),
         .i_reset_n  (i_reset_n),
-
         .i_wr_data  (obuf_wr_data),
         .i_wr_en    (obuf_wr_en),
         .o_full     (obuf_full),
         .o_afull    (obuf_afull),
-
         .o_rd_data  (obuf_rd_data),
         .i_rd_en    (obuf_rd_en),
         .o_empty    (obuf_empty),
-
         .o_count    ()
     );
 
     // ===================================================================
     // First-Word-Fall-Through (FWFT) Logic for Output FIFO
     // ===================================================================
-    // flex_fifo has 1-cycle read latency. We need to pre-fetch the first word
-    // so that o_output_valid only asserts when data is actually available.
-    //
-    // State machine:
-    // - When FIFO goes from empty to non-empty, initiate a pre-read
-    // - After 1 cycle, data is valid in rd_data_reg
-    // - When consumer reads (i_output_ready && o_output_valid), initiate next read
-    //
-    // CRITICAL: flex_fifo has 1-cycle read latency. Both pre-fetch AND consumer
-    // read paths must wait 1 cycle before asserting data_valid.
-    //
-    logic obuf_data_valid;       // Data in obuf_rd_data is valid
-    logic obuf_was_empty;        // Previous cycle empty state
-    logic obuf_read_pending;     // Waiting for FIFO read latency (1 cycle)
+    logic obuf_data_valid;
+    logic obuf_was_empty;
+    logic obuf_read_pending;
 
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (~i_reset_n) begin
@@ -284,30 +253,25 @@ import gemm_pkg::*;
         end else begin
             obuf_was_empty <= obuf_empty;
 
-            // Read pending: data arrives 1 cycle after rd_en
             if (obuf_read_pending) begin
                 obuf_data_valid   <= 1'b1;
                 obuf_read_pending <= 1'b0;
             end
-            // Pre-fetch: when FIFO becomes non-empty, start read
             else if (obuf_was_empty && ~obuf_empty) begin
-                obuf_read_pending <= 1'b1;  // Wait 1 cycle for data
+                obuf_read_pending <= 1'b1;
                 obuf_data_valid   <= 1'b0;
             end
-            // Consumer read: when data consumed and more available
             else if (o_output_valid && i_output_ready) begin
-                obuf_data_valid <= 1'b0;  // Data consumed, not valid yet
+                obuf_data_valid <= 1'b0;
                 if (~obuf_empty) begin
-                    obuf_read_pending <= 1'b1;  // Wait 1 cycle for next data
+                    obuf_read_pending <= 1'b1;
                 end
             end
         end
     end
 
-    // Read enable: pre-fetch OR consumer read (when more data available)
-    // Both cases trigger a read, then wait 1 cycle for obuf_read_pending
-    assign obuf_rd_en = (obuf_was_empty && ~obuf_empty) ||                  // Pre-fetch
-                        (o_output_valid && i_output_ready && ~obuf_empty);  // Consumer read
+    assign obuf_rd_en = (obuf_was_empty && ~obuf_empty) ||
+                        (o_output_valid && i_output_ready && ~obuf_empty);
 
     // Unpack output FIFO
     assign o_output_last = obuf_rd_data[OBUF_DATA_WIDTH-1];
@@ -320,16 +284,22 @@ import gemm_pkg::*;
     // ===================================================================
     logic [255:0] packed_data;
     logic         is_last_output;
+    logic         should_pack_partial;
 
     always_comb begin
-        // Pack serial_buffer into 256-bit line
         for (int i = 0; i < 16; i++) begin
             packed_data[i*16 +: 16] = serial_buffer[i];
         end
     end
 
-    // Check if this is the last output (last batch, no more columns)
-    assign is_last_output = (batch_cnt == 0) && (col_remaining == 0);
+    // Pack partial line when: results_ready was seen, all FIFOs empty, buffer has data
+    assign should_pack_partial = results_ready_seen && all_fifos_empty && (serial_idx > 0);
+
+    // Last output when:
+    // 1. Flushing partial buffer (ST_FLUSH_PARTIAL), OR
+    // 2. Packing full buffer (ST_PACK_OUTPUT) AND results complete AND no more data
+    assign is_last_output = (state_reg == ST_FLUSH_PARTIAL) ||
+                            (state_reg == ST_PACK_OUTPUT && results_ready_seen && !any_fifo_has_data);
 
     // ===================================================================
     // FSM: State Transition Logic
@@ -339,47 +309,50 @@ import gemm_pkg::*;
 
         case (state_reg)
             ST_IDLE: begin
-                if (readout_detected) begin
-                    state_next = ST_LATCH_CMD;
+                // Start draining when any FIFO has data and output not backpressured
+                if (can_start_drain) begin
+                    state_next = ST_DRAIN_COL;
                 end
-            end
-
-            ST_LATCH_CMD: begin
-                state_next = ST_DRAIN_COL;
+                // Flush partial buffer if results complete and buffer has data
+                else if (should_pack_partial) begin
+                    state_next = ST_FLUSH_PARTIAL;
+                end
             end
 
             ST_DRAIN_COL: begin
-                // Wait for all row FIFOs to have data for current column
-                // When ready, assert rd_en (handled by drain_enable) and go to latency wait
-                if (col_fifos_ready) begin
+                // Wait for current column to be ready, then drain
+                if (col_fifos_ready && !obuf_afull) begin
                     state_next = ST_FIFO_LATENCY;
                 end
+                // If no data available for this column, try next or go idle
+                else if (all_fifos_empty) begin
+                    if (should_pack_partial) begin
+                        state_next = ST_FLUSH_PARTIAL;
+                    end else begin
+                        state_next = ST_IDLE;
+                    end
+                end
+                // Backpressure: wait
             end
 
             ST_FIFO_LATENCY: begin
-                // 1-cycle wait for FIFO read data (flex_fifo has registered output)
-                // adder_valid_in is asserted in this state
+                // 1-cycle wait for FIFO read data
                 state_next = ST_WAIT_REDUCE;
             end
 
             ST_WAIT_REDUCE: begin
-                // Wait for adder pipeline latency
+                // Wait for adder pipeline
                 if (adder_valid_out) begin
                     state_next = ST_SERIALIZE;
                 end
             end
 
             ST_SERIALIZE: begin
-                // Check if serialization buffer is full OR this is the very last result
-                // Note: col_remaining is decremented AFTER this check, so check for <= 1
-                // Pack when: buffer full (16 results) OR last column of last batch
-                if ((serial_idx == 4'd15) || (col_remaining <= 16'd1 && batch_cnt == 16'd0)) begin
+                // Check if buffer is full (16 results)
+                if (serial_idx == 4'd15) begin
                     state_next = ST_PACK_OUTPUT;
-                end else if (col_remaining <= 16'd1 && batch_cnt > 16'd0) begin
-                    // End of current batch, but more batches to come - continue filling buffer
-                    state_next = ST_DRAIN_COL;
                 end else begin
-                    // More columns in current batch
+                    // Continue draining
                     state_next = ST_DRAIN_COL;
                 end
             end
@@ -387,20 +360,20 @@ import gemm_pkg::*;
             ST_PACK_OUTPUT: begin
                 // Write to output FIFO when not full
                 if (~obuf_full) begin
-                    if (is_last_output) begin
-                        state_next = ST_COMPLETE;
-                    end else if (col_remaining == 16'd0 && batch_cnt > 0) begin
-                        // Start next batch
+                    // Continue draining if more data available
+                    if (any_fifo_has_data && !obuf_afull) begin
                         state_next = ST_DRAIN_COL;
                     end else begin
-                        // Continue current batch
-                        state_next = ST_DRAIN_COL;
+                        state_next = ST_IDLE;
                     end
                 end
             end
 
-            ST_COMPLETE: begin
-                state_next = ST_IDLE;
+            ST_FLUSH_PARTIAL: begin
+                // Flush partial buffer (last line)
+                if (~obuf_full) begin
+                    state_next = ST_IDLE;
+                end
             end
 
             default: state_next = ST_IDLE;
@@ -412,55 +385,36 @@ import gemm_pkg::*;
     // ===================================================================
     always_ff @(posedge i_clk or negedge i_reset_n) begin
         if (~i_reset_n) begin
-            state_reg        <= ST_IDLE;
-            cmd_id_reg       <= 8'h0;
-            completed_id_reg <= 8'h0;
-            left_len_reg     <= 16'h0;
-            right_len_reg    <= 16'h0;
-            batch_cnt        <= 16'h0;
-            col_idx          <= '0;
-            col_remaining    <= 16'h0;
-            latency_cnt      <= 4'h0;
-            serial_idx       <= 4'h0;
-            serial_keep      <= 16'h0;
-            ack_readout_reg  <= 1'b0;
+            state_reg          <= ST_IDLE;
+            col_idx            <= '0;
+            serial_idx         <= 4'h0;
+            serial_keep        <= 16'h0;
+            results_ready_seen <= 1'b0;
             for (int i = 0; i < 16; i++) begin
                 serial_buffer[i] <= 16'h0;
             end
         end else begin
             state_reg <= state_next;
 
+            // Latch results_ready (sticky until reset or completion flush)
+            if (i_ce_results_ready) begin
+                results_ready_seen <= 1'b1;
+            end
+
             case (state_reg)
                 ST_IDLE: begin
-                    ack_readout_reg <= 1'b0;
-                    if (readout_detected) begin
-                        // Latch command parameters
-                        cmd_id_reg    <= i_mc_cmd_id;
-                        left_len_reg  <= cmd_left_len;
-                        right_len_reg <= cmd_right_len;
-                        batch_cnt     <= cmd_left_len - 16'd1;  // 0-based counter
-                        col_remaining <= cmd_right_len;
-                        col_idx       <= '0;
-                        serial_idx    <= 4'h0;
-                        serial_keep   <= 16'h0;
-                    end
-                end
-
-                ST_LATCH_CMD: begin
-                    ack_readout_reg <= 1'b1;
+                    // Nothing special
                 end
 
                 ST_DRAIN_COL: begin
-                    ack_readout_reg <= 1'b0;
-                    // Column drained, wait for pipeline
-                    if (col_fifos_ready) begin
-                        latency_cnt <= 4'h0;
+                    // Move to next column if current is empty but others have data
+                    if (!col_fifos_ready && !all_fifos_empty) begin
+                        if (col_idx == NUM_COLS - 1) begin
+                            col_idx <= '0;
+                        end else begin
+                            col_idx <= col_idx + 1;
+                        end
                     end
-                end
-
-                ST_WAIT_REDUCE: begin
-                    // Pipeline latency tracking (for debug)
-                    latency_cnt <= latency_cnt + 4'h1;
                 end
 
                 ST_SERIALIZE: begin
@@ -469,50 +423,39 @@ import gemm_pkg::*;
                     serial_keep[serial_idx]   <= 1'b1;
                     serial_idx <= serial_idx + 4'd1;
 
-                    // Update column tracking
-                    if (col_remaining > 16'd1) begin
-                        // More columns in this batch
-                        col_remaining <= col_remaining - 16'd1;
-                        // Advance to next column (wrap at NUM_COLS)
-                        if (col_idx == NUM_COLS - 1) begin
-                            col_idx <= '0;
-                        end else begin
-                            col_idx <= col_idx + 1;
-                        end
-                    end else if (col_remaining == 16'd1 && batch_cnt > 16'd0) begin
-                        // Last column of this batch, but more batches to come
-                        // Start next batch (col_remaining becomes 0, then reset)
-                        col_remaining <= right_len_reg;
+                    // Advance to next column (round-robin)
+                    if (col_idx == NUM_COLS - 1) begin
                         col_idx <= '0;
-                        batch_cnt <= batch_cnt - 16'd1;
                     end else begin
-                        // Last column of last batch (col_remaining == 1, batch_cnt == 0)
-                        col_remaining <= 16'd0;
-                        // Don't advance col_idx, we're done
+                        col_idx <= col_idx + 1;
                     end
                 end
 
                 ST_PACK_OUTPUT: begin
                     if (~obuf_full) begin
-                        // Reset serialization buffer for next chunk
+                        // Reset serialization buffer
                         serial_idx  <= 4'h0;
                         serial_keep <= 16'h0;
                         for (int i = 0; i < 16; i++) begin
                             serial_buffer[i] <= 16'h0;
                         end
-
-                        // Handle batch/column transitions
-                        if (col_remaining == 16'd0 && batch_cnt > 0) begin
-                            // Start next batch
-                            batch_cnt     <= batch_cnt - 16'd1;
-                            col_remaining <= right_len_reg;
-                            col_idx       <= '0;
+                        // Clear results_ready_seen if this was the last output (full buffer, no more data)
+                        if (results_ready_seen && !any_fifo_has_data) begin
+                            results_ready_seen <= 1'b0;
                         end
                     end
                 end
 
-                ST_COMPLETE: begin
-                    completed_id_reg <= cmd_id_reg;
+                ST_FLUSH_PARTIAL: begin
+                    if (~obuf_full) begin
+                        // Reset after flush
+                        serial_idx         <= 4'h0;
+                        serial_keep        <= 16'h0;
+                        results_ready_seen <= 1'b0;  // Clear sticky flag
+                        for (int i = 0; i < 16; i++) begin
+                            serial_buffer[i] <= 16'h0;
+                        end
+                    end
                 end
 
                 default: ;
@@ -527,22 +470,21 @@ import gemm_pkg::*;
         obuf_wr_en = 1'b0;
         obuf_wr_data = '0;
 
-        if (state_reg == ST_PACK_OUTPUT && ~obuf_full) begin
+        if ((state_reg == ST_PACK_OUTPUT || state_reg == ST_FLUSH_PARTIAL) && ~obuf_full) begin
             obuf_wr_en = 1'b1;
-            // Pack: {last[1], keep[16], data[256]}
-            obuf_wr_data[OBUF_DATA_WIDTH-1]   = is_last_output;
-            obuf_wr_data[256 +: 16]           = serial_keep;
-            obuf_wr_data[255:0]               = packed_data;
+            obuf_wr_data[OBUF_DATA_WIDTH-1] = is_last_output;
+            obuf_wr_data[256 +: 16]         = serial_keep;
+            obuf_wr_data[255:0]             = packed_data;
         end
     end
 
     // ===================================================================
     // Status Outputs
     // ===================================================================
-    assign o_rc_ack_readout    = ack_readout_reg;
+    assign o_rc_ack_readout    = 1'b0;  // Not used in auto-drain mode
     assign o_rc_state          = state_reg;
-    assign o_rc_busy           = (state_reg != ST_IDLE);
-    assign o_rc_cmd_id         = completed_id_reg;
+    assign o_rc_busy           = (state_reg != ST_IDLE) || any_fifo_has_data;
+    assign o_rc_cmd_id         = 8'h0;  // Not used in auto-drain mode
     assign o_output_fifo_afull = obuf_afull;
 
 endmodule : result_collector_2d
