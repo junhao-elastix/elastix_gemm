@@ -169,7 +169,7 @@ import gemm_pkg::*;
     always_comb begin
         // Calculate how many columns are valid in current column group
         // cols_in_group = min(NUM_COLS, C - cg_cnt * NUM_COLS)
-        cols_in_group = C_reg - ({12'b0, cg_cnt} << NUM_COLS_SHIFT);
+        cols_in_group = C_reg - (cg_cnt << NUM_COLS_SHIFT);
         if (cols_in_group > NUM_COLS[15:0])
             cols_in_group = NUM_COLS[15:0];
         
@@ -182,7 +182,7 @@ import gemm_pkg::*;
     // Simple Counters (widened to match 16-bit B, C, V parameters)
     // =========================================================================
     logic [15:0] b_cnt;              // 0..B-1 (outer loop, 16-bit for full B range)
-    logic [3:0]  cg_cnt;             // 0..G-1 (column group, 4-bit sufficient)
+    logic [15:0] cg_cnt;             // 0..G-1 (column group, 16-bit)
     logic [15:0] v_cnt;              // 0..V-1 (NV within dot product, 16-bit for full V range)
     logic [1:0]  l_cnt;              // 0..3 (line within NV)
 
@@ -232,9 +232,22 @@ import gemm_pkg::*;
     logic [15:0] result_count_reg;
     logic [15:0] expected_results;
     logic        compute_done;
+    logic        all_results_generated;  // All results pushed to FIFOs
+    logic        all_fifos_empty;        // All output FIFOs are empty
 
     // Expected results = B * G
     assign expected_results = B_reg * num_col_groups;
+
+    // Check if all output FIFOs are empty
+    always_comb begin
+        all_fifos_empty = 1'b1;
+        for (int i = 0; i < NUM_COLS; i++) begin
+            all_fifos_empty = all_fifos_empty & o_result_empty[i];
+        end
+    end
+
+    // Compute done = all results generated AND all FIFOs drained
+    assign compute_done = all_results_generated & all_fifos_empty;
 
     // =========================================================================
     // Exponent Conversion: GFP5 -> BFP8E8 for MLP BFP mode
@@ -275,7 +288,7 @@ import gemm_pkg::*;
     // Control signals computed from current counter state (before BRAM latency)
     assign new_dot     = (v_cnt == 16'd0) && (l_cnt == 2'd0);
     assign last_nv     = (v_cnt == (V_reg - 16'd1)) && (l_cnt == 2'd3);
-    assign last_matmul = (b_cnt == (B_reg - 16'd1)) && (cg_cnt == (num_col_groups - 12'd1)) && last_nv;
+    assign last_matmul = (b_cnt == (B_reg - 16'd1)) && (cg_cnt == (num_col_groups - 16'd1)) && last_nv;
 
     // act_valid: For registered BRAM reads, gate with bram_data_valid
     // This ensures we wait for valid data after NV transitions
@@ -337,7 +350,7 @@ import gemm_pkg::*;
         if (!i_reset_n) begin
             state_reg       <= CE_IDLE;
             b_cnt           <= 16'd0;
-            cg_cnt          <= 4'd0;
+            cg_cnt          <= 16'd0;
             v_cnt           <= 16'd0;
             l_cnt           <= 2'd0;
             left_addr_reg   <= 16'd0;
@@ -347,10 +360,9 @@ import gemm_pkg::*;
             V_reg           <= 16'd0;
             cmd_id_reg      <= 8'd0;
             result_count_reg <= 16'd0;
-            compute_done    <= 1'b0;
+            all_results_generated <= 1'b0;
         end else begin
             state_reg    <= state_next;
-            compute_done <= 1'b0;
 
             case (state_reg)
                 CE_IDLE: begin
@@ -382,12 +394,13 @@ import gemm_pkg::*;
                         `endif
                         // synthesis translate_on
 
-                        // Reset counters
+                        // Reset counters and flags
                         b_cnt  <= 16'd0;
-                        cg_cnt <= 4'd0;
+                        cg_cnt <= 16'd0;
                         v_cnt  <= 16'd0;
                         l_cnt  <= 2'd0;
                         result_count_reg <= 16'd0;
+                        all_results_generated <= 1'b0;
                     end
                 end
 
@@ -401,12 +414,12 @@ import gemm_pkg::*;
                             if (v_cnt == (V_reg - 16'd1)) begin
                                 v_cnt <= 16'd0;
                                 // cg_cnt: (0..G-1)
-                                if (cg_cnt == (num_col_groups - 4'd1)) begin
-                                    cg_cnt <= 4'd0;
+                                if (cg_cnt == (num_col_groups - 16'd1)) begin
+                                    cg_cnt <= 16'd0;
                                     // b_cnt: outermost (0..B-1)
                                     b_cnt <= b_cnt + 16'd1;
                                 end else begin
-                                    cg_cnt <= cg_cnt + 4'd1;
+                                    cg_cnt <= cg_cnt + 16'd1;
                                 end
                             end else begin
                                 v_cnt <= v_cnt + 16'd1;
@@ -424,7 +437,7 @@ import gemm_pkg::*;
             if (mlp_result_push) begin
                 result_count_reg <= result_count_reg + 16'd1;
                 if (result_count_reg == (expected_results - 16'd1)) begin
-                    compute_done <= 1'b1;
+                    all_results_generated <= 1'b1;
                 end
             end
         end

@@ -4,7 +4,8 @@
 cd ./bitstream/
 echo "Copying flash.tcl to build directory"
 pwd
-cp -f ../../elastix_gemm/flash.tcl .
+# cp -f ../../elastix_gemm/flash.tcl .
+cp -f ../flash.tcl .
 /opt/achronix/ACE_10_3_1/Achronix-linux/ace -lab_mode -b -script_file flash.tcl
 
-sudo reboot
+# sudo reboot
