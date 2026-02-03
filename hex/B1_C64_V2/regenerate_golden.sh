@@ -1,11 +1,12 @@
 #!/bin/bash
 # Regenerate all golden files: for each row r and b in 0..3,
 # golden_B1_C64_V2_r_b.hex from left_r.hex and right_r_b.hex
+#
+# NOTE: This uses the HARDWARE-ACCURATE algorithm via hardware_gfp_reference.py
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEX_DIR="$SCRIPT_DIR"
 REF_SCRIPT="$SCRIPT_DIR/../hardware_gfp_reference.py"
-
 # Check if reference script exists
 if [ ! -f "$REF_SCRIPT" ]; then
     echo "ERROR: hardware_gfp_reference.py not found at $REF_SCRIPT"
@@ -17,6 +18,7 @@ eval "$(conda shell.bash hook)"
 conda activate elastix
 
 echo "Regenerating golden files for B=1, C=64, V=2 (16 rows x 4 right blocks)"
+echo "Using HARDWARE-ACCURATE algorithm (hardware_gfp_reference.py)"
 echo "=============================================="
 echo ""
 
