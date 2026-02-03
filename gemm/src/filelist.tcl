@@ -2,20 +2,21 @@ set rtl_verilog_files {
 # Package must be compiled first
 ../include/gemm_pkg.sv
 # FLR responder block
-flr_responder.sv
+external_from_acx/flr_responder.sv
 # MSI-X interrupt support
-irq_gen.sv
-msix_irq_handler.sv
+external_from_acx/irq_gen.sv
+external_from_acx/msix_irq_handler.sv
 # PCIe enumeration and memory training
-acx_device_manager.sv
+external_from_acx/acx_device_manager.sv
 # Other shell modules
-axi_bram_responder.sv
-default_nettype.v
-reg_control_block.sv
-reset_processor_v2.sv
+external_from_acx/axi_bram_responder.sv
+external_from_acx/default_nettype.v
+external_from_acx/reg_control_block.sv
+external_from_acx/reset_processor_v2.sv
+external_from_acx/shift_reg.sv
 # NAP wrappers for BRAM bridges
-nap_initiator_wrapper.sv
-nap_responder_wrapper.sv
+external_from_acx/nap_initiator_wrapper.sv
+external_from_acx/nap_responder_wrapper.sv
 # Elastix GEMM Engine - Command/Control
 cmd_fifo.sv
 csr_to_fifo_bridge.sv
@@ -24,7 +25,6 @@ cmd_bram_fifo_bridge.sv
 dma_bram_bridge.sv
 flex_fifo.sv
 result_to_dma.sv
-shift_reg.sv
 # Elastix GEMM Engine - 2D Multi-Row Architecture (16 rows x 16 cols)
 engine_top_2d.sv
 master_control_2d.sv

@@ -22,7 +22,13 @@
       "Bash(fi)",
       "Bash(done)",
       "Bash(make test_gemm_2d_multi_iter:*)",
-      "Bash(./test_gemm_2d_multi_iter:*)"
+      "Bash(./test_gemm_2d_multi_iter:*)",
+      "Bash(conda run:*)",
+      "Bash(for f in B1_C64_V2/golden_*.hex)",
+      "Bash(echo:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(chmod:*)",
+      "Bash(./generate_test_new.sh:*)"
     ]
   },
   "outputStyle": "concise-technical"
