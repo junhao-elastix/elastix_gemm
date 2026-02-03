@@ -1,7 +1,7 @@
 # cd /home/dev/Dev/elastix_gemm/gemm/build/results/ace/impl_1/pnr/output/
 # cd /home/dev/Dev/elastix_gemm/matmul/build/results/ace/impl_1/pnr/output/]
 # cd ./demo/11030039
-cd ./bitstream/
+cd ./g2d_v1_8col/
 echo "Copying flash.tcl to build directory"
 pwd
 # cp -f ../../elastix_gemm/flash.tcl .
