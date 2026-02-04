@@ -1,0 +1,325 @@
+"""
+Cocotb integration tests for gfp_norm_quant module.
+
+Tests end-to-end GFP16 → GFP8 normalize and quantize:
+- Single word processing
+- Backpressure handling
+- Last word signaling
+- Padding handling
+"""
+
+import sys
+from pathlib import Path
+
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, Timer, ClockCycles
+
+# Add golden_models to path
+golden_path = Path(__file__).resolve().parents[2] / "golden_models"
+if str(golden_path) not in sys.path:
+    sys.path.insert(0, str(golden_path))
+
+from gfp16_to_gfp8_golden import gfp16_to_gfp8_hw, pack_gfp16, to_signed, GFP16, GFP8
+
+
+async def reset_dut(dut):
+    """Apply reset to DUT."""
+    dut.reset_i.value = 1
+    dut.v_i.value = 0
+    dut.ready_i.value = 1
+    for i in range(int(dut.IN_ELEMENTS.value)):
+        dut.data_i[i].value = 0
+    dut.pad_i.value = 0
+    dut.last_i.value = 0
+
+    await ClockCycles(dut.clk_i, 5)
+    dut.reset_i.value = 0
+    await ClockCycles(dut.clk_i, 2)
+
+
+async def send_word(dut, gfp16_data, pad=0, last=False):
+    """Send a single word to the DUT."""
+    in_elements = int(dut.IN_ELEMENTS.value)
+
+    # Pad data to IN_ELEMENTS
+    while len(gfp16_data) < in_elements:
+        gfp16_data.append(0)
+
+    # Wait for ready
+    while dut.ready_o.value == 0:
+        await RisingEdge(dut.clk_i)
+
+    # Drive inputs
+    dut.v_i.value = 1
+    for i in range(in_elements):
+        dut.data_i[i].value = gfp16_data[i]
+    dut.pad_i.value = pad
+    dut.last_i.value = int(last)
+
+    await RisingEdge(dut.clk_i)
+    dut.v_i.value = 0
+
+
+async def receive_output(dut, timeout=100):
+    """Receive output from DUT."""
+    in_elements = int(dut.IN_ELEMENTS.value)
+
+    # Wait for valid output
+    for _ in range(timeout):
+        await RisingEdge(dut.clk_i)
+        if dut.v_o.value == 1:
+            # Capture output
+            mantissas = []
+            for i in range(in_elements):
+                man = int(dut.mantissa_o[i].value.signed_integer)
+                mantissas.append(man)
+            exponent = int(dut.exponent_o.value)
+            pad = int(dut.pad_o.value)
+            last = int(dut.last_o.value)
+            return mantissas, exponent, pad, last
+
+    raise TimeoutError("No output received")
+
+
+@cocotb.test()
+async def test_single_word_positive(dut):
+    """Test single word with positive values."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Create test data: positive values with same exponent
+    test_data = [
+        pack_gfp16(exp=15, man_signed=512),
+        pack_gfp16(exp=15, man_signed=256),
+        pack_gfp16(exp=15, man_signed=128),
+        pack_gfp16(exp=15, man_signed=64),
+    ]
+
+    # Get golden reference
+    g_mans, g_exp = gfp16_to_gfp8_hw(test_data)
+
+    # Send data
+    await send_word(dut, test_data, pad=0, last=True)
+
+    # Receive output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    # Check exponent
+    assert exponent == g_exp, f"Exponent mismatch: got {exponent}, expected {g_exp}"
+
+    # Check mantissas (first 4 elements)
+    for i in range(4):
+        expected = to_signed(g_mans[i], GFP8.man_bits)
+        assert mantissas[i] == expected, \
+            f"Mantissa {i} mismatch: got {mantissas[i]}, expected {expected}"
+
+    assert last == 1, "Last flag should be set"
+    dut._log.info("PASS: test_single_word_positive")
+
+
+@cocotb.test()
+async def test_single_word_negative(dut):
+    """Test single word with negative values."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Create test data: negative values
+    test_data = [
+        pack_gfp16(exp=15, man_signed=-512),
+        pack_gfp16(exp=15, man_signed=-256),
+        pack_gfp16(exp=15, man_signed=-128),
+        pack_gfp16(exp=15, man_signed=-64),
+    ]
+
+    # Get golden reference
+    g_mans, g_exp = gfp16_to_gfp8_hw(test_data)
+
+    # Send data
+    await send_word(dut, test_data, pad=0, last=True)
+
+    # Receive output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    # Check exponent
+    assert exponent == g_exp, f"Exponent mismatch: got {exponent}, expected {g_exp}"
+
+    # Check mantissas are negative
+    for i in range(4):
+        expected = to_signed(g_mans[i], GFP8.man_bits)
+        assert mantissas[i] == expected, \
+            f"Mantissa {i} mismatch: got {mantissas[i]}, expected {expected}"
+        assert mantissas[i] < 0, f"Mantissa {i} should be negative"
+
+    dut._log.info("PASS: test_single_word_negative")
+
+
+@cocotb.test()
+async def test_mixed_exponents(dut):
+    """Test values with different exponents requiring alignment."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Create test data: mixed exponents
+    test_data = [
+        pack_gfp16(exp=15, man_signed=512),   # Max exp
+        pack_gfp16(exp=14, man_signed=512),   # Shift by 1
+        pack_gfp16(exp=13, man_signed=512),   # Shift by 2
+        pack_gfp16(exp=12, man_signed=512),   # Shift by 3
+    ]
+
+    # Get golden reference
+    g_mans, g_exp = gfp16_to_gfp8_hw(test_data)
+
+    # Send data
+    await send_word(dut, test_data, pad=0, last=True)
+
+    # Receive output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    # Check exponent is maximum
+    assert exponent == 15, f"Exponent should be 15, got {exponent}"
+
+    # Check mantissas
+    for i in range(4):
+        expected = to_signed(g_mans[i], GFP8.man_bits)
+        assert mantissas[i] == expected, \
+            f"Mantissa {i} mismatch: got {mantissas[i]}, expected {expected}"
+
+    dut._log.info("PASS: test_mixed_exponents")
+
+
+@cocotb.test()
+async def test_with_zeros(dut):
+    """Test handling of zero elements."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Create test data: mix of zeros and non-zeros
+    test_data = [
+        pack_gfp16(exp=15, man_signed=512),
+        pack_gfp16(exp=0, man_signed=0),      # Zero
+        pack_gfp16(exp=15, man_signed=-256),
+        pack_gfp16(exp=0, man_signed=0),      # Zero
+    ]
+
+    # Get golden reference
+    g_mans, g_exp = gfp16_to_gfp8_hw(test_data)
+
+    # Send data
+    await send_word(dut, test_data, pad=0, last=True)
+
+    # Receive output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    # Check zeros are preserved
+    assert mantissas[1] == 0, f"Element 1 should be zero, got {mantissas[1]}"
+    assert mantissas[3] == 0, f"Element 3 should be zero, got {mantissas[3]}"
+
+    dut._log.info("PASS: test_with_zeros")
+
+
+@cocotb.test()
+async def test_with_padding(dut):
+    """Test handling of padding elements."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+    in_elements = int(dut.IN_ELEMENTS.value)
+
+    # Create full test data array: 4 valid elements + padding zeros
+    # Pad count (elements at end to ignore)
+    pad_count = in_elements - 4
+
+    test_data = [
+        pack_gfp16(exp=10, man_signed=100),
+        pack_gfp16(exp=10, man_signed=200),
+        pack_gfp16(exp=10, man_signed=300),
+        pack_gfp16(exp=10, man_signed=400),
+    ]
+    # Fill rest with zeros (padding)
+    for _ in range(pad_count):
+        test_data.append(pack_gfp16(exp=0, man_signed=0))
+
+    # Get golden reference with padding
+    g_mans, g_exp = gfp16_to_gfp8_hw(test_data, pad=pad_count)
+
+    # Send data with padding
+    await send_word(dut, test_data, pad=pad_count, last=True)
+
+    # Receive output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    # Verify pad is passed through
+    assert pad == pad_count, f"Pad mismatch: got {pad}, expected {pad_count}"
+
+    dut._log.info("PASS: test_with_padding")
+
+
+@cocotb.test()
+async def test_backpressure(dut):
+    """Test backpressure handling."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Create test data
+    test_data = [pack_gfp16(exp=15, man_signed=i * 100) for i in range(4)]
+
+    # Apply backpressure
+    dut.ready_i.value = 0
+
+    # Send data
+    await send_word(dut, test_data, pad=0, last=True)
+
+    # Wait a few cycles with backpressure
+    await ClockCycles(dut.clk_i, 10)
+
+    # Release backpressure
+    dut.ready_i.value = 1
+
+    # Now we should get output
+    mantissas, exponent, pad, last = await receive_output(dut)
+
+    assert last == 1, "Last flag should be set"
+    dut._log.info("PASS: test_backpressure")
+
+
+@cocotb.test()
+async def test_continuous_stream(dut):
+    """Test continuous streaming of multiple words."""
+    clock = Clock(dut.clk_i, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    # Send 3 words
+    for word_idx in range(3):
+        is_last = (word_idx == 2)
+        test_data = [pack_gfp16(exp=10 + word_idx, man_signed=(i + 1) * 50) for i in range(4)]
+        await send_word(dut, test_data, pad=0, last=is_last)
+
+    # Receive all outputs
+    received_count = 0
+    for _ in range(3):
+        try:
+            mantissas, exponent, pad, last = await receive_output(dut, timeout=50)
+            received_count += 1
+            if last:
+                break
+        except TimeoutError:
+            break
+
+    # Should receive at least one output (depends on GROUP_WORDS parameter)
+    assert received_count > 0, "Should receive at least one output"
+    dut._log.info(f"PASS: test_continuous_stream (received {received_count} outputs)")

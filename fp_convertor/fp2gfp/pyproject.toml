@@ -1,0 +1,31 @@
+[project]
+name = "fp2gfp"
+version = "0.1.0"
+description = "FP to GFP converter with cocotb testbench"
+requires-python = ">=3.10"
+dependencies = [
+    "cocotb>=1.9.0",
+    "cocotb-tools>=1.9.0",
+    "pytest>=7.0.0",
+    "bitarray>=2.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["sim"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true

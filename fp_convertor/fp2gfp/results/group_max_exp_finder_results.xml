@@ -1,0 +1,13 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1770248372" />
+    <testcase name="test_single_word_group" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="95" time="0.05432462692260742" sim_time_ns="40.001" ratio_time="736.3327143872831" />
+    <testcase name="test_multi_word_stream" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="122" time="0.00107574462890625" sim_time_ns="80.001" ratio_time="74368.02178723404" />
+    <testcase name="test_all_zeros" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="158" time="0.0007085800170898438" sim_time_ns="50.00099999999999" ratio_time="70565.07210767159" />
+    <testcase name="test_mixed_zeros_nonzeros" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="178" time="0.0006487369537353516" sim_time_ns="50.001000000000005" ratio_time="77074.38232414554" />
+    <testcase name="test_negative_mantissas" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="202" time="0.0006625652313232422" sim_time_ns="50.001000000000005" ratio_time="75465.77700755668" />
+    <testcase name="test_padding" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="226" time="0.0006480216979980469" sim_time_ns="50.000999999999976" ratio_time="77159.45338631343" />
+    <testcase name="test_backpressure" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="256" time="0.0008106231689453125" sim_time_ns="90.00100000000003" ratio_time="111026.92773647064" />
+    <testcase name="test_consecutive_groups" classname="tests.unit.test_group_max_exp_finder" file="/home/dev/Dev/elastix_gemm/fp_convertor/fp2gfp/tests/unit/test_group_max_exp_finder.py" lineno="286" time="0.000885009765625" sim_time_ns="80.00099999999998" ratio_time="90395.61268965514" />
+  </testsuite>
+</testsuites>
