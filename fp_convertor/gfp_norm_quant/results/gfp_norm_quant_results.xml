@@ -1,0 +1,13 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1770402934" />
+    <testcase name="test_single_word_positive" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="86" time="0.05744194984436035" sim_time_ns="120.001" ratio_time="2089.0829842152666" />
+    <testcase name="test_single_word_negative" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="124" time="0.0016827583312988281" sim_time_ns="130.001" ratio_time="77254.70590875602" />
+    <testcase name="test_mixed_exponents" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="162" time="0.0014500617980957031" sim_time_ns="130.00099999999998" ratio_time="89652.04115488325" />
+    <testcase name="test_with_zeros" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="199" time="0.0014655590057373047" sim_time_ns="130.00100000000003" ratio_time="88704.0368153571" />
+    <testcase name="test_with_padding" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="231" time="0.0014700889587402344" sim_time_ns="130.00099999999998" ratio_time="88430.70293610118" />
+    <testcase name="test_backpressure" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="269" time="0.0016820430755615234" sim_time_ns="190.00099999999998" ratio_time="112958.4626936924" />
+    <testcase name="test_continuous_stream" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="299" time="0.002127408981323242" sim_time_ns="170.00099999999998" ratio_time="79909.88168822145" />
+    <testcase name="test_e2e_accuracy_varied_exponents" classname="test_gfp_norm_quant" file="/home/dev/Dev/elastix_gemm/fp_convertor/gfp_norm_quant/sim/cocotb/test_gfp_norm_quant.py" lineno="329" time="0.0051114559173583984" sim_time_ns="270.0010000000001" ratio_time="52822.71907756893" />
+  </testsuite>
+</testsuites>

@@ -6,6 +6,8 @@ matrix_engine_w4gfp8_stable
 mlp_jeremy
 acx_model_conv
 amd_gemm
+gemm_grande
+gemm_venti
 
 
 shell_demo

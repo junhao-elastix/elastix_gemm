@@ -1,13 +1,11 @@
 [project]
-name = "fp2gfp"
+name = "gfp_norm_quant"
 version = "0.1.0"
-description = "FP to GFP converter with cocotb testbench"
+description = "GFP11e5 to GFP8e5 normalize and quantize module with cocotb testbench"
 requires-python = ">=3.10"
 dependencies = [
     "cocotb>=1.9.0",
     "cocotb-tools>=1.9.0",
-    "pytest>=7.0.0",
-    "bitarray>=2.8.0",
 ]
 
 [project.optional-dependencies]
@@ -17,7 +15,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["sim"]
+testpaths = ["sim/cocotb"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 

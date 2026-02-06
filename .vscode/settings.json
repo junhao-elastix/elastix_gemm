@@ -1,5 +1,6 @@
 {
     "claudeCode.useTerminal": true,
     "[markdown]": {
-    }
+    },
+    "notebook.output.scrolling": true
 }

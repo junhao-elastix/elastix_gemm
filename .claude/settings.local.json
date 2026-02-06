@@ -28,7 +28,17 @@
       "Bash(echo:*)",
       "Bash(python -m py_compile:*)",
       "Bash(chmod:*)",
-      "Bash(./generate_test_new.sh:*)"
+      "Bash(./generate_test_new.sh:*)",
+      "Bash(tree:*)",
+      "Bash(source ~/miniconda3/etc/profile.d/conda.sh)",
+      "Bash(conda activate:*)",
+      "Bash(SIM=riviera python:*)",
+      "Bash(python:*)",
+      "Bash(make full:*)",
+      "Bash(make test-gfp16-extract:*)",
+      "Bash(make test-signed-aligner:*)",
+      "Bash(make:*)",
+      "Bash(source ~/.bashrc)"
     ]
   },
   "outputStyle": "concise-technical"

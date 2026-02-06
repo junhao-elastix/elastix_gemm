@@ -1,5 +1,5 @@
 // =============================================================================
-// Group Max Exponent Finder Module (Simplified)
+// GFP Find Max Exponent Module
 // =============================================================================
 // Combinational module that finds maximum exponent in current word.
 // For GFP format - no has_frac logic needed since mantissas are explicit.
@@ -10,8 +10,8 @@
 //   - Single-cycle latency with ready/valid passthrough
 // =============================================================================
 
-module group_max_exp_finder #(
-    parameter int EXP_WIDTH    = 5,        // GFP16 exponent width
+module gfp_find_max_exp #(
+    parameter int EXP_WIDTH    = 5,        // GFP11e5 exponent width
     parameter int IN_ELEMENTS  = 16,       // Elements per input word
     parameter int GROUP_WORDS  = 2,        // Unused - kept for interface compatibility
     parameter int MAN_BITS     = 11,       // Signed mantissa bits (unused)
@@ -37,10 +37,6 @@ module group_max_exp_finder #(
     output logic [EXP_WIDTH-1:0]                        max_exp_o,
     output logic                                        group_last_o
 );
-
-    // =========================================================================
-    // Combinational Max Exponent Logic
-    // =========================================================================
     logic [EXP_WIDTH-1:0] word_max_exp;
 
     always_comb begin
@@ -56,10 +52,6 @@ module group_max_exp_finder #(
         end
     end
 
-    // =========================================================================
-    // Simple Passthrough with Single Register Stage
-    // =========================================================================
-    // Ready when downstream is ready or output not valid
     assign ready_o = ready_i | ~v_o;
 
     always_ff @(posedge clk_i) begin
